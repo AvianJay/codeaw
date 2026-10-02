@@ -1,6 +1,6 @@
 # codeaw
 
-在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi**（或任何 ACP agent）。
+在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / DeepSeek Harness**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
@@ -9,7 +9,7 @@
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
-Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp
+Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / dsh --profile acp
       ▲              經 Tailscale                     │
       └──────── ntfy 推播（沒有任何裝置連著時）◀──────┘
 ```
@@ -23,6 +23,7 @@ Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦�
 ```powershell
 npm i -g @agentclientprotocol/claude-agent-acp    # Claude Code
 npm i -g @agentclientprotocol/codex-acp           # Codex
+npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP）
 # Kimi Code 自帶 `kimi acp`
 ```
 
@@ -61,6 +62,24 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
+
+### DeepSeek Harness
+
+bridge 會在建立設定時偵測 PATH 上的 `dsh`，以 [`dsh --profile acp`](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md) 啟動 DeepSeek Harness。沿用 Harness 本機設定與認證；使用 API key 時，讓 bridge 啟動環境提供 `DEEPSEEK_API_KEY`。
+
+如果已經有 `~/.codeaw/config.yaml`，在既有的 `agents` 區塊加入以下項目，再執行 `codeaw-bridge restart`：
+
+```yaml
+agents:
+  deepseek:
+    name: DeepSeek Harness
+    command: dsh
+    args: [--profile, acp]
+    env: {}
+    enabled: true
+```
+
+Harness 的 [ACP server](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) 支援列出、接續與關閉對話，但不回放既有訊息。經 bridge 進行的對話由 bridge 保留歷史；首次接續其他客戶端建立的 Harness 對話時，不會補傳舊訊息。
 
 ### 系統匣與背景運行
 

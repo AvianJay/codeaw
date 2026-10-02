@@ -1,7 +1,7 @@
 {
   "name": "codeaw-bridge",
   "version": "0.1.0",
-  "description": "Run Claude Code / Codex / Kimi (via ACP) on this PC and drive them from anywhere over Tailscale.",
+  "description": "Run Claude Code / Codex / Kimi / DeepSeek Harness (via ACP) on this PC and drive them from anywhere over Tailscale.",
   "type": "module",
   "license": "GPL-3.0-or-later",
   "bin": {

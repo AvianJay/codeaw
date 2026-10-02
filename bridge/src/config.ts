@@ -86,6 +86,7 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
   { id: "codex", probe: "codex-acp", agent: { name: "Codex", command: "codex-acp", args: [], env: {}, enabled: true } },
   { id: "kimi", probe: "kimi", agent: { name: "Kimi Code", command: "kimi", args: ["acp"], env: {}, enabled: true } },
   { id: "gemini", probe: "gemini", agent: { name: "Gemini CLI", command: "gemini", args: ["--experimental-acp"], env: {}, enabled: true } },
+  { id: "deepseek", probe: "dsh", agent: { name: "DeepSeek Harness", command: "dsh", args: ["--profile", "acp"], env: {}, enabled: true } },
 ];
 
 export function detectAgents(): Record<string, AgentConfig> {
