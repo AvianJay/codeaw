@@ -1,97 +1,136 @@
 #!/usr/bin/env node
-import fs from "node:fs";
-import os from "node:os";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { defaultConfigFile, loadConfig, writeDefaultConfig, type LoadedConfig } from "./config.js";
-import { startBridge } from "./bridge.js";
-import { DeviceStore, formatCode } from "./server/auth.js";
+import { DeviceStore } from "./server/auth.js";
 import { logger, setLogLevel } from "./util/log.js";
 import { terminalQr } from "./util/qr.js";
-import { tailscaleSelf } from "./util/tailscale.js";
 import { VERSION } from "./version.js";
+import { requestControl, runningStatus } from "./desktop/control.js";
+import { createPairing, wsUrls } from "./desktop/pairing.js";
+import { launchDesktop, startBackground } from "./desktop/process.js";
+import { BridgeRuntime, type DesktopPage } from "./desktop/runtime.js";
+import { manageService } from "./desktop/service.js";
+import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
 
 const log = logger("main");
-
 const HELP = `codeaw-bridge ${VERSION}
 
 Usage: codeaw-bridge [command] [options]
 
 Commands:
-  start            Run the bridge (default)
-  init             Write a starter config (~/.codeaw/config.yaml) if none exists
-  pair             Print a QR code / one-time code to pair a phone (valid 5 minutes)
+  start            Run in the foreground (default on Linux/macOS)
+  tray             Run in the background with a Windows tray (default on Windows)
+  stop             Gracefully stop the running bridge
+  restart          Reload config and restart the running bridge
+  status           Show bridge status and connected device count
+  settings         Open the Windows settings window
+  autostart <action> install / uninstall / status (Windows login tray)
+  init             Write a starter config if none exists
+  pair             Print a QR / one-time code (valid 5 minutes)
   devices          List paired devices
   revoke <id|name> Remove a paired device
+  service <action> install / uninstall / start / stop / restart / status
+                   Windows SCM, Linux systemd --user, macOS LaunchAgent
 
 Options:
   -c, --config <file>  Config file (default: ${defaultConfigFile()})
-  -p, --port <port>    Override listen.port
+  -p, --port <port>    Override listen.port (0 = random)
+      --background     Start detached; logs go to the config folder's bridge.log
+      --tray           Show the Windows tray when starting
+      --window         Open the pairing window (pair only)
+      --headless       Suppress interactive pairing (for service managers)
       --debug          Verbose logging
   -h, --help           Show this help
 `;
 
-async function wsUrls(port: number, listening?: string[]): Promise<string[]> {
-  const ts = await tailscaleSelf();
-  const urls: string[] = [];
-  if (ts.ip && (!listening || listening.some((a) => a.startsWith(ts.ip + ":")))) urls.push(`ws://${ts.ip}:${port}/acp`);
-  if (ts.dnsName && ts.ip && (!listening || listening.some((a) => a.startsWith(ts.ip + ":")))) urls.push(`ws://${ts.dnsName}:${port}/acp`);
-  if (urls.length === 0) urls.push(`ws://127.0.0.1:${port}/acp`);
-  return urls;
-}
-
-async function printPairing(loaded: LoadedConfig, port: number, listening?: string[]): Promise<void> {
-  const devices = new DeviceStore(loaded.home);
-  const code = devices.createPairingCode();
-  const urls = await wsUrls(port, listening);
-  const params = new URLSearchParams();
-  for (const u of urls) params.append("u", u);
-  params.set("c", code);
-  params.set("n", os.hostname());
-  const link = `codeaw://pair?${params.toString()}`;
-  process.stdout.write("\n" + (await terminalQr(link)));
-  process.stdout.write(`\n  用 codeaw App 掃描上方 QR code 配對（5 分鐘內有效、只能用一次）\n`);
-  process.stdout.write(`  手動輸入：網址 ${urls[0]}\n            配對碼 ${formatCode(code)}\n\n`);
-}
-
 function ensureConfig(file: string): LoadedConfig {
-  if (writeDefaultConfig(file)) log.info(`created ${file} — review it, then restart if you change anything`);
+  if (writeDefaultConfig(file)) log.info(`created ${file}`);
   return loadConfig(file);
 }
 
+async function printPairing(pair: Awaited<ReturnType<typeof createPairing>>): Promise<void> {
+  process.stdout.write("\n" + await terminalQr(pair.link));
+  process.stdout.write("\n  用 codeaw App 掃描上方 QR code 配對（5 分鐘內有效、只能用一次）\n");
+  process.stdout.write(`  手動輸入：網址 ${pair.urls[0]}\n            配對碼 ${pair.code}\n\n`);
+}
+
 async function main(): Promise<void> {
-  const { values, positionals } = parseArgs({
-    allowPositionals: true,
-    options: {
-      config: { type: "string", short: "c" },
-      port: { type: "string", short: "p" },
-      debug: { type: "boolean" },
-      help: { type: "boolean", short: "h" },
-    },
-  });
-  if (values.help) {
-    process.stdout.write(HELP);
-    return;
-  }
+  const { values, positionals } = parseArgs({ allowPositionals: true, options: {
+    config: { type: "string", short: "c" }, port: { type: "string", short: "p" },
+    background: { type: "boolean" }, tray: { type: "boolean" }, window: { type: "boolean" },
+    headless: { type: "boolean" }, debug: { type: "boolean" }, help: { type: "boolean", short: "h" },
+  } });
+  if (values.help) { process.stdout.write(HELP); return; }
   if (values.debug) setLogLevel("debug");
-  const file = values.config ?? defaultConfigFile();
-  const command = positionals[0] ?? "start";
+  const file = path.resolve(values.config ?? defaultConfigFile());
+  const command = positionals[0] ?? (process.platform === "win32" ? "tray" : "start");
+  const port = values.port === undefined ? undefined : Number(values.port);
+  if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new Error("Port must be an integer from 0 to 65535");
+  if ((values.tray || command === "tray" || command === "settings" || values.window) && process.platform !== "win32") {
+    throw new Error("Native tray and windows are currently available on Windows");
+  }
+
+  const showDesktop = async (page?: DesktopPage) => {
+    const loaded = ensureConfig(file);
+    await startBackground(file, { port, debug: values.debug });
+    await requestControl(file, { command: "show", page: page ?? (new DeviceStore(loaded.home).list().length === 0 ? "pair" : undefined) });
+    await launchDesktop(file);
+    log.info("bridge running in the background; use the tray menu to pair or change settings");
+  };
 
   switch (command) {
     case "init": {
-      if (writeDefaultConfig(file)) process.stdout.write(`Wrote ${file}\n`);
-      else process.stdout.write(`${file} already exists\n`);
-      process.stdout.write(fs.readFileSync(file, "utf8"));
+      process.stdout.write(writeDefaultConfig(file) ? `Wrote ${file}\n` : `${file} already exists\n`);
+      return;
+    }
+    case "tray": await showDesktop(); return;
+    case "settings": await showDesktop("settings"); return;
+    case "autostart": {
+      const action = positionals[1] ?? "status";
+      if (action === "status") process.stdout.write(await loginStartupEnabled(file) ? "Login tray startup enabled\n" : "Login tray startup disabled\n");
+      else if (action === "install" || action === "uninstall") {
+        if (action === "install") ensureConfig(file);
+        await setLoginStartup(file, action === "install");
+        process.stdout.write(action === "install" ? "Login tray startup enabled\n" : "Login tray startup removed\n");
+      } else throw new Error("Usage: codeaw-bridge autostart <install|uninstall|status>");
+      return;
+    }
+    case "status": {
+      const status = await runningStatus(file);
+      process.stdout.write(status ? `${status.state} · PID ${status.pid} · ${status.clients} connected · ${status.devices} paired\n${status.addresses.join("\n")}\n` : "Bridge is stopped\n");
+      return;
+    }
+    case "stop": {
+      if (!await runningStatus(file)) { process.stdout.write("Bridge is already stopped\n"); return; }
+      await requestControl(file, { command: "stop" });
+      for (let i = 0; i < 100; i++) {
+        if (!await runningStatus(file)) { process.stdout.write("Bridge stopped\n"); return; }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      throw new Error("Bridge did not stop within 10 seconds");
+    }
+    case "restart": {
+      await requestControl(file, { command: "restart" });
+      process.stdout.write("Bridge restarted with updated config\n");
+      return;
+    }
+    case "service": {
+      if (positionals[1] === "install") ensureConfig(file);
+      await manageService(file, positionals[1] ?? "status");
       return;
     }
     case "pair": {
+      if (values.window) { await showDesktop("pair"); return; }
       const loaded = ensureConfig(file);
-      await printPairing(loaded, values.port ? Number(values.port) : loaded.config.listen.port);
+      const status = await runningStatus(file);
+      await printPairing(status ? await requestControl(file, { command: "pair" }) : await createPairing(loaded.home, port ?? loaded.config.listen.port));
       return;
     }
     case "devices": {
       const loaded = ensureConfig(file);
       const list = new DeviceStore(loaded.home).list();
-      if (list.length === 0) process.stdout.write("No paired devices. Run `codeaw-bridge pair`.\n");
+      if (!list.length) process.stdout.write("No paired devices. Run codeaw-bridge pair.\n");
       for (const d of list) process.stdout.write(`${d.id}  ${d.name.padEnd(24)} paired ${d.createdAt}  last seen ${d.lastSeenAt ?? "-"}\n`);
       return;
     }
@@ -100,22 +139,20 @@ async function main(): Promise<void> {
       const target = positionals[1];
       if (!target) throw new Error("Usage: codeaw-bridge revoke <device id or name>");
       const ok = new DeviceStore(loaded.home).revoke(target);
-      process.stdout.write(ok ? `Revoked ${target}. Its open connections drop on their next reconnect.\n` : `No device ${target}\n`);
+      process.stdout.write(ok ? `Revoked ${target}. Open connections drop on their next reconnect.\n` : `No device ${target}\n`);
       return;
     }
     case "start": {
       const loaded = ensureConfig(file);
-      const bridge = await startBridge(loaded, values.port ? { port: Number(values.port) } : {});
-      const agents = Object.entries(loaded.config.agents)
-        .filter(([, a]) => a.enabled)
-        .map(([id, a]) => `${a.name} (${id})`);
-      log.info(`agents: ${agents.join(", ") || "none — edit " + loaded.file}`);
-      if (loaded.config.notifications.ntfy) log.info(`push: ntfy topic "${loaded.config.notifications.ntfy.topic}" on ${loaded.config.notifications.ntfy.server}`);
-      const urls = await wsUrls(bridge.port(), bridge.addresses());
-      log.info(`connect the app to ${urls.join("  or  ")}`);
-      if (bridge.devices.list().length === 0) await printPairing(loaded, bridge.port(), bridge.addresses());
-      else log.info("run `codeaw-bridge pair` in another terminal to add a device");
-
+      if (values.background) {
+        const status = await startBackground(file, { port, debug: values.debug });
+        if (values.tray) {
+          await requestControl(file, { command: "show", page: new DeviceStore(loaded.home).list().length ? undefined : "pair" });
+          await launchDesktop(file);
+        }
+        log.info(`background bridge PID ${status.pid}; log: ${status.logFile}`);
+        return;
+      }
       let stopping = false;
       const shutdown = async (signal: string) => {
         if (stopping) return;
@@ -123,21 +160,27 @@ async function main(): Promise<void> {
         log.info(`${signal}: shutting down`);
         const force = setTimeout(() => process.exit(1), 8000);
         force.unref();
-        await bridge.stop().catch((err) => log.error("shutdown failed", err));
-        process.exit(0);
+        try { await runtime.stop(); process.exit(0); }
+        catch { log.error("shutdown failed"); process.exit(1); }
       };
+      const runtime = new BridgeRuntime(loaded, port === undefined ? {} : { port }, () => void shutdown("stop"));
+      await runtime.start();
       process.on("SIGINT", () => void shutdown("SIGINT"));
       process.on("SIGTERM", () => void shutdown("SIGTERM"));
       process.on("SIGBREAK", () => void shutdown("SIGBREAK"));
+      const bridge = runtime.bridge!;
+      log.info(`agents: ${bridge.registry.describe().map((a) => `${a.name} (${a.id})`).join(", ") || "none — configure agents in settings"}`);
+      log.info(`connect the app to ${(await wsUrls(bridge.port(), bridge.addresses())).join("  or  ")}`);
+      if (values.tray) {
+        runtime.openDesktop(bridge.devices.list().length ? undefined : "pair");
+        await launchDesktop(file);
+      } else if (!values.headless && !bridge.devices.list().length) {
+        await printPairing(await createPairing(loaded.home, bridge.port(), bridge.addresses()));
+      }
       return;
     }
-    default:
-      process.stdout.write(HELP);
-      process.exitCode = 2;
+    default: process.stdout.write(HELP); process.exitCode = 2;
   }
 }
 
-main().catch((err) => {
-  log.error((err as Error).message);
-  process.exit(1);
-});
+main().catch((err) => { log.error((err as Error).message); process.exit(1); });

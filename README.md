@@ -39,7 +39,8 @@ npm link            # 之後就能直接用 codeaw-bridge 指令（或改用 nod
 
 ```powershell
 codeaw-bridge init    # 建立 ~/.codeaw/config.yaml，會自動偵測已安裝的 agent
-codeaw-bridge         # 啟動 bridge；還沒有配對過的裝置時，會直接印出配對 QR code
+codeaw-bridge         # Windows：背景啟動並顯示系統匣；首次使用會跳出配對視窗
+codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 ```
 
 `~/.codeaw/config.yaml` 重點：
@@ -55,6 +56,28 @@ codeaw-bridge         # 啟動 bridge；還沒有配對過的裝置時，會直�
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
+### 系統匣與背景運行
+
+Windows 執行 `codeaw-bridge tray`（或不帶指令）後可以關掉終端機，bridge 會繼續在背景運行。重複啟動會連到同一個 bridge，同一桌面只會有一個系統匣圖示。雙擊圖示開啟配對視窗，右鍵選單提供：
+
+- **配對手機**：QR code、可複製的網址與配對碼、五分鐘倒數、重新產生配對碼及配對成功提示。也能執行 `codeaw-bridge pair --window`。
+- **設定**：連接埠、工作目錄、agent 開關與閒置時間。保留 YAML 註解及進階欄位；儲存後重啟，若新連接埠無法使用則回復原設定。也能執行 `codeaw-bridge settings`。
+- **已配對裝置**、**開啟日誌**、**登入後自動啟動系統匣**、**重新啟動 bridge**。
+- **關閉系統匣**：bridge 繼續運行；**停止 bridge 並退出**：停止 bridge 與 agent。
+
+設定儲存、重啟與停止會中止正在執行的回合，視窗會先提醒。系統匣和原生視窗目前支援 Windows；Linux／macOS 使用 CLI 與服務管理。
+
+所有平台都可使用以下指令，`--config` 可以管理不同設定檔的程序：
+
+```powershell
+codeaw-bridge start --background    # 不顯示系統匣的背景模式
+codeaw-bridge status                # 執行狀態、PID、連線數與監聽地址
+codeaw-bridge restart               # 重新載入設定並重啟
+codeaw-bridge stop                  # 等待 bridge 正常停止
+```
+
+本機管理透過 Windows named pipe／Unix socket，沒有新增可從手機連線呼叫的管理 HTTP API。背景／服務模式不會把配對碼寫進日誌。
+
 ### Windows 防火牆
 
 如果手機連不上，但電腦自己可以連，請用系統管理員身分允許來自 tailnet 的連線：
@@ -65,12 +88,34 @@ New-NetFirewallRule -DisplayName "codeaw-bridge (Tailscale)" -Direction Inbound 
 
 ### 開機自動啟動
 
+Windows 可從系統匣勾選「登入後自動啟動系統匣」，或使用指令（不需要管理員權限）：
+
 ```powershell
-powershell -ExecutionPolicy Bypass -File bridge\scripts\autostart.ps1          # 登入時自動在背景啟動
-powershell -ExecutionPolicy Bypass -File bridge\scripts\autostart.ps1 -Remove  # 移除
+codeaw-bridge autostart install
+codeaw-bridge autostart status
+codeaw-bridge autostart uninstall
 ```
 
-紀錄寫在 `~/.codeaw/bridge.log`，各 agent 的 stderr 寫在 `~/.codeaw/data/logs/`。
+登入啟動採用使用者的 Windows Run 登錄項目，以隱藏視窗啟動，會沿用本機設定；若 bridge 已由服務啟動，登入時只附加系統匣。舊的 `bridge/scripts/autostart.ps1` 保留為相容入口，也會移除舊版登入排程。
+
+### 服務模式
+
+```powershell
+codeaw-bridge service install
+codeaw-bridge service start
+codeaw-bridge service status
+codeaw-bridge service restart
+codeaw-bridge service stop
+codeaw-bridge service uninstall
+```
+
+- **Windows**：使用真正的 Windows SCM 服務，延遲自動啟動、異常退出時重啟；安裝前先停止既有 bridge。安裝／管理需管理員終端機，安裝時會在本機要求目前 Windows 帳號的密碼（非 Windows Hello PIN），讓服務沿用該帳號的 agent 設定與權限。密碼由 Windows 服務管理保存，bridge 不會寫入檔案或日誌。若帳號密碼變更，需更新服務登入設定。服務 host 使用 Windows 內建 .NET Framework 編譯；更新 host 時先移除再安裝。
+- **Linux**：使用 `systemd --user`。安裝後再執行 `service start`；若需要尚未登入或登出後持續運行，啟用該使用者的 lingering（`loginctl enable-linger <使用者>`）。日誌使用 user journal：`journalctl --user -u 'codeaw-bridge-*'`。
+- **macOS**：使用使用者的 LaunchAgent，登入時啟動；安裝後可執行 `service start` 立即啟動。
+
+Windows 服務在沒有登入桌面時也能運行。登入後執行 `codeaw-bridge tray` 或啟用登入系統匣，就能管理同一個服務中的 bridge；系統匣從登入桌面啟動，符合 Windows 的[服務與互動桌面分離機制](https://learn.microsoft.com/en-us/windows/win32/services/interactive-services)。
+
+背景程序、Windows 服務與 macOS LaunchAgent 的紀錄寫在設定檔旁的 `bridge.log`（預設 `~/.codeaw/bridge.log`）；系統匣錯誤寫在 `desktop.log`，登入啟動錯誤寫在 `desktop-launch.log`。`bridge.log` 超過 5 MiB 時在下次背景／Windows 服務啟動前保留一份 `.1` 備份。各 agent 的 stderr 寫在 `~/.codeaw/data/logs/`。
 
 ### （選用）HTTPS／wss
 
@@ -115,6 +160,7 @@ cd bridge
 npm test                 # vitest：用腳本化的假 agent，不花 token
 npm run typecheck
 npm run smoke            # 對本機真的 agent 做握手 / 列 session / 開 session（不送 prompt）
+npm run smoke:desktop    # Windows：隔離設定渲染三個原生視窗、編譯服務 host；不安裝服務／自動啟動
 npx tsx scripts/dev-bridge.ts --host 0.0.0.0 --port 7861   # 只有假 agent 的 bridge，方便調 UI
 
 cd ../app

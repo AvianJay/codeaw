@@ -111,6 +111,12 @@ export class DeviceStore {
     return code;
   }
 
+  /** Used by the desktop window to detect a successfully consumed code without exposing device tokens. */
+  isPairingCodePending(code: string, now = Date.now()): boolean {
+    const hash = sha256(normalizeCode(code));
+    return readJson<PairingCode[]>(this.pairingFile, []).some((entry) => entry.codeHash === hash && entry.expiresAt > now);
+  }
+
   /** Too many wrong codes in a minute locks pairing for that minute. */
   private rateLimited(now: number): boolean {
     this.failures = this.failures.filter((t) => now - t < 60_000);

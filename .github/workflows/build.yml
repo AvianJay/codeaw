@@ -131,7 +131,7 @@ jobs:
         run: npm run build:bin -- --target=${{ matrix.target }}
       - name: Smoke test native executable
         if: matrix.platform == 'linux-x64'
-        run: ./dist/bin/codeaw-bridge --help
+        run: node scripts/background-smoke.mjs dist/bin/codeaw-bridge
       - name: Package executables
         env:
           PLATFORM: ${{ matrix.platform }}

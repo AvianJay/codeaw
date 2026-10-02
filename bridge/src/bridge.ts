@@ -65,15 +65,22 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname() });
 
   const servers = new Map<string, http.Server>();
+  const binding = new Set<string>();
+  let stopping: Promise<void> | undefined;
+  let retry: NodeJS.Timeout | undefined;
   let port = opts.port ?? config.listen.port;
 
   const listen = (host: string) =>
     new Promise<void>((resolve, reject) => {
+      binding.add(host);
       const server = http.createServer(handlers.onRequest);
       server.on("upgrade", handlers.onUpgrade);
-      server.once("error", reject);
+      server.once("error", (err) => { binding.delete(host); reject(err); });
       server.listen(port, host, () => {
-        server.off("error", reject);
+        server.removeAllListeners("error");
+        server.on("error", (err) => log.warn(`listener ${host}: ${err.message}`));
+        binding.delete(host);
+        if (stopping) { server.close(() => reject(new Error("Bridge is stopping"))); return; }
         port = (server.address() as AddressInfo).port;
         servers.set(host, server);
         log.info(`listening on ${host}:${port}`);
@@ -88,14 +95,38 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     return ts ? ["127.0.0.1", ts] : ["127.0.0.1"];
   };
 
-  for (const host of wanted()) await listen(host);
+  const stop = (): Promise<void> => stopping ??= (async () => {
+    if (retry) clearInterval(retry);
+    notifier.dispose();
+    await terminals.dispose();
+    await handlers.close();
+    await Promise.all([...servers.values()].map((server) => new Promise<void>((resolve) => {
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    })));
+    await manager.shutdown();
+    await registry.stopAll();
+  })();
+
+  try {
+    for (const host of wanted()) {
+      try { await listen(host); }
+      catch (err) {
+        // A Tailscale adapter may be present before its address is ready at boot.
+        if (!opts.hosts && config.listen.hosts === "auto" && host !== "127.0.0.1") {
+          log.warn(`cannot listen on ${host} yet: ${(err as Error).message}`);
+        } else throw err;
+      }
+    }
+    if (!servers.size) throw new Error("No listen hosts configured");
+  } catch (err) { await stop(); throw err; }
 
   // Tailscale may come up after us (boot, VPN reconnect): keep trying to bind its address.
-  const retry =
+  retry =
     !opts.hosts && config.listen.hosts === "auto"
       ? setInterval(() => {
           for (const host of wanted()) {
-            if (!servers.has(host)) listen(host).catch((err) => log.warn(`cannot listen on ${host}: ${(err as Error).message}`));
+            if (!stopping && !servers.has(host) && !binding.has(host)) listen(host).catch((err) => log.warn(`cannot listen on ${host}: ${(err as Error).message}`));
           }
         }, 30_000)
       : undefined;
@@ -108,22 +139,6 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     notifier,
     addresses: () => [...servers.keys()].map((h) => `${h}:${port}`),
     port: () => port,
-    async stop() {
-      if (retry) clearInterval(retry);
-      notifier.dispose();
-      await terminals.dispose();
-      await handlers.close();
-      await Promise.all(
-        [...servers.values()].map(
-          (s) =>
-            new Promise<void>((resolve) => {
-              s.closeAllConnections?.();
-              s.close(() => resolve());
-            }),
-        ),
-      );
-      await manager.shutdown();
-      await registry.stopAll();
-    },
+    stop,
   };
 }

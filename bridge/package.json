@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke.ts",
-    "smoke:terminal": "tsx scripts/terminal-smoke.ts"
+    "smoke:terminal": "tsx scripts/terminal-smoke.ts",
+    "smoke:desktop": "tsx scripts/desktop-smoke.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.6.0",
