@@ -87,6 +87,17 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
   { id: "kimi", probe: "kimi", agent: { name: "Kimi Code", command: "kimi", args: ["acp"], env: {}, enabled: true } },
   { id: "gemini", probe: "gemini", agent: { name: "Gemini CLI", command: "gemini", args: ["--experimental-acp"], env: {}, enabled: true } },
   { id: "deepseek", probe: "dsh", agent: { name: "DeepSeek Harness", command: "dsh", args: ["--profile", "acp"], env: {}, enabled: true } },
+  {
+    id: "antigravity",
+    probe: process.platform === "win32" ? "agy_acp_server.exe" : "agy_acp_server.par",
+    agent: {
+      name: "Google Antigravity",
+      command: process.platform === "win32" ? "agy_acp_server.exe" : "agy_acp_server.par",
+      args: process.platform === "linux" ? ["--uid="] : [],
+      env: {},
+      enabled: true,
+    },
+  },
 ];
 
 export function detectAgents(): Record<string, AgentConfig> {

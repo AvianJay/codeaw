@@ -107,6 +107,8 @@ Color agentColor(String agentId) {
       return const Color(0xFF8E75B2);
     case 'deepseek':
       return const Color(0xFF4D6BFE);
+    case 'antigravity':
+      return const Color(0xFF4285F4);
   }
   final h = agentId.codeUnits.fold<int>(7, (a, c) => (a * 31 + c) & 0xffff);
   return HSLColor.fromAHSL(1, (h % 360).toDouble(), 0.55, 0.5).toColor();
@@ -133,7 +135,8 @@ class AgentAvatar extends StatelessWidget {
       'codex' ||
       'kimi' ||
       'gemini' ||
-      'deepseek' => 'assets/agents/$id.svg',
+      'deepseek' ||
+      'antigravity' => 'assets/agents/$id.svg',
       _ => null,
     };
     return Container(

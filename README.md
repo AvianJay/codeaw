@@ -1,6 +1,6 @@
 # codeaw
 
-在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / DeepSeek Harness**（或任何 ACP agent）。
+在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
@@ -9,7 +9,7 @@
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
-Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / dsh --profile acp
+Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / dsh --profile acp / agy_acp_server
       ▲              經 Tailscale                     │
       └──────── ntfy 推播（沒有任何裝置連著時）◀──────┘
 ```
@@ -25,6 +25,7 @@ npm i -g @agentclientprotocol/claude-agent-acp    # Claude Code
 npm i -g @agentclientprotocol/codex-acp           # Codex
 npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP）
 # Kimi Code 自帶 `kimi acp`
+# Antigravity 使用官方 ACP server，安裝方式見下方
 ```
 
 安裝 bridge：
@@ -80,6 +81,26 @@ agents:
 ```
 
 Harness 的 [ACP server](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) 支援列出、接續與關閉對話，但不回放既有訊息。經 bridge 進行的對話由 bridge 保留歷史；首次接續其他客戶端建立的 Harness 對話時，不會補傳舊訊息。
+
+### Google Antigravity
+
+從 [ACP registry 的官方 Antigravity 項目](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) 下載符合作業系統與 CPU 架構的 `distribution.binary` 壓縮檔並解壓縮。將解壓縮目錄加入 PATH；macOS／Linux 也需讓 `agy_acp_server.par` 有執行權限（`chmod +x agy_acp_server.par`）。這是獨立的 ACP server，無須安裝 `agy` CLI。
+
+bridge 建立設定時會偵測 Windows 上的 `agy_acp_server.exe`，或 macOS／Linux 上的 `agy_acp_server.par`；Linux 會依 registry 設定傳入 `--uid=`。第一次使用前，先透過官方支援的 ACP 客戶端完成登入，例如 [Zed 的 Antigravity 登入流程](https://antigravity.google/docs/ide/extensions/zed)；之後 bridge 沿用儲存的認證。尚未登入時，建立對話會回報需要認證。
+
+如果已經有 `~/.codeaw/config.yaml`，在既有的 `agents` 區塊加入以下 Windows 設定，再執行 `codeaw-bridge restart`：
+
+```yaml
+agents:
+  antigravity:
+    name: Google Antigravity
+    command: agy_acp_server.exe
+    args: []
+    env: {}
+    enabled: true
+```
+
+macOS 將 `command` 改成 `agy_acp_server.par`；Linux 另將 `args` 改成 `["--uid="]`。未加入 PATH 時，`command` 可填入執行檔的完整路徑。
 
 ### 系統匣與背景運行
 
