@@ -150,6 +150,55 @@ class StopItem extends TimelineItem {
   final String stopReason;
 }
 
+/// One turn's output and wall time, retained after completion and during replay.
+class TurnSummaryItem extends TimelineItem {
+  TurnSummaryItem(super.key, {required this.startedAt, this.prompt});
+
+  final DateTime startedAt;
+  final MessageItem? prompt;
+  DateTime? endedAt;
+  final messages = <MessageItem>[];
+  final steeredPrompts = <MessageItem>[];
+  int _narrowCharacters = 0;
+  int _wideCharacters = 0;
+
+  String get responseText => messages.where((m) => m.role == MessageRole.agent).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
+  String get thoughtText => messages.where((m) => m.role == MessageRole.thought).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
+  String get transcript => [
+        if (prompt != null && prompt!.text.isNotEmpty) '你：\n${prompt!.text}',
+        for (final p in steeredPrompts) if (p.text.isNotEmpty) '你（插入回合）：\n${p.text}',
+        if (responseText.isNotEmpty) 'Agent：\n$responseText',
+      ].join('\n\n');
+
+  // A deliberately approximate count: CJK/full-width characters count as one,
+  // other characters as one quarter. Chunk boundaries do not affect the count.
+  int get estimatedTokens => _wideCharacters + (_narrowCharacters / 4).ceil();
+
+  void recordText(String text) {
+    for (final rune in text.runes) {
+      if ((rune >= 0x2e80 && rune <= 0xa4cf) ||
+          (rune >= 0xac00 && rune <= 0xd7af) ||
+          (rune >= 0xf900 && rune <= 0xfaff) ||
+          (rune >= 0xfe10 && rune <= 0xffef) ||
+          rune >= 0x1f000) {
+        _wideCharacters++;
+      } else {
+        _narrowCharacters++;
+      }
+    }
+  }
+
+  Duration elapsedAt(DateTime now) {
+    final elapsed = (endedAt ?? now).difference(startedAt);
+    return elapsed.isNegative ? Duration.zero : elapsed;
+  }
+
+  double? tokensPerSecondAt(DateTime now) {
+    final milliseconds = elapsedAt(now).inMilliseconds;
+    return milliseconds <= 0 || estimatedTokens == 0 ? null : estimatedTokens * 1000 / milliseconds;
+  }
+}
+
 /// Reduces `session/update` + `_codeaw/event` messages into a conversation and the
 /// session-level snapshots. The reference implementation is bridge/test/reduce.ts.
 class Timeline extends ChangeNotifier {
@@ -170,6 +219,7 @@ class Timeline extends ChangeNotifier {
   String state = 'idle';
   int queued = 0;
   DateTime? turnStartedAt;
+  TurnSummaryItem? currentTurn;
   TurnActivity _activity = TurnActivity.thinking;
   DateTime? _activityAt;
   final _activeTools = <ToolItem, DateTime>{};
@@ -180,12 +230,19 @@ class Timeline extends ChangeNotifier {
 
   /// The bridge's start time survives replay, permission waits and queued prompts.
   /// Older bridges fall back to the time the running state was first observed.
-  void setTurnState(String value, {num? startedAt, DateTime? observedAt}) {
+  void setTurnState(String value, {num? startedAt, DateTime? observedAt, String? promptId}) {
     state = value;
     if (running) {
       turnStartedAt = startedAt != null
           ? DateTime.fromMillisecondsSinceEpoch(startedAt.toInt(), isUtc: true)
           : turnStartedAt ?? observedAt ?? DateTime.now();
+      if (currentTurn == null || currentTurn!.startedAt != turnStartedAt) {
+        final prompts = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user);
+        final prompt = promptId == null
+            ? prompts.where((m) => !m.steered && (!m.queued || m.dequeued == 'started')).lastOrNull
+            : prompts.where((m) => m.promptId == promptId).lastOrNull;
+        currentTurn = TurnSummaryItem('turn:${promptId ?? prompt?.promptId ?? turnStartedAt!.millisecondsSinceEpoch}', startedAt: turnStartedAt!, prompt: prompt);
+      }
       _activeTools.removeWhere((_, at) => at.isBefore(turnStartedAt!));
       if (_activityAt == null || _activityAt!.isBefore(turnStartedAt!)) {
         _activity = TurnActivity.thinking;
@@ -193,6 +250,7 @@ class Timeline extends ChangeNotifier {
       }
     } else {
       turnStartedAt = null;
+      currentTurn = null;
       _activity = TurnActivity.thinking;
       _activityAt = null;
       _activeTools.clear();
@@ -287,6 +345,15 @@ class Timeline extends ChangeNotifier {
           } else {
             item.parts.add(Map<String, dynamic>.of(content));
           }
+          final turn = currentTurn;
+          if (turn != null) {
+            if (role != MessageRole.user) {
+              if (!turn.messages.contains(item)) turn.messages.add(item);
+              if (content['type'] == 'text') turn.recordText(content['text'] as String? ?? '');
+            } else if (item.steered && !turn.steeredPrompts.contains(item)) {
+              turn.steeredPrompts.add(item);
+            }
+          }
         }
         _touch(item);
       case 'tool_call' || 'tool_call_update':
@@ -330,10 +397,30 @@ class Timeline extends ChangeNotifier {
   void _applyEvent(Map<String, dynamic> e, DateTime at) {
     switch (e['type']) {
       case 'state':
-        setTurnState('${e['state'] ?? 'idle'}', startedAt: e['turnStartedAt'] as num?, observedAt: at);
+        final completed = e['completedTurn'] as Map?;
+        var turn = currentTurn;
+        if (e['state'] == 'idle' && completed != null && turn == null) {
+          final promptId = completed['promptId'] as String?;
+          final prompt = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.promptId == promptId).lastOrNull;
+          turn = TurnSummaryItem(
+            'turn:$promptId',
+            startedAt: DateTime.fromMillisecondsSinceEpoch((completed['startedAt'] as num).toInt(), isUtc: true),
+            prompt: prompt,
+          );
+        }
+        setTurnState('${e['state'] ?? 'idle'}', startedAt: e['turnStartedAt'] as num?, observedAt: at, promptId: e['turnPromptId'] as String?);
         queued = (e['queued'] as num?)?.toInt() ?? 0;
         final stop = e['stopReason'];
         if (state == 'idle' && stop is String && stop != 'end_turn') _add(StopItem('stop:${_anon++}', stop));
+        if (state == 'idle' && turn != null && (stop != null || completed != null)) {
+          turn.endedAt = completed?['endedAt'] is num
+              ? DateTime.fromMillisecondsSinceEpoch((completed!['endedAt'] as num).toInt(), isUtc: true)
+              : at;
+          if (!_byKey.containsKey(turn.key)) {
+            _byKey[turn.key] = turn;
+            _add(turn);
+          }
+        }
         _snapshotChanged = true;
       case 'permission_request':
         final id = '${e['requestId']}';
@@ -405,6 +492,7 @@ class Timeline extends ChangeNotifier {
               NoticeItem n => {'notice': n.title},
               ErrorItem e => {'error': e.message},
               StopItem s => {'stop': s.stopReason},
+              TurnSummaryItem t => {'k': t.key, 'response': t.responseText, 'tokens': t.estimatedTokens},
               _ => {'k': i.key},
             },
         ],

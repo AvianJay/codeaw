@@ -101,7 +101,7 @@ class SessionController extends ChangeNotifier {
         timeline.configOptions = (resp['configOptions'] as List).whereType<Map<String, dynamic>>().toList();
       }
       if (resp['modes'] is Map) timeline.modes = Map<String, dynamic>.from(resp['modes'] as Map);
-      if (m['state'] is String) timeline.setTurnState(m['state'] as String, startedAt: m['turnStartedAt'] as num?);
+      if (m['state'] is String) timeline.setTurnState(m['state'] as String, startedAt: m['turnStartedAt'] as num?, promptId: m['turnPromptId'] as String?);
       timeline.queued = (m['queued'] as num?)?.toInt() ?? timeline.queued;
       attached = true;
     } on RpcError catch (e) {
@@ -186,6 +186,12 @@ class SessionController extends ChangeNotifier {
   }
 
   void cancel() => client.notify('session/cancel', {'sessionId': sessionId});
+
+  void reusePrompt(MessageItem prompt) {
+    draft = draft.trim().isEmpty ? prompt.text : '$draft\n\n${prompt.text}';
+    _notify();
+    _toast('已填入原提示，可編輯後傳送');
+  }
 
   Future<void> setConfig(ConfigOption option, Object value) async {
     try {

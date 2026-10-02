@@ -18,7 +18,7 @@ type Slot =
  *   placed where the message first appeared
  * - a tool call and all its updates become one `tool_call` at its first position
  * - snapshot updates keep only their last occurrence; `session_info_update`s merge into one
- * - `state` events keep the last one plus idle states with an unusual stop reason
+ * - `state` events keep turn boundaries and the last state, so clients retain turn footers
  * Output entries keep the highest `seq` they absorbed, so seqs are not monotonic.
  */
 export function compactLog(entries: LogEntry[]): LogEntry[] {
@@ -33,12 +33,18 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
   const messages = new Map<string, Extract<Slot, { kind: "message" }>>();
   const tools = new Map<string, Extract<Slot, { kind: "tool" }>>();
   let info: Extract<Slot, { kind: "info" }> | undefined;
+  let inTurn = false;
+  let turnStartedAt: number | undefined;
 
   entries.forEach((e, i) => {
     if (e.kind === "event") {
       if (e.event.type === "state") {
-        const unusual = e.event.state === "idle" && e.event.stopReason && e.event.stopReason !== "end_turn";
-        if (i !== lastState && !unusual) return;
+        const active = e.event.state !== "idle";
+        const start = active && (!inTurn || (e.event.turnStartedAt !== undefined && e.event.turnStartedAt !== turnStartedAt));
+        const end = !active && (e.event.stopReason || e.event.completedTurn);
+        inTurn = active;
+        if (active) turnStartedAt = e.event.turnStartedAt;
+        if (i !== lastState && !start && !end) return;
       }
       slots.push({ kind: "entry", entry: e });
       return;

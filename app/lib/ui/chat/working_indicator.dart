@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../data/timeline.dart';
+import 'turn_summary.dart';
 
 /// A turn's actual activity and elapsed wall time; only this widget ticks.
 class WorkingIndicator extends StatefulWidget {
@@ -94,8 +95,9 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                             label,
                             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: color),
                           ),
+                          TurnSpeed(turn: timeline.currentTurn, now: widget.now()),
                           Text(
-                            '已處理 ${_formatElapsed(elapsed)}',
+                            '已處理 ${formatTurnElapsed(elapsed)}',
                             style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()]),
                           ),
                         ],
@@ -125,11 +127,4 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
       },
     );
   }
-}
-
-String _formatElapsed(Duration elapsed) {
-  final seconds = elapsed.isNegative ? 0 : elapsed.inSeconds;
-  if (seconds < 60) return '$seconds 秒';
-  if (seconds < 3600) return '${seconds ~/ 60} 分 ${seconds % 60} 秒';
-  return '${seconds ~/ 3600} 小時 ${(seconds % 3600) ~/ 60} 分 ${seconds % 60} 秒';
 }

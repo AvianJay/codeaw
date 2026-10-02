@@ -76,6 +76,7 @@ export function reduce(messages: { method: string; params: any }[]): Timeline {
         case "state":
           t.state = e.state;
           if (e.state === "idle" && e.stopReason && e.stopReason !== "end_turn") t.items.push({ kind: "stop", stopReason: e.stopReason });
+          if (e.state === "idle" && e.completedTurn) t.items.push({ kind: "turn", ...e.completedTurn });
           break;
         case "permission_request":
           upsert(`perm:${e.requestId}`, () => ({ kind: "permission", requestId: e.requestId })).request = e;

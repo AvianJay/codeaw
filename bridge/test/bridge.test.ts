@@ -78,6 +78,10 @@ describe("sessions", () => {
     expect(states).toEqual(["running", "idle"]);
     expect(c.events(s.sessionId, "state")[0].event.turnStartedAt).toBeTypeOf("number");
     expect(c.events(s.sessionId, "state")[1].event.turnStartedAt).toBeUndefined();
+    const completed = c.events(s.sessionId, "state")[1].event.completedTurn;
+    expect(completed.promptId).toBe(user.update._meta.codeaw.promptId);
+    expect(completed.startedAt).toBe(c.events(s.sessionId, "state")[0].event.turnStartedAt);
+    expect(completed.endedAt).toBeGreaterThanOrEqual(completed.startedAt);
   });
 
   it("preserves turn start time while waiting, queueing and replaying to another device", async () => {
@@ -113,6 +117,17 @@ describe("sessions", () => {
     await a.waitFor(() => a.events(s.sessionId, "state").filter((e) => e.event.state === "idle").length === 2);
     const next = a.events(s.sessionId, "state").filter((e) => e.event.state === "running").at(-1);
     expect(next.event.turnStartedAt).toBeGreaterThan(startedAt);
+    const completed = a.events(s.sessionId, "state").filter((e) => e.event.completedTurn).map((e) => e.event.completedTurn);
+    expect(completed).toHaveLength(2);
+    expect(completed[0].promptId).not.toBe(completed[1].promptId);
+    const replayAt = b.received.length;
+    await b.request("session/load", { sessionId: s.sessionId, cwd: tb.home, mcpServers: [] });
+    const replayed = b.received.slice(replayAt);
+    const replayStart = replayed.findIndex((m) => m.method === "_codeaw/replay" && m.params.mode === "full");
+    expect(replayStart).toBeGreaterThanOrEqual(0);
+    const replayStates = replayed.slice(replayStart + 1).filter((m) => m.method === "_codeaw/event" && m.params.event.type === "state");
+    expect(replayStates.filter((m) => m.params.event.completedTurn).map((m) => m.params.event.completedTurn)).toEqual(completed);
+    expect(replayStates.filter((m) => m.params.event.state === "running")).toHaveLength(2);
   });
 
   it("first permission answer wins and is withdrawn from the other device", async () => {

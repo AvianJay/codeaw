@@ -105,7 +105,7 @@ Params: standard plus optional `_meta.codeaw.afterSeq` and `_meta.codeaw.epoch`.
 2. Replayed entries are sent as `session/update` / `_codeaw/event`
    notifications carrying their `seq` (see below).
 3. The response is sent after the replay:
-   `{ modes?, configOptions?, _meta: { codeaw: { agentId, lastSeq, epoch, state, queued, turnStartedAt? } } }`.
+   `{ modes?, configOptions?, _meta: { codeaw: { agentId, lastSeq, epoch, state, queued, turnStartedAt?, turnPromptId? } } }`.
    `turnStartedAt` is the running turn's Unix start time in milliseconds, unchanged
    while waiting for permission, steering or queueing another prompt.
 4. Pending permission / elicitation requests are then (re)sent to this client.
@@ -168,7 +168,7 @@ Every session has an append-only log. Each entry has a per-session `seq`
 
 | event `type` | fields | meaning |
 |---|---|---|
-| `state` | `state`, `stopReason?`, `queued`, `turnStartedAt?` | `running` / `requires_action` / `idle`; turn start time is omitted when no turn is running |
+| `state` | `state`, `stopReason?`, `queued`, `turnStartedAt?`, `turnPromptId?`, `completedTurn?` | `running` / `requires_action` / `idle`; active turn fields are omitted when idle; `completedTurn` carries `{ promptId, startedAt, endedAt }` in Unix milliseconds |
 | `permission_request` | `requestId`, `toolCall`, `options` | an agent asked for permission |
 | `permission_resolved` | `requestId`, `outcome`, `optionName?`, `by?` | answered (by device name) or cancelled |
 | `elicitation_request` | `requestId`, `request` | an agent asked for structured input |
@@ -180,6 +180,13 @@ User prompts are logged as `user_message_chunk` updates with
 `_meta.codeaw = { mid, promptId, queued?, steered? }` so every device sees them.
 
 Notification `_meta.codeaw.t` is the log entry's Unix time in milliseconds.
+
+Full replay retains each turn's first active state and completed idle state so clients
+can reconstruct per-turn output, elapsed time and action footers. The app labels TPS
+with `≈`: it estimates tokens from streamed thought/response text (one per CJK or
+full-width character, roughly one per four other characters) and divides by total
+turn duration, including tool execution and permission waits. Context usage is not
+an output token count. Before any text arrives, the speed is shown as `— TPS`.
 Replays preserve it, allowing clients to distinguish current activity from old turns.
 
 Image data in logged user messages is replaced by

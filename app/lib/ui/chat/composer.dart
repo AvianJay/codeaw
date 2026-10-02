@@ -65,6 +65,8 @@ class _ComposerState extends State<Composer> {
       _readingImages = 0;
       _images.clear();
       _text.text = c.draft;
+    } else if (_text.text != c.draft) {
+      _text.value = TextEditingValue(text: c.draft, selection: TextSelection.collapsed(offset: c.draft.length));
     }
   }
 

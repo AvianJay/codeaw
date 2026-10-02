@@ -1791,6 +1791,22 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 5
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -1815,6 +1831,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 9
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -1834,6 +1867,22 @@
     "_meta": {
      "codeaw": {
       "seq": 10
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 11
      }
     }
    }
@@ -1904,6 +1953,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 17
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -1923,6 +1989,22 @@
     "_meta": {
      "codeaw": {
       "seq": 18
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 19
      }
     }
    }
@@ -1967,6 +2049,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 22
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -1986,6 +2085,22 @@
     "_meta": {
      "codeaw": {
       "seq": 23
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 24
      }
     }
    }
@@ -2085,6 +2200,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 32
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -2104,6 +2236,22 @@
     "_meta": {
      "codeaw": {
       "seq": 33
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 34
      }
     }
    }
@@ -2189,6 +2337,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 40
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -2208,6 +2373,22 @@
     "_meta": {
      "codeaw": {
       "seq": 41
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 42
      }
     }
    }
@@ -2253,6 +2434,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 45
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -2272,6 +2470,22 @@
     "_meta": {
      "codeaw": {
       "seq": 46
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 47
      }
     }
    }
@@ -2301,6 +2515,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 54
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -2320,6 +2551,22 @@
     "_meta": {
      "codeaw": {
       "seq": 55
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 56
      }
     }
    }
@@ -2378,12 +2625,45 @@
    "params": {
     "sessionId": "fake:s72c61a65",
     "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 1
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 69
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
      "type": "dequeued",
      "promptId": "p_4d6d2d1111c7"
     },
     "_meta": {
      "codeaw": {
       "seq": 70
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 71
      }
     }
    }
@@ -2413,6 +2693,23 @@
    }
   },
   {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 75
+     }
+    }
+   }
+  },
+  {
    "method": "session/update",
    "params": {
     "sessionId": "fake:s72c61a65",
@@ -2432,6 +2729,22 @@
     "_meta": {
      "codeaw": {
       "seq": 76
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 77
      }
     }
    }

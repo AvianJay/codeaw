@@ -13,6 +13,7 @@ import {
   isChunk,
   withCodeawMeta,
   type CodeawEvent,
+  type CompletedTurn,
   type LogEntry,
   type SessionMeta,
   type TurnState,
@@ -415,14 +416,15 @@ export class SessionManager implements AgentHandlers {
     else void c.notify("_codeaw/event", { sessionId: s.id, event: entry.event, _meta });
   }
 
-  private emitState(s: BridgeSession, stopReason?: string): void {
+  private emitState(s: BridgeSession, stopReason?: string, completedTurn?: CompletedTurn): void {
     const state = s.state;
     const queued = s.queue.length;
     if (!stopReason && s.emitted && s.emitted.state === state && s.emitted.queued === queued) return;
     s.emitted = { state, queued };
     this.appendEvent(s, {
       type: "state", state, queued,
-      ...(s.turn ? { turnStartedAt: s.turn.startedAt } : {}),
+      ...(s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
+      ...(completedTurn ? { completedTurn } : {}),
       ...(stopReason && state === "idle" ? { stopReason } : {}),
     });
     this.activity(s);
@@ -532,7 +534,7 @@ export class SessionManager implements AgentHandlers {
           epoch: s.meta.epoch,
           state: s.state,
           queued: s.queue.length,
-          ...(s.turn ? { turnStartedAt: s.turn.startedAt } : {}),
+          ...(s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
           title: s.meta.title,
           cwd: s.meta.cwd,
         },
@@ -860,15 +862,16 @@ export class SessionManager implements AgentHandlers {
       } catch (err) {
         error = err;
       }
+      const completedTurn = s.turn && { promptId: s.turn.promptId, startedAt: s.turn.startedAt, endedAt: Date.now() };
       s.turn = undefined;
       if (result) {
-        this.emitState(s, result.stopReason);
+        this.emitState(s, result.stopReason, completedTurn);
         this.push(s, "turn_end", undefined, () => !s.turn);
         resolveDone(result);
       } else {
         const e = toRequestError(error);
         this.appendEvent(s, { type: "error", message: errorMessage(error), code: e.code });
-        this.emitState(s, "error");
+        this.emitState(s, "error", completedTurn);
         this.push(s, "error", errorMessage(error), () => true);
         rejectDone(e);
       }

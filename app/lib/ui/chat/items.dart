@@ -14,6 +14,7 @@ import '../common/code_view.dart';
 import '../common/diff_view.dart';
 import '../common/markdown.dart';
 import 'elicitation_sheet.dart';
+import 'turn_summary.dart';
 
 /// Builds the widget for one timeline item; rebuilt only when that item changes.
 class TimelineItemView extends StatelessWidget {
@@ -39,6 +40,10 @@ class TimelineItemView extends StatelessWidget {
         NoticeItem n => _Note(icon: Icons.info_outline_rounded, text: n.description == null ? n.title : '${n.title}\n${n.description}'),
         ErrorItem e => _Note(icon: Icons.error_outline_rounded, text: e.message, error: true),
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
+        TurnSummaryItem t => TurnSummaryView(
+            turn: t,
+            onReusePrompt: controller.running || t.prompt?.text.isNotEmpty != true ? null : () => controller.reusePrompt(t.prompt!),
+          ),
         _ => const SizedBox.shrink(),
       },
     );

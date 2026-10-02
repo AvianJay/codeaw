@@ -218,6 +218,40 @@ void main() {
     h.client.dispose();
   });
 
+  testWidgets('completed turn metrics and actions', (tester) async {
+    final h = _Harness();
+    final c = h.state.hub!.adopt('codex:turn-summary', r'D:\proj\codeaw', {});
+    final start = DateTime.utc(2026, 10, 3, 12);
+    void event(Map<String, dynamic> e, int seconds) => c.timeline.apply('_codeaw/event', {
+      'event': e,
+      '_meta': {'codeaw': {'t': start.add(Duration(seconds: seconds)).millisecondsSinceEpoch}},
+    });
+    void message(String mid, String text, {bool user = false, String? promptId}) => c.timeline.apply('session/update', {
+      'update': {
+        'sessionUpdate': user ? 'user_message_chunk' : 'agent_message_chunk',
+        'content': {'type': 'text', 'text': text},
+        '_meta': {'codeaw': {'mid': mid, 'promptId': ?promptId}},
+      },
+    });
+    for (var i = 0; i < 2; i++) {
+      final promptId = 'p$i';
+      final seconds = i * 100;
+      message('u-$promptId', i == 0 ? '思考中右邊放 TPS，每回合結束也顯示耗時和複製按鈕。' : '重新開啟對話後還會保留嗎？', user: true, promptId: promptId);
+      event({'type': 'state', 'state': 'running', 'turnStartedAt': start.add(Duration(seconds: seconds)).millisecondsSinceEpoch, 'turnPromptId': promptId}, seconds);
+      message('m$i', i == 0 ? '已加入回合統計與操作列。\n\n- 狀態右側顯示估算 **TPS**\n- 回合底部保留 **耗時**\n- 可複製完整回覆、重新使用提示' : '會，回合統計會隨歷史一起載入，複製也包含該回合的完整回覆。');
+      event({'type': 'state', 'state': 'idle', 'stopReason': 'end_turn'}, seconds + (i == 0 ? 83 : 8));
+    }
+    c.timeline.title = '回合統計與操作';
+    c.timeline.flush();
+    await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'turn_summary');
+    expect(find.byTooltip('複製回覆'), findsNWidgets(2));
+    await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'turn_summary_dark');
+    await tester.pumpWidget(const SizedBox());
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
+  });
+
   testWidgets('pair page', (tester) async {
     final h = _Harness()..state.host = null;
     await _shoot(tester, h.wrap(const PairPage()), 'pair');
