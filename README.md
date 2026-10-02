@@ -78,7 +78,7 @@ powershell -ExecutionPolicy Bypass -File bridge\scripts\autostart.ps1 -Remove  #
 ## 2. 手機端（App）
 
 1. 安裝 Tailscale App，並登入同一個 tailnet。
-2. 安裝 codeaw App：`dist/codeaw-arm64.apk`（或用 `cd app && flutter build apk --release --split-per-abi` 自己建置）。
+2. 安裝 codeaw App：[nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 的 `codeaw-arm64-v8a.apk` 或 `codeaw-universal.apk`（或用 `cd app && flutter build apk --release --split-per-abi` 自己建置）。
 3. 在電腦上執行 `codeaw-bridge pair`，用 App 的「掃描 QR code」掃終端機上的 QR。也可以手動輸入網址與配對碼；配對碼 5 分鐘內有效，只能用一次。
 
 使用小提示：
@@ -97,6 +97,16 @@ powershell -ExecutionPolicy Bypass -File bridge\scripts\autostart.ps1 -Remove  #
 App 在背景但仍保持連線時，則由 App 自己跳本機通知。
 
 ## 開發
+
+### Nightly 建置
+
+GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` push、每日台灣時間 02:00，或手動執行時建置。所有建置成功後，首次建立 `nightly` prerelease，之後只移動同一個 tag 並更新同一個 release、附件及 `SHA256SUMS`。
+
+在 repository 的 Actions secrets 設定 `KEYSTORE_BASE64`（keystore 的 Base64）、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`。密碼同時用於 keystore 與 key；CI 缺少任何一項會失敗。Android 會產出已簽章的 universal APK、三個 ABI APK 與 AAB，版本編號使用 workflow run number。
+
+Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件為 ZIP，其餘為 tar.gz。
+
+本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
 
 ```powershell
 cd bridge

@@ -1,0 +1,214 @@
+name: Build nightly
+
+on:
+  push:
+    branches: [master]
+  schedule:
+    # Every day at 02:00 Asia/Taipei.
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: false
+
+jobs:
+  android:
+    name: Signed Android releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.6'
+          cache: true
+      - name: Configure Gradle limits
+        run: |
+          printf '\n%s\n' \
+            'org.gradle.jvmargs=-Xmx4G -XX:MaxMetaspaceSize=1G -XX:ReservedCodeCacheSize=256m' \
+            'org.gradle.workers.max=2' \
+            'kotlin.daemon.jvmargs=-Xmx1G' >> android/gradle.properties
+      - run: flutter pub get
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PATH: ${{ runner.temp }}/codeaw-release.jks
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" ]]; then
+            echo '::error::Missing KEYSTORE_BASE64 secret.'
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n' | base64 --decode > "$KEYSTORE_PATH"
+          test -s "$KEYSTORE_PATH"
+      - name: Build signed APKs and app bundle
+        env:
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_PATH: ${{ runner.temp }}/codeaw-release.jks
+        run: |
+          set -euo pipefail
+          for secret in KEYSTORE_ALIAS KEYSTORE_PASSWORD; do
+            if [[ -z "${!secret}" ]]; then
+              echo "::error::Missing $secret secret."
+              exit 1
+            fi
+          done
+          mkdir -p ../dist
+          flutter build apk --release --build-number="$GITHUB_RUN_NUMBER"
+          cp build/app/outputs/flutter-apk/app-release.apk ../dist/codeaw-universal.apk
+          flutter build apk --release --split-per-abi --build-number="$GITHUB_RUN_NUMBER"
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            cp "build/app/outputs/flutter-apk/app-${abi}-release.apk" "../dist/codeaw-${abi}.apk"
+          done
+          flutter build appbundle --release --build-number="$GITHUB_RUN_NUMBER"
+          cp build/app/outputs/bundle/release/app-release.aab ../dist/codeaw.aab
+      - name: Remove signing keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/codeaw-release.jks"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-android
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  bridge:
+    name: Bridge (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            target: bun-linux-x64
+          - platform: linux-arm64
+            target: bun-linux-arm64
+          - platform: linux-x64-musl
+            target: bun-linux-x64-musl
+          - platform: linux-arm64-musl
+            target: bun-linux-arm64-musl
+          - platform: windows-x64
+            target: bun-windows-x64
+          - platform: windows-arm64
+            target: bun-windows-arm64
+          - platform: macos-x64
+            target: bun-darwin-x64
+          - platform: macos-arm64
+            target: bun-darwin-arm64
+    defaults:
+      run:
+        working-directory: bridge
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: bridge/package-lock.json
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.2'
+      - run: npm ci
+      - name: Build every package bin
+        run: npm run build:bin -- --target=${{ matrix.target }}
+      - name: Smoke test native executable
+        if: matrix.platform == 'linux-x64'
+        run: ./dist/bin/codeaw-bridge --help
+      - name: Package executables
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p ../dist
+          cp ../LICENSE dist/bin/LICENSE
+          if [[ "$PLATFORM" == windows-* ]]; then
+            zip -j "../dist/codeaw-bridge-${PLATFORM}.zip" dist/bin/*
+          else
+            tar -czf "../dist/codeaw-bridge-${PLATFORM}.tar.gz" -C dist/bin .
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-bridge-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Update nightly release
+    needs: [android, bridge]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: nightly-*
+          path: dist
+          merge-multiple: true
+      - name: Generate checksums and release notes
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat > "$RUNNER_TEMP/nightly-notes.md" <<EOF
+          Automated nightly build from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
+
+          This release is updated in place after each successful build.
+
+          - Android: signed universal APK, per-ABI APKs, and AAB.
+          - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
+          - Bridge still requires Tailscale and the chosen ACP agents to be installed separately.
+          - Verify downloads with SHA256SUMS.
+
+          [Workflow run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
+          EOF
+      - name: Create or move nightly tag
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GH_REPO/git/ref/tags/nightly" > /dev/null 2>&1; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/nightly" \
+              -f sha="$GITHUB_SHA" -F force=true > /dev/null
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" \
+              -f ref=refs/tags/nightly -f sha="$GITHUB_SHA" > /dev/null
+          fi
+      - name: Create or update the same release
+        run: |
+          set -euo pipefail
+          if gh release view nightly > /dev/null 2>&1; then
+            gh release edit nightly --target "$GITHUB_SHA" --title Nightly --notes-file "$RUNNER_TEMP/nightly-notes.md" \
+              --draft=false --prerelease --latest=false
+          else
+            gh release create nightly --verify-tag --target "$GITHUB_SHA" --title Nightly \
+              --notes-file "$RUNNER_TEMP/nightly-notes.md" --prerelease --latest=false
+          fi
+          gh release upload nightly dist/* --clobber
+          gh release view nightly --json assets --jq '.assets[].name' > "$RUNNER_TEMP/nightly-assets.txt"
+          while IFS= read -r asset; do
+            if [[ ! -f "dist/$asset" ]]; then
+              gh release delete-asset nightly "$asset" --yes
+            fi
+          done < "$RUNNER_TEMP/nightly-assets.txt"
