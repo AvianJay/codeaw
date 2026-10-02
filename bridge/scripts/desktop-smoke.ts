@@ -21,6 +21,11 @@ const file = path.join(home, "config.yaml");
 fs.writeFileSync(file, YAML.stringify({ listen: { hosts: ["127.0.0.1"], port: 0 }, workspaces: ["D:\\projects"],
   agents: { claude: { name: "Claude Code", command: "unused" }, codex: { name: "Codex", command: "unused", enabled: false } } }));
 const runtime = new BridgeRuntime(loadConfig(file));
+// Deterministic installer UI fixtures; this smoke never downloads or installs an agent.
+runtime.installer.list = async () => [
+  { id: "codex-acp", name: "Codex", version: "1.0.0", description: "ACP adapter for Codex", configured: true, kind: "npx", supported: true, target: "windows-x86_64" },
+  { id: "test-unsupported", name: "Unsupported fixture", version: "1.0.0", description: "No Windows distribution", configured: false, kind: undefined, supported: false, target: "windows-x86_64" },
+];
 
 async function run(command: string, args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -82,8 +87,15 @@ try {
                     Show-Pair
                 }
                 1 { if (-not $script:qr.Image -or $script:pairCode.Text.Length -ne 9) { throw 'Pair window did not load' }; Capture-Window 'pair'; Show-Settings }
-                2 { if ($script:agents.Items.Count -ne 2 -or $script:folders.Text -ne 'D:\projects') { throw 'Settings window did not load' }; Capture-Window 'settings'; Show-Devices }
-                3 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; [System.Windows.Forms.Application]::Exit() }
+                2 { if ($script:agents.Items.Count -ne 2 -or $script:folders.Text -ne 'D:\projects') { throw 'Settings window did not load' }; Capture-Window 'settings'; Show-AgentInstaller }
+                3 {
+                    if ($script:catalogList.Items.Count -ne 2 -or -not $script:installButton.Enabled) { throw 'Agent installer did not load' }
+                    Capture-Window 'agents'
+                    $script:catalogList.SelectedIndex = 1
+                    if ($script:installButton.Enabled) { throw 'Unsupported agent can be installed' }
+                    Show-Devices
+                }
+                4 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; [System.Windows.Forms.Application]::Exit() }
             }
             $script:step++
         } catch { [Console]::Error.WriteLine($_); $script:smokeFailed = $true; [System.Windows.Forms.Application]::Exit() }
@@ -112,11 +124,12 @@ try {
   await run("powershell.exe", ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptFile,
     "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output,
     "-IconPath", fileURLToPath(new URL("../src/assets/codeaw.ico", import.meta.url))]);
-  for (const name of ["tray-menu", "pair", "settings", "devices"]) {
+  for (const name of ["tray-menu", "pair", "settings", "agents", "devices"]) {
     if (!fs.existsSync(path.join(output, `${name}.png`))) throw new Error(`Missing ${name} screenshot`);
   }
   process.stdout.write(`Desktop windows rendered; service host compiled. Screenshots: ${output}\n`);
 } finally {
   await runtime.stop();
+  if (!path.resolve(home).startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(home).startsWith("codeaw-ui-smoke-")) throw new Error("Unsafe desktop smoke cleanup path");
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

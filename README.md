@@ -64,6 +64,23 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
+### ACP agent 安裝器
+
+Windows 可從系統匣的「安裝 ACP agents…」或設定視窗的「安裝 ACP agent…」開啟安裝器，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
+
+所有平台都可使用 CLI：
+
+```powershell
+codeaw-bridge agents list
+codeaw-bridge agents install claude-acp
+codeaw-bridge agents install codex-acp
+codeaw-bridge agents install kimi
+codeaw-bridge agents install antigravity-acp
+codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；會中止執行中的回合
+```
+
+agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式。
+
 ### DeepSeek Harness
 
 bridge 會在建立設定時偵測 PATH 上的 `dsh`，以 [`dsh --profile acp`](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/README.md) 啟動 DeepSeek Harness。沿用 Harness 本機設定與認證；使用 API key 時，讓 bridge 啟動環境提供 `DEEPSEEK_API_KEY`。
@@ -108,7 +125,7 @@ Windows 執行 `codeaw-bridge tray`（或不帶指令）後可以關掉終端機
 
 - **開啟 App**：以 Edge 獨立 App 視窗開啟本機 Web App，自動使用一次性配對碼並進入會話列表，無須掃碼或手動輸入。重複開啟會沿用有效的配對；已撤銷時自動重新配對。未安裝 Edge 時使用預設瀏覽器；原始碼開發需先在 `bridge` 執行 `npm run build:web`。啟動後會移除網址中的配對參數。
 - **配對手機**：QR code、可複製的網址與配對碼、五分鐘倒數、重新產生配對碼及配對成功提示。也能執行 `codeaw-bridge pair --window`。
-- **設定**：連接埠、工作目錄、agent 開關與閒置時間。保留 YAML 註解及進階欄位；儲存後重啟，若新連接埠無法使用則回復原設定。也能執行 `codeaw-bridge settings`。
+- **設定**：連接埠、工作目錄、agent 開關、ACP agent 安裝與閒置時間。保留 YAML 註解及進階欄位；儲存後重啟，若新連接埠無法使用則回復原設定。也能執行 `codeaw-bridge settings`。
 - **已配對裝置**、**開啟日誌**、**登入後自動啟動系統匣**、**重新啟動 bridge**。
 - **關閉系統匣**：bridge 繼續運行；**停止 bridge 並退出**：停止 bridge 與 agent。
 

@@ -177,6 +177,7 @@ function Show-Settings {
     $script:agents.CheckOnClick = $true
     foreach ($agent in $script:settings.agents) { $script:agents.Items.Add($agent.name + ' (' + $agent.id + ')', [bool]$agent.enabled) | Out-Null }
     $form.Controls.Add($script:agents)
+    Add-Button $form '安裝 ACP agent…' 24 552 160 { Show-AgentInstaller } | Out-Null
     Add-Label $form '儲存會重新啟動 bridge，正在執行的回合將中止。' 24 514 460 28 | Out-Null
     Add-Button $form '取消' 194 552 100 { $script:window.Close() } | Out-Null
     Add-Button $form '儲存並重新啟動' 304 552 180 {
@@ -191,6 +192,67 @@ function Show-Settings {
     } | Out-Null
     $form.Show()
     $form.Activate()
+}
+
+function Update-AgentSelection {
+    $agent = $script:catalogList.SelectedItem
+    if (-not $agent) { $script:installButton.Enabled = $false; return }
+    $availability = if ($agent.supported) {
+        switch ($agent.kind) { 'npx' { '需要 Node.js 與 npm' }; 'uvx' { '需要 uv' }; 'binary' { '直接下載執行檔' } }
+    } else { '不支援這台電腦：' + $agent.target }
+    $configured = if ($agent.configured) { ' · 已加入設定' } else { '' }
+    $script:agentDescription.Text = $agent.name + ' · ' + $agent.version + $configured + [Environment]::NewLine + $availability + [Environment]::NewLine + $agent.description
+    $script:installButton.Text = if ($agent.configured) { '重新安裝 / 更新' } else { '安裝' }
+    $script:installButton.Enabled = $agent.supported -and -not $script:installBusy
+}
+
+function Refresh-AgentCatalog([bool]$Refresh = $false) {
+    $selectedId = if ($script:catalogList.SelectedItem) { $script:catalogList.SelectedItem.id } else { $null }
+    $script:catalogList.Items.Clear()
+    foreach ($agent in @(Invoke-Control 'agentCatalog' @{ refresh = $Refresh })) { $script:catalogList.Items.Add($agent) | Out-Null }
+    if ($script:catalogList.Items.Count) { $script:catalogList.SelectedIndex = 0 }
+    for ($i = 0; $i -lt $script:catalogList.Items.Count; $i++) {
+        if ($script:catalogList.Items[$i].id -eq $selectedId) { $script:catalogList.SelectedIndex = $i; break }
+    }
+}
+
+function Show-AgentInstaller {
+    $form = New-Window '安裝 ACP agents' 640 564
+    (Add-Label $form '安裝 ACP agents' 24 18 592 30).Font = [System.Drawing.Font]::new('Microsoft JhengHei UI', 16, [System.Drawing.FontStyle]::Bold)
+    Add-Label $form '從 ACP registry 選擇 agent，安裝後重新啟動 bridge 即可使用。' 24 58 592 28 | Out-Null
+    $script:catalogList = [System.Windows.Forms.ListBox]::new()
+    $script:catalogList.Location = [System.Drawing.Point]::new(24, 94)
+    $script:catalogList.Size = [System.Drawing.Size]::new(592, 220)
+    $script:catalogList.DisplayMember = 'name'
+    $script:catalogList.Add_SelectedIndexChanged({ Update-AgentSelection })
+    $form.Controls.Add($script:catalogList)
+    $script:agentDescription = Add-Label $form '' 24 328 592 104
+    $script:installMessage = Add-Label $form '正在載入 ACP registry…' 24 444 592 44
+    $script:installBusy = $false
+    $script:lastInstallState = 'idle'
+    $script:installButton = Add-Button $form '安裝' 466 506 150 {
+        $agent = $script:catalogList.SelectedItem
+        if (-not $agent) { return }
+        try {
+            $result = Invoke-Control 'installAgent' @{ id = $agent.id }
+            $script:installBusy = $result.state -eq 'installing'
+            $script:installMessage.Text = $result.message
+            Update-AgentSelection
+        } catch { $script:installMessage.Text = [string]$_ }
+    }
+    $script:installButton.Enabled = $false
+    Add-Button $form '重新整理' 24 506 120 {
+        try { Refresh-AgentCatalog $true; $script:installMessage.Text = '' } catch { $script:installMessage.Text = [string]$_ }
+    } | Out-Null
+    Add-Button $form '返回設定' 158 506 120 { Show-Settings } | Out-Null
+    $script:installRestart = Add-Button $form '重新啟動 bridge' 292 506 160 {
+        if ([System.Windows.Forms.MessageBox]::Show('重新啟動 bridge 以套用 agent？正在執行的回合將中止。', '套用 agent', 'OKCancel', 'Question') -ne 'OK') { return }
+        try { Invoke-Control 'restart' | Out-Null; Show-Settings } catch { Show-Error $_ }
+    }
+    $script:installRestart.Enabled = $false
+    $form.Show()
+    $form.Activate()
+    try { Refresh-AgentCatalog; $script:installMessage.Text = '' } catch { $script:installMessage.Text = [string]$_ }
 }
 
 function Refresh-Devices {
@@ -240,6 +302,7 @@ $menu.Items.Add('開啟 App').Add_Click({ Show-App })
 $menu.Items.Add('配對手機…').Add_Click({ Show-Pair })
 $menu.Items.Add('設定…').Add_Click({ Show-Settings })
 $menu.Items.Add('已配對裝置…').Add_Click({ Show-Devices })
+$menu.Items.Add('安裝 ACP agents…').Add_Click({ Show-AgentInstaller })
 $script:startupItem = $menu.Items.Add('登入後自動啟動系統匣')
 $script:startupItem.Add_Click({
     try {
@@ -281,7 +344,16 @@ $script:timer.Add_Tick({
         $script:failures = 0
         $script:statusItem.Text = 'Bridge ' + $status.state + ' · ' + $status.clients + ' 台連線 · :' + $status.port
         $script:tray.Text = 'codeaw bridge · ' + $status.state + ' · ' + $status.clients + ' connected'
-        switch ($status.page) { 'pair' { Show-Pair }; 'settings' { Show-Settings }; 'devices' { Show-Devices } }
+        switch ($status.page) { 'pair' { Show-Pair }; 'settings' { Show-Settings }; 'devices' { Show-Devices }; 'agents' { Show-AgentInstaller } }
+        if ($script:page -eq '安裝 ACP agents' -and $script:window -and -not $script:window.IsDisposed) {
+            $install = Invoke-Control 'installerStatus'
+            $script:installBusy = $install.state -eq 'installing'
+            if ($install.state -eq 'succeeded' -and $script:lastInstallState -ne 'succeeded') { Refresh-AgentCatalog }
+            $script:lastInstallState = $install.state
+            if ($install.state -ne 'idle') { $script:installMessage.Text = $install.message }
+            $script:installRestart.Enabled = $install.state -eq 'succeeded'
+            Update-AgentSelection
+        }
         if ($script:page -eq '配對手機' -and $script:window -and -not $script:window.IsDisposed -and $script:pair) {
             if ($script:pair.port -ne $status.port -and $status.state -eq 'running') { Refresh-Pair }
             $remaining = [Math]::Ceiling(($script:pair.expiresAt - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) / 1000)

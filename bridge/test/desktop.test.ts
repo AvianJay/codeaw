@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 import { loadConfig } from "../src/config.js";
 import { BridgeRuntime } from "../src/desktop/runtime.js";
@@ -15,6 +15,7 @@ import { loginCommand } from "../src/desktop/autostart.js";
 import { setLogSilent } from "../src/util/log.js";
 import { startBridge, type BridgeOptions } from "../src/bridge.js";
 import { createAppLaunch } from "../src/desktop/pairing.js";
+import { ACP_REGISTRY_URL, platformTarget } from "../src/agents/registry.js";
 
 setLogSilent(true);
 const homes: string[] = [];
@@ -50,9 +51,41 @@ afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.stop();
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
   for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  vi.restoreAllMocks();
 });
 
 describe("desktop runtime", () => {
+  it("installs through local IPC, keeps the bridge running until restart and loads the new agent", async () => {
+    const runtime = await start();
+    const file = runtime.loaded.file;
+    const fetchOriginal = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, options) => {
+      if (input === ACP_REGISTRY_URL) return new Response(JSON.stringify({ agents: [{
+        id: "test-agent", name: "Installed fixture", version: "1.0.0", distribution: { binary: {
+          [platformTarget()]: { archive: "https://example.com/fixture.exe", cmd: "./agent.exe", args: ["acp"] },
+        } },
+      }] }));
+      if (input === "https://example.com/fixture.exe") return new Response("synthetic executable fixture");
+      return fetchOriginal(input, options);
+    });
+    const firstBridge = runtime.bridge;
+    expect((await requestControl(file, { command: "agentCatalog" }))[0]).toMatchObject({ supported: true, configured: false });
+    await expect(requestControl(file, { command: "installAgent", id: "unknown" })).rejects.toThrow(/Unknown ACP registry agent/);
+    await requestControl(file, { command: "installAgent", id: "test-agent" });
+    expect((await runtime.installer.wait()).state).toBe("succeeded");
+    expect((await requestControl(file, { command: "installerStatus" })).state).toBe("succeeded");
+    expect(runtime.bridge).toBe(firstBridge);
+    expect(runtime.bridge!.registry.has("test-agent")).toBe(false);
+    const installed = loadConfig(file).config.agents["test-agent"];
+    expect(installed.args).toEqual(["acp"]);
+    expect(fs.readFileSync(installed.command, "utf8")).toBe("synthetic executable fixture");
+    expect((await requestControl(file, { command: "agentCatalog" }))[0].configured).toBe(true);
+    expect((await fetch(`http://127.0.0.1:${runtime.bridge!.port()}/api/installAgent`)).status).toBe(401);
+    await requestControl(file, { command: "restart" });
+    expect(runtime.bridge!.registry.has("test-agent")).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toContain("# keep my comments");
+  });
+
   it("opens the live local web app with a one-time code and keeps launching off HTTP", async () => {
     const file = configFile();
     const webRoot = path.join(path.dirname(file), "web");

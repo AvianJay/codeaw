@@ -12,6 +12,7 @@ import { launchDesktop, startBackground } from "./desktop/process.js";
 import { BridgeRuntime, type DesktopPage } from "./desktop/runtime.js";
 import { manageService } from "./desktop/service.js";
 import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
+import { AgentInstaller, type InstallStatus } from "./agents/install.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -25,6 +26,7 @@ Commands:
   restart          Reload config and restart the running bridge
   status           Show bridge status and connected device count
   settings         Open the Windows settings window
+  agents <action>  list / install <id> (ACP registry agents)
   autostart <action> install / uninstall / status (Windows login tray)
   init             Write a starter config if none exists
   pair             Print a QR / one-time code (valid 5 minutes)
@@ -38,7 +40,7 @@ Options:
   -p, --port <port>    Override listen.port (0 = random)
       --background     Start detached; logs go to the config folder's bridge.log
       --tray           Show the Windows tray when starting
-      --window         Open the pairing window (pair only)
+      --window         Open the pairing or ACP installer window (pair / agents)
       --headless       Suppress interactive pairing (for service managers)
       --debug          Verbose logging
   -h, --help           Show this help
@@ -86,6 +88,37 @@ async function main(): Promise<void> {
     }
     case "tray": await showDesktop(); return;
     case "settings": await showDesktop("settings"); return;
+    case "agents": {
+      if (values.window) { await showDesktop("agents"); return; }
+      const action = positionals[1] ?? "list";
+      if (!["list", "install"].includes(action) || (action === "install" && !positionals[2])) {
+        throw new Error("Usage: codeaw-bridge agents <list|install <id>>");
+      }
+      ensureConfig(file);
+      const running = await runningStatus(file);
+      const installer = new AgentInstaller(file);
+      if (action === "list") {
+        const agents = running ? await requestControl<Awaited<ReturnType<AgentInstaller["list"]>>>(file, { command: "agentCatalog" }) : await installer.list();
+        for (const agent of agents) process.stdout.write(`${agent.id.padEnd(24)} ${agent.name} · ${agent.version} · ${agent.supported ? agent.kind : "unavailable on " + agent.target}${agent.configured ? " · configured" : ""}\n`);
+        return;
+      }
+      let status: InstallStatus;
+      if (running) {
+        status = await requestControl(file, { command: "installAgent", id: positionals[2] });
+        let message = "";
+        while (status.state === "installing") {
+          if (status.message !== message) { message = status.message; process.stdout.write(message + "\n"); }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          status = await requestControl(file, { command: "installerStatus" });
+        }
+      } else {
+        await installer.start(positionals[2]!);
+        status = await installer.wait();
+      }
+      if (status.state !== "succeeded") throw new Error(status.message);
+      process.stdout.write(`Installed ${status.name} ${status.version}. ${running ? "Run codeaw-bridge restart to apply it (active turns will stop)." : "Start codeaw-bridge to use it."}\n`);
+      return;
+    }
     case "autostart": {
       const action = positionals[1] ?? "status";
       if (action === "status") process.stdout.write(await loginStartupEnabled(file) ? "Login tray startup enabled\n" : "Login tray startup disabled\n");

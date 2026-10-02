@@ -7,7 +7,8 @@ import { serveControl, type ControlRequest } from "./control.js";
 import { createAppLaunch, createPairing } from "./pairing.js";
 import { desktopSettings, saveDesktopSettings } from "./settings.js";
 import { loginStartupEnabled, setLoginStartup } from "./autostart.js";
-export type DesktopPage = "pair" | "settings" | "devices";
+import { AgentInstaller, registerInstalledAgent } from "../agents/install.js";
+export type DesktopPage = "pair" | "settings" | "devices" | "agents";
 
 export class BridgeRuntime {
   bridge?: Bridge;
@@ -16,8 +17,11 @@ export class BridgeRuntime {
   private page?: DesktopPage;
   private queue: Promise<unknown> = Promise.resolve();
   private stopping?: Promise<void>;
+  readonly installer: AgentInstaller;
 
-  constructor(public loaded: LoadedConfig, private options: BridgeOptions = {}, private onQuit: () => void = () => undefined) {}
+  constructor(public loaded: LoadedConfig, private options: BridgeOptions = {}, private onQuit: () => void = () => undefined) {
+    this.installer = new AgentInstaller(loaded.file, (agent) => this.serialize(async () => registerInstalledAgent(loaded.file, agent)));
+  }
 
   async start(): Promise<void> {
     this.server = await serveControl(this.loaded.file, (request) => this.handle(request));
@@ -56,7 +60,7 @@ export class BridgeRuntime {
       case "status": return this.status();
       case "poll": { const page = this.page; this.page = undefined; return { ...this.status(), page }; }
       case "show": {
-        if (request.page !== undefined && !["pair", "settings", "devices"].includes(String(request.page))) throw new Error("Unknown desktop page");
+        if (request.page !== undefined && !["pair", "settings", "devices", "agents"].includes(String(request.page))) throw new Error("Unknown desktop page");
         this.openDesktop(request.page as DesktopPage | undefined);
         return this.status();
       }
@@ -70,6 +74,12 @@ export class BridgeRuntime {
         return createAppLaunch(this.loaded.home, this.bridge.port(), this.bridge.addresses());
       }
       case "settings": return desktopSettings(loadConfig(this.loaded.file));
+      case "agentCatalog": return this.installer.list(request.refresh === true);
+      case "installAgent": {
+        if (typeof request.id !== "string") throw new Error("Missing agent id");
+        return this.installer.start(request.id);
+      }
+      case "installerStatus": return this.installer.getStatus();
       case "autostart": return { enabled: await loginStartupEnabled(this.loaded.file) };
       case "setAutostart": {
         if (typeof request.enabled !== "boolean") throw new Error("Missing startup preference");
@@ -110,12 +120,15 @@ export class BridgeRuntime {
   }
 
   stop(): Promise<void> {
-    return this.stopping ??= this.serialize(async () => {
-      this.state = "stopping";
-      await this.bridge?.stop();
-      this.bridge = undefined;
-      await new Promise<void>((resolve) => this.server ? this.server.close(() => resolve()) : resolve());
-      this.state = "stopped";
-    });
+    return this.stopping ??= (async () => {
+      await this.installer.stop();
+      await this.serialize(async () => {
+        this.state = "stopping";
+        await this.bridge?.stop();
+        this.bridge = undefined;
+        await new Promise<void>((resolve) => this.server ? this.server.close(() => resolve()) : resolve());
+        this.state = "stopped";
+      });
+    })();
   }
 }
