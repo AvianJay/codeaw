@@ -14,7 +14,9 @@ import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/sessions_model.dart';
+import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
+import 'package:codeaw/ui/chat/working_indicator.dart';
 import 'package:codeaw/ui/common/diff_view.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
@@ -169,6 +171,42 @@ void main() {
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'chat');
     token.cancel();
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'chat_dark');
+    await tester.pumpWidget(const SizedBox());
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
+  });
+
+  testWidgets('working status and elapsed time', (tester) async {
+    final h = _Harness();
+    final start = DateTime.utc(2026, 10, 2, 12);
+    final timelines = List.generate(4, (_) => Timeline()..setTurnState('running', startedAt: start.millisecondsSinceEpoch));
+    timelines[1].apply('session/update', {
+      'update': {'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': '回覆'}},
+      '_meta': {'codeaw': {'t': start.add(const Duration(seconds: 1)).millisecondsSinceEpoch}},
+    });
+    timelines[2].apply('session/update', {
+      'update': {'sessionUpdate': 'tool_call', 'toolCallId': 'test', 'kind': 'execute', 'status': 'in_progress', 'title': 'flutter test test/working_indicator_test.dart'},
+      '_meta': {'codeaw': {'t': start.add(const Duration(seconds: 1)).millisecondsSinceEpoch}},
+    });
+    timelines[2].queued = 2;
+    timelines[3].setTurnState('requires_action', startedAt: start.millisecondsSinceEpoch);
+    Widget page(Brightness brightness) => h.wrap(
+      Scaffold(
+        appBar: AppBar(title: const Text('處理進度')),
+        body: Column(children: [for (final t in timelines) WorkingIndicator(timeline: t, now: () => start.add(const Duration(minutes: 1, seconds: 23)))]),
+      ),
+      brightness: brightness,
+    );
+    await _shoot(tester, page(Brightness.light), 'working');
+    expect(find.text('回覆中…'), findsOneWidget);
+    expect(find.text('執行指令中…'), findsOneWidget);
+    await _shoot(tester, page(Brightness.dark), 'working_dark');
+    await tester.pumpWidget(const SizedBox());
+    for (final t in timelines) { t.dispose(); }
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
   });
 
   testWidgets('pair page', (tester) async {

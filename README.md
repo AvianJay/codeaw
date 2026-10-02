@@ -85,6 +85,7 @@ powershell -ExecutionPolicy Bypass -File bridge\scripts\autostart.ps1 -Remove  #
 使用小提示：
 
 - 回合進行中還可以繼續輸入。agent 支援插話（新版 Claude／Codex）時，訊息會直接插進目前的回合；不支援時（Kimi）會排在目前回合之後。長按送出鍵＝一律排隊。
+- 對話底部會顯示思考、回覆或工具執行狀態，以及這一輪已處理多久（包含等待批准／回覆的時間）。重新連線後會接續計時，下一輪開始時歸零。
 - 輸入框上方的 chip 可以切換模式、模型與推理強度。Claude 的「Manual」模式會在每個危險操作前詢問；`dontAsk` 會直接拒絕沒有預先允許的工具。
 - 右上角可以瀏覽專案檔案，或查看 git 變更與 diff。
 - 「從電腦重新載入歷史」：如果你在終端機上又繼續聊了同一個 session，用這個重新同步。

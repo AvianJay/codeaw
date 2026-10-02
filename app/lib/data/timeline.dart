@@ -20,6 +20,8 @@ abstract class TimelineItem extends ChangeNotifier {
 
 enum MessageRole { user, agent, thought }
 
+enum TurnActivity { thinking, responding, tool }
+
 class MessageItem extends TimelineItem {
   MessageItem(super.key, this.role, this.mid);
   final MessageRole role;
@@ -167,6 +169,43 @@ class Timeline extends ChangeNotifier {
   String? title;
   String state = 'idle';
   int queued = 0;
+  DateTime? turnStartedAt;
+  TurnActivity _activity = TurnActivity.thinking;
+  DateTime? _activityAt;
+  final _activeTools = <ToolItem, DateTime>{};
+
+  bool get running => state == 'running' || state == 'requires_action';
+  ToolItem? get activeTool => _activeTools.keys.lastOrNull;
+  TurnActivity get activity => activeTool == null ? _activity : TurnActivity.tool;
+
+  /// The bridge's start time survives replay, permission waits and queued prompts.
+  /// Older bridges fall back to the time the running state was first observed.
+  void setTurnState(String value, {num? startedAt, DateTime? observedAt}) {
+    state = value;
+    if (running) {
+      turnStartedAt = startedAt != null
+          ? DateTime.fromMillisecondsSinceEpoch(startedAt.toInt(), isUtc: true)
+          : turnStartedAt ?? observedAt ?? DateTime.now();
+      _activeTools.removeWhere((_, at) => at.isBefore(turnStartedAt!));
+      if (_activityAt == null || _activityAt!.isBefore(turnStartedAt!)) {
+        _activity = TurnActivity.thinking;
+        _activityAt = null;
+      }
+    } else {
+      turnStartedAt = null;
+      _activity = TurnActivity.thinking;
+      _activityAt = null;
+      _activeTools.clear();
+    }
+    _snapshotChanged = true;
+  }
+
+  void _recordActivity(TurnActivity value, DateTime at) {
+    if (turnStartedAt != null && at.isBefore(turnStartedAt!)) return;
+    if (_activity != value) _snapshotChanged = true;
+    _activity = value;
+    _activityAt = at;
+  }
 
   void clear() {
     items.clear();
@@ -177,6 +216,8 @@ class Timeline extends ChangeNotifier {
     modeId = null;
     usage = null;
     title = null;
+    queued = 0;
+    setTurnState('idle');
     _structureChanged = true;
     _snapshotChanged = true;
   }
@@ -203,20 +244,22 @@ class Timeline extends ChangeNotifier {
 
   /// Applies one message. Returns true if it was understood.
   bool apply(String method, Map<String, dynamic> params) {
+    final timestamp = (((params['_meta'] as Map?)?['codeaw'] as Map?)?['t'] as num?)?.toInt();
+    final at = timestamp == null ? DateTime.now() : DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true);
     if (method == 'session/update') {
       final u = params['update'];
-      if (u is Map<String, dynamic>) _applyUpdate(u);
+      if (u is Map<String, dynamic>) _applyUpdate(u, at);
       return true;
     }
     if (method == '_codeaw/event') {
       final e = params['event'];
-      if (e is Map<String, dynamic>) _applyEvent(e);
+      if (e is Map<String, dynamic>) _applyEvent(e, at);
       return true;
     }
     return false;
   }
 
-  void _applyUpdate(Map<String, dynamic> u) {
+  void _applyUpdate(Map<String, dynamic> u, DateTime at) {
     final type = u['sessionUpdate'];
     switch (type) {
       case 'user_message_chunk' || 'agent_message_chunk' || 'agent_thought_chunk':
@@ -227,6 +270,9 @@ class Timeline extends ChangeNotifier {
             : type == 'agent_thought_chunk'
                 ? MessageRole.thought
                 : MessageRole.agent;
+        if (role != MessageRole.user) {
+          _recordActivity(role == MessageRole.thought ? TurnActivity.thinking : TurnActivity.responding, at);
+        }
         final item = _upsert('$type:$mid', () => MessageItem('$type:$mid', role, mid));
         if (codeaw != null) {
           item.promptId ??= codeaw['promptId'] as String?;
@@ -244,10 +290,19 @@ class Timeline extends ChangeNotifier {
         }
         _touch(item);
       case 'tool_call' || 'tool_call_update':
+        final before = (activeTool, activeTool?.title, activeTool?.kind, activity);
         final id = '${u['toolCallId']}';
         final item = _upsert('tool:$id', () => ToolItem('tool:$id', id));
         item.merge(u);
         _dirty.add(item);
+        if (turnStartedAt == null || !at.isBefore(turnStartedAt!)) {
+          if (item.status == 'pending' || item.status == 'in_progress') {
+            _activeTools.putIfAbsent(item, () => at);
+          } else if (_activeTools.remove(item) != null && _activeTools.isEmpty) {
+            _recordActivity(TurnActivity.thinking, at);
+          }
+        }
+        if (before != (activeTool, activeTool?.title, activeTool?.kind, activity)) _snapshotChanged = true;
       case 'plan':
         plan = (u['entries'] as List?)?.whereType<Map<String, dynamic>>().toList();
         _snapshotChanged = true;
@@ -272,10 +327,10 @@ class Timeline extends ChangeNotifier {
     }
   }
 
-  void _applyEvent(Map<String, dynamic> e) {
+  void _applyEvent(Map<String, dynamic> e, DateTime at) {
     switch (e['type']) {
       case 'state':
-        state = '${e['state'] ?? 'idle'}';
+        setTurnState('${e['state'] ?? 'idle'}', startedAt: e['turnStartedAt'] as num?, observedAt: at);
         queued = (e['queued'] as num?)?.toInt() ?? 0;
         final stop = e['stopReason'];
         if (state == 'idle' && stop is String && stop != 'end_turn') _add(StopItem('stop:${_anon++}', stop));

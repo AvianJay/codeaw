@@ -104,7 +104,9 @@ Params: standard plus optional `_meta.codeaw.afterSeq` and `_meta.codeaw.epoch`.
 2. Replayed entries are sent as `session/update` / `_codeaw/event`
    notifications carrying their `seq` (see below).
 3. The response is sent after the replay:
-   `{ modes?, configOptions?, _meta: { codeaw: { agentId, lastSeq, epoch, state, queued } } }`.
+   `{ modes?, configOptions?, _meta: { codeaw: { agentId, lastSeq, epoch, state, queued, turnStartedAt? } } }`.
+   `turnStartedAt` is the running turn's Unix start time in milliseconds, unchanged
+   while waiting for permission, steering or queueing another prompt.
 4. Pending permission / elicitation requests are then (re)sent to this client.
 
 From then on the connection is **attached**: every new log entry is pushed to it.
@@ -149,7 +151,7 @@ Every session has an append-only log. Each entry has a per-session `seq`
 
    ```jsonc
    { "sessionId": "claude:…", "update": { …SessionUpdate… },
-     "_meta": { "codeaw": { "seq": 17 } } }
+     "_meta": { "codeaw": { "seq": 17, "t": 1790899200000 } } }
    ```
 
    Message chunks (`user_message_chunk`, `agent_message_chunk`,
@@ -160,12 +162,12 @@ Every session has an append-only log. Each entry has a per-session `seq`
 
    ```jsonc
    { "sessionId": "claude:…", "event": { "type": "…", … },
-     "_meta": { "codeaw": { "seq": 18 } } }
+     "_meta": { "codeaw": { "seq": 18, "t": 1790899200001 } } }
    ```
 
 | event `type` | fields | meaning |
 |---|---|---|
-| `state` | `state`, `stopReason?`, `queued` | `running` / `requires_action` / `idle` (aligned with ACP v2 `state_update`) |
+| `state` | `state`, `stopReason?`, `queued`, `turnStartedAt?` | `running` / `requires_action` / `idle`; turn start time is omitted when no turn is running |
 | `permission_request` | `requestId`, `toolCall`, `options` | an agent asked for permission |
 | `permission_resolved` | `requestId`, `outcome`, `optionName?`, `by?` | answered (by device name) or cancelled |
 | `elicitation_request` | `requestId`, `request` | an agent asked for structured input |
@@ -175,6 +177,9 @@ Every session has an append-only log. Each entry has a per-session `seq`
 
 User prompts are logged as `user_message_chunk` updates with
 `_meta.codeaw = { mid, promptId, queued?, steered? }` so every device sees them.
+
+Notification `_meta.codeaw.t` is the log entry's Unix time in milliseconds.
+Replays preserve it, allowing clients to distinguish current activity from old turns.
 
 Image data in logged user messages is replaced by
 `{ "type": "image", "mimeType": "…", "data": "", "uri": "codeaw-blob:<sha256>" }`;

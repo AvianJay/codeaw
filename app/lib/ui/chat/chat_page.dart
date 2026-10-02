@@ -12,6 +12,7 @@ import '../common/widgets.dart';
 import 'composer.dart';
 import 'elicitation_sheet.dart';
 import 'items.dart';
+import 'working_indicator.dart';
 
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.sessionId, this.cwd});
@@ -135,7 +136,7 @@ class _TimelineList extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = controller.timeline.items;
     final running = controller.running;
-    if (items.isEmpty) {
+    if (items.isEmpty && !running) {
       return Center(
         child: controller.loading
             ? const CircularProgressIndicator()
@@ -149,7 +150,13 @@ class _TimelineList extends StatelessWidget {
       padding: const EdgeInsets.only(top: 8, bottom: 8),
       itemCount: items.length + extra,
       itemBuilder: (context, index) {
-        if (running && index == 0) return _Working(state: controller.timeline.state, queued: controller.timeline.queued);
+        if (running && index == 0) {
+          return WorkingIndicator(
+            key: ValueKey('working:${controller.sessionId}'),
+            timeline: controller.timeline,
+            waitingForInput: controller.pending.values.any((req) => !req.isPermission),
+          );
+        }
         final i = items.length - 1 - (index - extra);
         final item = items[i];
         return TimelineItemView(
@@ -159,28 +166,6 @@ class _TimelineList extends StatelessWidget {
           isLast: i == items.length - 1 || (i == items.length - 2 && items.last is! MessageItem),
         );
       },
-    );
-  }
-}
-
-class _Working extends StatelessWidget {
-  const _Working({required this.state, required this.queued});
-  final String state;
-  final int queued;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(18, 6, 18, 10),
-      child: Row(children: [
-        SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: state == 'requires_action' ? Colors.orange : scheme.primary)),
-        const SizedBox(width: 10),
-        Text(
-          state == 'requires_action' ? '等待批准…' : '工作中…${queued > 0 ? '（還有 $queued 則排隊）' : ''}',
-          style: TextStyle(fontSize: 12.5, color: scheme.outline),
-        ),
-      ]),
     );
   }
 }

@@ -73,8 +73,46 @@ describe("sessions", () => {
     const seqs = c.log(s.sessionId).map((m) => m.params._meta.codeaw.seq);
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
     expect(new Set(seqs).size).toBe(seqs.length);
+    expect(c.log(s.sessionId).every((m) => typeof m.params._meta.codeaw.t === "number")).toBe(true);
     const states = c.events(s.sessionId, "state").map((e) => e.event.state);
     expect(states).toEqual(["running", "idle"]);
+    expect(c.events(s.sessionId, "state")[0].event.turnStartedAt).toBeTypeOf("number");
+    expect(c.events(s.sessionId, "state")[1].event.turnStartedAt).toBeUndefined();
+  });
+
+  it("preserves turn start time while waiting, queueing and replaying to another device", async () => {
+    tb = await startTestBridge();
+    const a = await client("A");
+    let allow!: () => void;
+    const answer = new Promise<void>((resolve) => { allow = resolve; });
+    a.permissionAnswer = async () => {
+      await answer;
+      return { outcome: { outcome: "selected", optionId: "allow" } };
+    };
+    const s = await newFakeSession(a, tb.home);
+    const first = a.request("session/prompt", promptText(s.sessionId, "perm"));
+    await a.waitFor(() => a.events(s.sessionId, "state").some((e) => e.event.state === "requires_action"));
+    const startedAt = a.events(s.sessionId, "state")[0].event.turnStartedAt;
+    expect(startedAt).toBeTypeOf("number");
+
+    const queued = a.request("session/prompt", promptText(s.sessionId, "echo queued"));
+    await a.waitFor(() => a.events(s.sessionId, "state").some((e) => e.event.queued === 1));
+    expect(a.events(s.sessionId, "state").every((e) => e.event.turnStartedAt === startedAt)).toBe(true);
+
+    const b = await client("B");
+    const full = await b.request("session/load", { sessionId: s.sessionId, cwd: tb.home, mcpServers: [] });
+    expect(full._meta.codeaw.turnStartedAt).toBe(startedAt);
+    expect(b.events(s.sessionId, "state").at(-1).event.turnStartedAt).toBe(startedAt);
+    const delta = await b.request("session/load", {
+      sessionId: s.sessionId, cwd: tb.home, mcpServers: [],
+      _meta: { codeaw: { afterSeq: full._meta.codeaw.lastSeq, epoch: full._meta.codeaw.epoch } },
+    });
+    expect(delta._meta.codeaw.turnStartedAt).toBe(startedAt);
+    allow();
+    await Promise.all([first, queued]);
+    await a.waitFor(() => a.events(s.sessionId, "state").filter((e) => e.event.state === "idle").length === 2);
+    const next = a.events(s.sessionId, "state").filter((e) => e.event.state === "running").at(-1);
+    expect(next.event.turnStartedAt).toBeGreaterThan(startedAt);
   });
 
   it("first permission answer wins and is withdrawn from the other device", async () => {

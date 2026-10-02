@@ -4,7 +4,7 @@ export type TurnState = "idle" | "running" | "requires_action";
 
 /** Bridge-synthesized events, sent to clients as `_codeaw/event` (see docs/protocol.md). */
 export type CodeawEvent =
-  | { type: "state"; state: TurnState; stopReason?: string; queued: number }
+  | { type: "state"; state: TurnState; stopReason?: string; queued: number; turnStartedAt?: number }
   | { type: "permission_request"; requestId: string; toolCall: acp.ToolCallUpdate; options: acp.PermissionOption[] }
   | { type: "permission_resolved"; requestId: string; outcome: acp.RequestPermissionOutcome; optionName?: string; by?: string }
   | { type: "elicitation_request"; requestId: string; request: acp.CreateElicitationRequest }

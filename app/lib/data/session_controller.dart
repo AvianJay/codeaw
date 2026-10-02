@@ -57,7 +57,7 @@ class SessionController extends ChangeNotifier {
   StreamSubscription<void>? _connSub;
   bool _disposed = false;
 
-  bool get running => timeline.state == 'running' || timeline.state == 'requires_action';
+  bool get running => timeline.running;
 
   List<ConfigOption> get configOptions => (timeline.configOptions ?? const []).map(ConfigOption.new).where((o) => o.type == 'select' || o.type == 'boolean').toList();
 
@@ -99,7 +99,7 @@ class SessionController extends ChangeNotifier {
         timeline.configOptions = (resp['configOptions'] as List).whereType<Map<String, dynamic>>().toList();
       }
       if (resp['modes'] is Map) timeline.modes = Map<String, dynamic>.from(resp['modes'] as Map);
-      if (m['state'] is String) timeline.state = m['state'] as String;
+      if (m['state'] is String) timeline.setTurnState(m['state'] as String, startedAt: m['turnStartedAt'] as num?);
       timeline.queued = (m['queued'] as num?)?.toInt() ?? timeline.queued;
       attached = true;
     } on RpcError catch (e) {

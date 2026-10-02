@@ -36,6 +36,7 @@ export interface ClientHandle {
 
 interface Turn {
   promptId: string;
+  startedAt: number;
   done: Promise<acp.PromptResponse>;
 }
 
@@ -409,7 +410,7 @@ export class SessionManager implements AgentHandlers {
   }
 
   private sendEntry(c: ClientHandle, s: BridgeSession, entry: LogEntry): void {
-    const _meta = { codeaw: { seq: entry.seq } };
+    const _meta = { codeaw: { seq: entry.seq, t: entry.t } };
     if (entry.kind === "update") void c.notify("session/update", { sessionId: s.id, update: entry.update, _meta });
     else void c.notify("_codeaw/event", { sessionId: s.id, event: entry.event, _meta });
   }
@@ -419,7 +420,11 @@ export class SessionManager implements AgentHandlers {
     const queued = s.queue.length;
     if (!stopReason && s.emitted && s.emitted.state === state && s.emitted.queued === queued) return;
     s.emitted = { state, queued };
-    this.appendEvent(s, stopReason && state === "idle" ? { type: "state", state, stopReason, queued } : { type: "state", state, queued });
+    this.appendEvent(s, {
+      type: "state", state, queued,
+      ...(s.turn ? { turnStartedAt: s.turn.startedAt } : {}),
+      ...(stopReason && state === "idle" ? { stopReason } : {}),
+    });
     this.activity(s);
   }
 
@@ -527,6 +532,7 @@ export class SessionManager implements AgentHandlers {
           epoch: s.meta.epoch,
           state: s.state,
           queued: s.queue.length,
+          ...(s.turn ? { turnStartedAt: s.turn.startedAt } : {}),
           title: s.meta.title,
           cwd: s.meta.cwd,
         },
@@ -843,7 +849,7 @@ export class SessionManager implements AgentHandlers {
       rejectDone = rej;
     });
     done.catch(() => undefined);
-    s.turn = { promptId, done };
+    s.turn = { promptId, startedAt: Date.now(), done };
     this.emitState(s);
     void (async () => {
       let result: acp.PromptResponse | undefined;
