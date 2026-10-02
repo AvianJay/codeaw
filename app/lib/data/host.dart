@@ -28,6 +28,12 @@ class HostConfig {
 
   HostConfig withUrls(List<String> urls) => HostConfig(name: name, urls: urls, token: token, deviceId: deviceId, deviceName: deviceName);
 
+  /// Pairing again issues a new device ID, so match computers by their endpoints.
+  bool sameComputer(HostConfig other) {
+    final origins = urls.map((url) => httpBase(url).origin).toSet();
+    return other.urls.any((url) => origins.contains(httpBase(url).origin));
+  }
+
   /// `ws://host:port/acp` → `http://host:port`.
   static Uri httpBase(String wsUrl) {
     final u = Uri.parse(wsUrl);
@@ -47,23 +53,61 @@ String bridgeWebSocketUrl(String input, {bool secure = false}) {
   return Uri(scheme: uri.scheme == 'https' || uri.scheme == 'wss' ? 'wss' : 'ws', host: uri.host, port: uri.hasPort ? uri.port : null, path: '/acp').toString();
 }
 
+/// All saved pairings and the computer selected for the next app launch.
+class HostLibrary {
+  HostLibrary({List<HostConfig> hosts = const [], this.activeIndex = 0})
+    : hosts = List.unmodifiable(hosts);
+
+  final List<HostConfig> hosts;
+  final int activeIndex;
+
+  HostConfig? get activeHost => hosts.isEmpty
+      ? null
+      : hosts[activeIndex >= 0 && activeIndex < hosts.length ? activeIndex : 0];
+
+  Map<String, Object?> toJson() => {
+    'hosts': hosts.map((host) => host.toJson()).toList(),
+    'activeIndex': activeIndex,
+  };
+
+  factory HostLibrary.fromJson(Map<String, dynamic> json) {
+    // Keep existing single-computer pairings when upgrading the app.
+    if (!json.containsKey('hosts')) {
+      return HostLibrary(hosts: [HostConfig.fromJson(json)]);
+    }
+    return HostLibrary(
+      hosts: (json['hosts'] as List)
+          .map((host) => HostConfig.fromJson(host as Map<String, dynamic>))
+          .toList(),
+      activeIndex: json['activeIndex'] as int? ?? 0,
+    );
+  }
+}
+
 class HostStore {
   static const _key = 'codeaw.host';
   final _storage = const FlutterSecureStorage();
+  Future<void> _pendingWrite = Future.value();
 
-  Future<HostConfig?> load() async {
+  Future<HostLibrary> load() async {
     try {
       final raw = await _storage.read(key: _key);
-      if (raw == null) return null;
-      return HostConfig.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      if (raw == null) return HostLibrary();
+      return HostLibrary.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     } catch (_) {
-      return null;
+      return HostLibrary();
     }
   }
 
-  Future<void> save(HostConfig host) => _storage.write(key: _key, value: jsonEncode(host.toJson()));
-
-  Future<void> clear() => _storage.delete(key: _key);
+  Future<void> save(HostLibrary library) {
+    final value = jsonEncode(library.toJson());
+    final write = _pendingWrite.then(
+      (_) => _storage.write(key: _key, value: value),
+    );
+    // URL preferences and user selections must reach storage in the same order.
+    _pendingWrite = write.catchError((Object _) {});
+    return write;
+  }
 }
 
 /// Contents of a `codeaw://pair?u=…&u=…&c=…&n=…` link (the QR code printed by the bridge).

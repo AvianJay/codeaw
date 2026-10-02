@@ -54,7 +54,7 @@ class LocalNotifier {
   }
 
   void watch(BridgeClient client, String Function(String agentId) agentName, String? Function(String sessionId) title) {
-    _sub?.cancel();
+    unwatch();
     _sub = client.activity.listen((a) {
       final id = a['sessionId'] as String?;
       final state = a['state'] as String?;
@@ -72,6 +72,12 @@ class LocalNotifier {
     });
   }
 
+  void unwatch() {
+    _sub?.cancel();
+    _sub = null;
+    _lastState.clear();
+  }
+
   Future<void> _show(String sessionId, String title, String body) => _plugin.show(
     id: sessionId.hashCode & 0x7fffffff,
     title: title,
@@ -80,5 +86,5 @@ class LocalNotifier {
     payload: sessionId,
   );
 
-  void dispose() => _sub?.cancel();
+  void dispose() => unwatch();
 }

@@ -6,6 +6,7 @@ import '../../data/bridge_client.dart';
 import '../../data/models.dart';
 import '../../main.dart';
 import '../common/widgets.dart';
+import 'host_sheet.dart';
 import 'new_session_sheet.dart';
 
 class SessionsPage extends StatefulWidget {
@@ -17,12 +18,17 @@ class SessionsPage extends StatefulWidget {
 
 class _SessionsPageState extends State<SessionsPage> {
   String? _agentFilter;
+  BridgeClient? _client;
 
   @override
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
     final client = state.client;
     final model = state.sessions;
+    if (!identical(_client, client)) {
+      _client = client;
+      _agentFilter = null;
+    }
     if (client == null || model == null) return const Scaffold(body: SizedBox.shrink());
     return ListenableBuilder(
       listenable: Listenable.merge([client, model]),
@@ -34,10 +40,17 @@ class _SessionsPageState extends State<SessionsPage> {
         final rest = visible.where((s) => !(s.pending > 0 || s.state != 'idle')).toList();
         return Scaffold(
           appBar: AppBar(
+            leading: IconButton(
+              icon: const Icon(Icons.computer_rounded),
+              tooltip: '切換電腦',
+              onPressed: () => showHostSheet(context),
+            ),
             title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               const Text('codeaw'),
               Text(
                 '${client.bridgeHost ?? state.host?.name ?? ''} · ${client.status == ConnStatus.online ? '已連線' : client.status == ConnStatus.connecting ? '連線中' : '離線'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 12, color: scheme.outline),
               ),
             ]),

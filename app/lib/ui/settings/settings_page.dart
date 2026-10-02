@@ -143,7 +143,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         context: context,
                         builder: (ctx) => AlertDialog(
                           title: const Text('取消配對？'),
-                          content: const Text('這台手機會忘記 bridge 的連線資訊，之後需要重新掃描 QR code。'),
+                          content: Text('這台裝置會忘記「${host.name}」的連線資訊，之後需要重新配對。其他電腦的配對會保留。'),
                           actions: [
                             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
                             FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('確定')),
@@ -152,7 +152,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       );
                       if (ok == true) {
                         await state.forget();
-                        if (context.mounted) context.go('/pair');
+                        if (context.mounted) context.go(state.paired ? '/' : '/pair');
                       }
                     },
                   ),

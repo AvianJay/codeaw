@@ -129,6 +129,11 @@ class BridgeClient extends ChangeNotifier {
           },
           'clientInfo': {'name': 'codeaw-app', 'title': 'codeaw', 'version': '0.1.0'},
         }).timeout(const Duration(seconds: 10)) as Map<String, dynamic>;
+        if (_disposed) {
+          peer.close();
+          await ws.sink.close();
+          return null;
+        }
         final meta = (init['_meta'] as Map?)?['codeaw'] as Map?;
         agents = ((meta?['agents'] as List?) ?? const []).whereType<Map<String, dynamic>>().map(AgentInfo.fromJson).toList();
         bridgeHost = meta?['host'] as String?;
@@ -147,6 +152,7 @@ class BridgeClient extends ChangeNotifier {
           }
         }));
       } catch (e) {
+        if (_disposed) return null;
         errors.add(e is RpcError ? e.detail : '連線失敗（${e.runtimeType}）');
         _peer?.close();
         _peer = null;
@@ -168,6 +174,7 @@ class BridgeClient extends ChangeNotifier {
   }
 
   void _handleNotification(String method, Map<String, dynamic> params) {
+    if (_disposed) return;
     switch (method) {
       case 'session/update' || '_codeaw/event' || '_codeaw/replay':
         _messages.add(SessionMessage(method, params));

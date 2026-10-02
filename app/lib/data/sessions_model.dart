@@ -23,30 +23,33 @@ class SessionsModel extends ChangeNotifier {
   StreamSubscription<Map<String, dynamic>>? _activitySub;
   StreamSubscription<void>? _connSub;
   Timer? _refreshDebounce;
+  bool _disposed = false;
 
   Future<void> refresh() async {
-    if (!client.isOnline) return;
+    if (_disposed || !client.isOnline) return;
     loading = true;
     notifyListeners();
     try {
       final r = await client.request('session/list', {}) as Map<String, dynamic>;
+      if (_disposed) return;
       sessions = _parse(r);
       error = null;
     } on RpcError catch (e) {
       error = e.detail;
     } finally {
       loading = false;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
   Future<void> loadMore() async {
     final cursor = _nextCursor;
-    if (cursor == null || loading) return;
+    if (_disposed || cursor == null || loading) return;
     loading = true;
     notifyListeners();
     try {
       final r = await client.request('session/list', {'cursor': cursor}) as Map<String, dynamic>;
+      if (_disposed) return;
       final more = _parse(r);
       final known = sessions.map((s) => s.id).toSet();
       sessions = [...sessions, ...more.where((s) => !known.contains(s.id))];
@@ -54,7 +57,7 @@ class SessionsModel extends ChangeNotifier {
       error = e.detail;
     } finally {
       loading = false;
-      notifyListeners();
+      if (!_disposed) notifyListeners();
     }
   }
 
@@ -100,6 +103,7 @@ class SessionsModel extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _activitySub?.cancel();
     _connSub?.cancel();
     _refreshDebounce?.cancel();
