@@ -13,6 +13,7 @@ import 'ui/files/files_page.dart';
 import 'ui/files/git_page.dart';
 import 'ui/pair/pair_page.dart';
 import 'ui/settings/settings_page.dart';
+import 'ui/settings/update_page.dart';
 import 'ui/terminal/terminal_page.dart';
 import 'ui/workspace/workspace_shell.dart';
 import 'util/browser_location.dart';
@@ -44,10 +45,13 @@ GoRouter createAppRouter(
   redirect: (context, s) {
     if (!state.loaded) return null;
     final atPair = s.matchedLocation == '/pair';
-    if (!state.paired && !atPair) return '/pair';
+    if (!state.paired && !atPair && s.matchedLocation != '/updates') {
+      return '/pair';
+    }
     return null;
   },
   routes: [
+    GoRoute(path: '/updates', builder: (_, _) => const UpdatePage()),
     GoRoute(
       path: '/pair',
       builder: (_, _) => PairPage(autoPair: autoPair),
@@ -119,6 +123,7 @@ class _CodeawAppState extends State<CodeawApp> {
   @override
   void initState() {
     super.initState();
+    unawaited(widget.state.updater.initialize());
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
     if (!kIsWeb) {
       final appLinks = AppLinks();

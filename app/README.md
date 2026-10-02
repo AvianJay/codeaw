@@ -29,4 +29,18 @@ flutter build web --release --no-web-resources-cdn
 flutter build ios --release --no-codesign
 ```
 
-The nightly workflow packages the unsigned iOS app as `codeaw-ios-unsigned.ipa`. Sign it with your own sideloading tools before installing. The web build is hosted at `/` on the bridge; use Tailscale Serve for HTTPS outside localhost.
+The build workflow packages the unsigned iOS app as `codeaw-ios-unsigned.ipa`. Sign it with your own sideloading tools before installing. The web build is hosted at `/` on the bridge; use Tailscale Serve for HTTPS outside localhost.
+
+App updates are available from settings and the pairing screen, independently of the bridge connection. Android downloads the universal APK into private cache, checks its size and SHA-256, requests permission to install unknown apps when needed, and opens the system APK installer. iOS offers AltStore, SideStore, LiveContainer, LCSign (download then import), and browser download; unavailable installer links fall back to the browser. IPA signing and installation are completed in the selected tool. The URL formats follow the [AltStore handler](https://github.com/altstoreio/AltStore/blob/master/AltStore/AppDelegate.swift), [SideStore handler](https://github.com/SideStore/SideStore/blob/develop/SideStore/DeepLinks/URLHandler.swift), and [LiveContainer handler](https://github.com/LiveContainer/LiveContainer/blob/main/LiveContainerSwiftUI/Views/AppList/LCAppListView.swift).
+
+Nightly CI builds default to the `nightly` channel; `vX.Y.Z` tag builds default to `release`. Users can switch channels, and their selection is saved separately for each installed build channel. Release builds compare semantic versions and build numbers, so newer nightlies with the same app version are detected. The manifest is `app-update.json` in the GitHub Release assets: nightly uses `releases/download/nightly`, release uses `releases/latest/download`. A channel without a published manifest shows a retryable message and a link to the release page. The same Android signing key must be used for both channels; Android can reject a switch to a lower version code.
+
+For local builds, the default channel is `release`. To build a nightly client:
+
+```sh
+flutter build apk --release --dart-define=CODEAW_UPDATE_CHANNEL=nightly
+# Forks can override the repository (owner/name):
+flutter build ios --release --no-codesign --dart-define=CODEAW_UPDATE_CHANNEL=nightly --dart-define=CODEAW_UPDATE_REPOSITORY=AvianJay/codeaw
+```
+
+CI publishes the manifest after all build jobs pass. Stable releases are created by pushing a `vX.Y.Z` tag; that version is embedded in all Flutter packages and the manifest. No release is published by local checks.

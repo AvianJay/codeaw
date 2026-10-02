@@ -1,8 +1,9 @@
-name: Build nightly
+name: Build app and bridge
 
 on:
   push:
     branches: [master]
+    tags: ['v*']
   schedule:
     # Every day at 02:00 Asia/Taipei.
     - cron: '0 18 * * *'
@@ -12,13 +13,41 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly-build
+  group: app-build-${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'nightly' }}
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    name: Select update channel and version
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.build.outputs.channel }}
+      version: ${{ steps.build.outputs.version }}
+      tag: ${{ steps.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel=nightly
+          tag=nightly
+          version=$(sed -n 's/^version: \([^+]*\).*/\1/p' app/pubspec.yaml)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            channel=release
+            tag="$GITHUB_REF_NAME"
+            version="${tag#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          printf 'channel=%s\nversion=%s\ntag=%s\n' "$channel" "$version" "$tag" >> "$GITHUB_OUTPUT"
+
   android:
     name: Signed Android releases
     runs-on: ubuntu-latest
+    needs: prepare
+    env:
+      UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
     timeout-minutes: 45
     defaults:
       run:
@@ -69,13 +98,13 @@ jobs:
             fi
           done
           mkdir -p ../dist
-          flutter build apk --release --build-number="$GITHUB_RUN_NUMBER"
+          flutter build apk --release --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
           cp build/app/outputs/flutter-apk/app-release.apk ../dist/codeaw-universal.apk
-          flutter build apk --release --split-per-abi --build-number="$GITHUB_RUN_NUMBER"
+          flutter build apk --release --split-per-abi --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
           for abi in armeabi-v7a arm64-v8a x86_64; do
             cp "build/app/outputs/flutter-apk/app-${abi}-release.apk" "../dist/codeaw-${abi}.apk"
           done
-          flutter build appbundle --release --build-number="$GITHUB_RUN_NUMBER"
+          flutter build appbundle --release --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
           cp build/app/outputs/bundle/release/app-release.aab ../dist/codeaw.aab
       - name: Remove signing keystore
         if: always()
@@ -91,6 +120,10 @@ jobs:
   ios:
     name: Unsigned iOS IPA
     runs-on: macos-latest
+    needs: prepare
+    env:
+      UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
     timeout-minutes: 45
     defaults:
       run:
@@ -105,7 +138,7 @@ jobs:
           cache: true
       - run: flutter pub get
       - name: Build iOS without signing
-        run: flutter build ios --release --no-codesign --build-number="$GITHUB_RUN_NUMBER"
+        run: flutter build ios --release --no-codesign --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
@@ -125,6 +158,10 @@ jobs:
   web:
     name: Web app (mobile and desktop)
     runs-on: ubuntu-latest
+    needs: prepare
+    env:
+      UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
     timeout-minutes: 20
     defaults:
       run:
@@ -139,8 +176,10 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter analyze
+      - name: Test app updater
+        run: flutter test test/app_updater_test.dart
       - name: Build web app with local renderer assets
-        run: flutter build web --release --no-web-resources-cdn --build-number="$GITHUB_RUN_NUMBER"
+        run: flutter build web --release --no-web-resources-cdn --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
       - name: Archive web app
         run: |
           mkdir -p ../dist
@@ -266,9 +305,9 @@ jobs:
         run: node scripts/tray-smoke.mjs dist/bin/codeaw-bridge.exe
 
   release:
-    name: Update nightly release
-    needs: [android, ios, web, bridge, bridge-installer-test]
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    name: Publish app and bridge release
+    needs: [prepare, android, ios, web, bridge, bridge-installer-test]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -276,22 +315,34 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+      APP_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - uses: actions/download-artifact@v5
         with:
           pattern: nightly-*
           path: dist
           merge-multiple: true
+      - name: Generate app updater manifest
+        run: |
+          node --test scripts/create-update-manifest.test.mjs
+          node scripts/create-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
       - name: Generate checksums and release notes
         run: |
           set -euo pipefail
           (cd dist && sha256sum * > SHA256SUMS)
           cat > "$RUNNER_TEMP/nightly-notes.md" <<EOF
-          Automated nightly build from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
+          $UPDATE_CHANNEL build $APP_VERSION+$GITHUB_RUN_NUMBER from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
 
-          This release is updated in place after each successful build.
+          The nightly release is updated in place after each successful nightly build. Version tags publish stable releases.
 
           - Android: signed universal APK, per-ABI APKs, and AAB.
+          - App updater: app-update.json contains the channel, version, download URLs, sizes, and SHA-256 checksums.
           - iOS: unsigned IPA (sign before installing on an iPhone or iPad).
           - Web: mobile and desktop browser app, included with every bridge release and also available as codeaw-web.tar.gz.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
@@ -303,6 +354,7 @@ jobs:
           [Workflow run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)
           EOF
       - name: Create or move nightly tag
+        if: needs.prepare.outputs.channel == 'nightly'
         run: |
           set -euo pipefail
           if gh api "repos/$GH_REPO/git/ref/tags/nightly" > /dev/null 2>&1; then
@@ -315,6 +367,17 @@ jobs:
       - name: Create or update the same release
         run: |
           set -euo pipefail
+          if [[ "$UPDATE_CHANNEL" == release ]]; then
+            if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+              gh release edit "$RELEASE_TAG" --title "v$APP_VERSION" \
+                --notes-file "$RUNNER_TEMP/nightly-notes.md" --draft=false --prerelease=false --latest
+              gh release upload "$RELEASE_TAG" dist/* --clobber
+            else
+              gh release create "$RELEASE_TAG" --verify-tag --target "$GITHUB_SHA" --title "v$APP_VERSION" \
+                --notes-file "$RUNNER_TEMP/nightly-notes.md" --latest dist/*
+            fi
+            exit 0
+          fi
           if gh release view nightly > /dev/null 2>&1; then
             gh release edit nightly --target "$GITHUB_SHA" --title Nightly --notes-file "$RUNNER_TEMP/nightly-notes.md" \
               --draft=false --prerelease --latest=false

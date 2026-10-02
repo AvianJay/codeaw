@@ -136,7 +136,23 @@ class _PairPageState extends State<PairPage> {
     final scheme = Theme.of(context).colorScheme;
     final paired = AppScope.of(context).paired;
     return Scaffold(
-      appBar: AppBar(title: const Text('配對電腦'), automaticallyImplyLeading: paired),
+      appBar: AppBar(
+        title: const Text('配對電腦'),
+        automaticallyImplyLeading: paired,
+        actions: [
+          ListenableBuilder(
+            listenable: AppScope.read(context).updater,
+            builder: (context, _) => IconButton(
+              tooltip: 'App 更新',
+              onPressed: () => context.push('/updates'),
+              icon: Badge(
+                isLabelVisible: AppScope.read(context).updater.updateAvailable,
+                child: const Icon(Icons.system_update_rounded),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: ContentScrollFrame(maxWidth: 560, padding: const EdgeInsets.all(20), builder: (context, padding) => ListView(
         padding: padding,
         children: [

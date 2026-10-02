@@ -68,6 +68,26 @@ class _SettingsPageState extends State<SettingsPage> {
                 builder: (context, padding) => ListView(
                   padding: padding,
                   children: [
+                    const _Section('App 更新'),
+                    ListenableBuilder(
+                      listenable: state.updater,
+                      builder: (context, _) => ListTile(
+                        leading: Badge(
+                          isLabelVisible: state.updater.updateAvailable,
+                          child: const Icon(Icons.system_update_rounded),
+                        ),
+                        title: Text(
+                          state.updater.updateAvailable
+                              ? '有可用的 App 更新'
+                              : '檢查 App 更新',
+                        ),
+                        subtitle: Text(
+                          '${state.updater.installedVersion} · ${state.updater.channel.name}',
+                        ),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => context.push('/updates'),
+                      ),
+                    ),
                     const _Section('電腦'),
                     ListTile(
                       leading: const Icon(Icons.computer_rounded),

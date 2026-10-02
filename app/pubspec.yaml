@@ -8,6 +8,7 @@ environment:
 
 dependencies:
   app_links: ^7.0.0
+  crypto: ^3.0.7
   cupertino_icons: ^1.0.9
   flutter:
     sdk: flutter
@@ -19,8 +20,11 @@ dependencies:
   http: ^1.6.0
   image_picker: ^1.2.3
   mobile_scanner: ^7.4.2
+  package_info_plus: ^10.2.2
   pasteboard: 0.5.0
   path: ^1.9.1
+  path_provider: ^2.1.6
+  pub_semver: ^2.2.1
   re_highlight: ^0.0.3
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.2

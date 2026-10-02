@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/widgets.dart';
 
+import 'data/app_updater.dart';
 import 'data/bridge_client.dart';
 import 'data/host.dart';
 import 'data/notifications.dart';
@@ -15,11 +16,14 @@ class AppState extends ChangeNotifier {
     this.store, {
     required void Function(String sessionId) openSession,
     BridgeClient Function(HostConfig)? createClient,
+    AppUpdater? updater,
   }) : notifier = LocalNotifier(openSession),
+       updater = updater ?? AppUpdater(),
        _createClient = createClient ?? BridgeClient.new;
 
   final HostStore store;
   final LocalNotifier notifier;
+  final AppUpdater updater;
   final BridgeClient Function(HostConfig) _createClient;
   List<HostConfig> _hosts = const [];
   bool _changingHost = false;
@@ -136,6 +140,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _unbind();
     notifier.dispose();
+    updater.dispose();
     super.dispose();
   }
 }
