@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -6,18 +7,16 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
+import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
-class _Attachment {
-  _Attachment(this.bytes, this.mimeType);
-  final Uint8List bytes;
-  final String mimeType;
-}
+enum _AttachmentAction { gallery, camera, paste }
 
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.controller});
+  const Composer({super.key, required this.controller, this.imageClipboard});
   final SessionController controller;
+  final ImageClipboard? imageClipboard;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -26,13 +25,23 @@ class Composer extends StatefulWidget {
 class _ComposerState extends State<Composer> {
   final _text = TextEditingController();
   final _focus = FocusNode();
-  final _images = <_Attachment>[];
+  final _images = <ClipboardImage>[];
+  late final ImageClipboard _clipboard;
+  late final VoidCallback _stopPasteListener;
+  int _readingImages = 0;
+  int _pasteGeneration = 0;
 
   SessionController get c => widget.controller;
+  bool get _supportsImages => c.agent?.image ?? true;
 
   @override
   void initState() {
     super.initState();
+    _clipboard = widget.imageClipboard ?? ImageClipboard();
+    _stopPasteListener = _clipboard.listen(
+      canPaste: () => mounted && _focus.hasFocus && _supportsImages,
+      onPaste: (paste) => unawaited(_consumePaste(paste)),
+    );
     _text.text = c.draft;
     _text.addListener(() {
       c.draft = _text.text;
@@ -42,6 +51,7 @@ class _ComposerState extends State<Composer> {
 
   @override
   void dispose() {
+    _stopPasteListener();
     _text.dispose();
     _focus.dispose();
     super.dispose();
@@ -51,19 +61,22 @@ class _ComposerState extends State<Composer> {
   void didUpdateWidget(Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, c)) {
+      _pasteGeneration++;
+      _readingImages = 0;
       _images.clear();
       _text.text = c.draft;
     }
   }
 
   Future<void> _pick(ImageSource source) async {
+    final target = c;
     final file = await ImagePicker().pickImage(
       source: source,
       maxWidth: 1600,
       maxHeight: 1600,
       imageQuality: 85,
     );
-    if (file == null) return;
+    if (file == null || !mounted || !identical(c, target)) return;
     final bytes = await file.readAsBytes();
     final lower = file.name.toLowerCase();
     final mime =
@@ -75,10 +88,79 @@ class _ComposerState extends State<Composer> {
             : lower.endsWith('.gif')
             ? 'image/gif'
             : 'image/jpeg');
-    setState(() => _images.add(_Attachment(bytes, mime)));
+    if (mounted && identical(c, target)) {
+      setState(() => _images.add(ClipboardImage(bytes, mime)));
+    }
+  }
+
+  Future<bool> _consumePaste(
+    Future<ImagePaste> future, {
+    bool notifyEmpty = false,
+  }) async {
+    final target = c;
+    final generation = _pasteGeneration;
+    setState(() => _readingImages++);
+    bool current() =>
+        mounted && identical(c, target) && generation == _pasteGeneration;
+    try {
+      final paste = await future;
+      if (!current() || !_supportsImages) return true;
+      if (paste.images.isEmpty) {
+        if (notifyEmpty) _pasteMessage('剪貼簿中沒有圖片');
+        return false;
+      }
+      setState(() => _images.addAll(paste.images));
+      if (paste.text.isNotEmpty) {
+        final value = _text.value;
+        _text.value = value.replaced(
+          value.selection.isValid
+              ? value.selection
+              : TextRange.collapsed(value.text.length),
+          paste.text,
+        );
+      }
+      return true;
+    } catch (_) {
+      if (current()) {
+        _pasteMessage(
+          _clipboard.usesPasteEvents
+              ? '無法讀取剪貼簿圖片，請在輸入框使用 Ctrl／⌘＋V 貼上'
+              : '無法貼上剪貼簿圖片，請重新複製圖片後再貼上',
+        );
+      }
+      return !current();
+    } finally {
+      if (current()) setState(() => _readingImages--);
+    }
+  }
+
+  void _pasteMessage(String message) => ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text(message)));
+
+  Future<bool> _pasteImage({bool notifyEmpty = false}) {
+    if (!_supportsImages) return Future.value(false);
+    return _consumePaste(_clipboard.read(), notifyEmpty: notifyEmpty);
+  }
+
+  void _insertKeyboardImage(KeyboardInsertedContent content) {
+    if (!_supportsImages ||
+        !ClipboardImage.mimeTypes.contains(content.mimeType)) {
+      return;
+    }
+    try {
+      final bytes = content.data;
+      if (bytes == null || bytes.isEmpty) {
+        throw const FormatException('Missing image bytes');
+      }
+      setState(() => _images.add(ClipboardImage.fromBytes(bytes)));
+    } catch (_) {
+      _pasteMessage('無法貼上圖片，請使用「貼上剪貼簿圖片」或從相簿選擇');
+    }
   }
 
   void _send({bool queue = false}) {
+    if (_readingImages > 0) return;
     final text = _text.text.trim();
     if (text.isEmpty && _images.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
@@ -115,6 +197,7 @@ class _ComposerState extends State<Composer> {
     final suggestions = _suggestions;
     final canSend =
         c.client.isOnline &&
+        _readingImages == 0 &&
         (_text.text.trim().isNotEmpty || _images.isNotEmpty);
     final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
     return Padding(
@@ -130,176 +213,231 @@ class _ComposerState extends State<Composer> {
             if (canSend) _send();
           },
         },
-        child: Material(
-          color: scheme.surfaceContainer,
-          shape: wide
-              ? RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                  side: BorderSide(color: scheme.outlineVariant),
-                )
-              : null,
-          clipBehavior: Clip.antiAlias,
-          child: SafeArea(
-            top: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (suggestions.isNotEmpty)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: ListView(
-                      shrinkWrap: true,
-                      padding: EdgeInsets.zero,
-                      children: [
-                        for (final cmd in suggestions)
-                          ListTile(
-                            dense: true,
-                            title: Text(
-                              '/${cmd['name']}',
-                              style: const TextStyle(fontFamily: 'monospace'),
+        child: Actions(
+          actions: {
+            PasteTextIntent: _ImagePasteAction(
+              canPasteImage: () =>
+                  _supportsImages && !_clipboard.usesPasteEvents,
+              pasteImage: _pasteImage,
+            ),
+          },
+          child: Material(
+            color: scheme.surfaceContainer,
+            shape: wide
+                ? RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    side: BorderSide(color: scheme.outlineVariant),
+                  )
+                : null,
+            clipBehavior: Clip.antiAlias,
+            child: SafeArea(
+              top: false,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (suggestions.isNotEmpty)
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 220),
+                      child: ListView(
+                        shrinkWrap: true,
+                        padding: EdgeInsets.zero,
+                        children: [
+                          for (final cmd in suggestions)
+                            ListTile(
+                              dense: true,
+                              title: Text(
+                                '/${cmd['name']}',
+                                style: const TextStyle(fontFamily: 'monospace'),
+                              ),
+                              subtitle: Text(
+                                '${cmd['description'] ?? ''}',
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () {
+                                final hint = (cmd['input'] as Map?)?['hint'];
+                                _text.text =
+                                    '/${cmd['name']}${hint != null ? ' ' : ''}';
+                                _text.selection = TextSelection.collapsed(
+                                  offset: _text.text.length,
+                                );
+                                _focus.requestFocus();
+                              },
                             ),
-                            subtitle: Text(
-                              '${cmd['description'] ?? ''}',
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            onTap: () {
-                              final hint = (cmd['input'] as Map?)?['hint'];
-                              _text.text =
-                                  '/${cmd['name']}${hint != null ? ' ' : ''}';
-                              _text.selection = TextSelection.collapsed(
-                                offset: _text.text.length,
-                              );
-                              _focus.requestFocus();
-                            },
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ConfigBar(controller: c),
-                if (_images.isNotEmpty)
-                  SizedBox(
-                    height: 72,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 6,
-                      ),
-                      children: [
-                        for (final img in _images)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: Stack(
-                              children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Image.memory(
-                                    img.bytes,
-                                    width: 60,
-                                    height: 60,
-                                    fit: BoxFit.cover,
+                  ConfigBar(controller: c),
+                  if (_readingImages > 0) const LinearProgressIndicator(),
+                  if (_images.isNotEmpty)
+                    SizedBox(
+                      height: 72,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        children: [
+                          for (final img in _images)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: Stack(
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: Image.memory(
+                                      img.bytes,
+                                      width: 60,
+                                      height: 60,
+                                      fit: BoxFit.cover,
+                                    ),
                                   ),
-                                ),
-                                Positioned(
-                                  right: -10,
-                                  top: -10,
-                                  child: IconButton(
-                                    iconSize: 16,
-                                    icon: const Icon(Icons.cancel_rounded),
-                                    onPressed: () =>
-                                        setState(() => _images.remove(img)),
+                                  Positioned(
+                                    right: -10,
+                                    top: -10,
+                                    child: IconButton(
+                                      iconSize: 16,
+                                      tooltip: '移除圖片',
+                                      icon: const Icon(Icons.cancel_rounded),
+                                      onPressed: () =>
+                                          setState(() => _images.remove(img)),
+                                    ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(4, 4, 8, 8),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      if (agent?.image ?? true)
-                        PopupMenuButton<ImageSource>(
-                          icon: const Icon(Icons.add_photo_alternate_outlined),
-                          tooltip: '附加圖片',
-                          onSelected: _pick,
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(
-                              value: ImageSource.gallery,
-                              child: Text('從相簿選擇'),
-                            ),
-                            PopupMenuItem(
-                              value: ImageSource.camera,
-                              child: Text('拍照'),
-                            ),
-                          ],
-                        ),
-                      Expanded(
-                        child: TextField(
-                          controller: _text,
-                          focusNode: _focus,
-                          minLines: 1,
-                          maxLines: 6,
-                          textInputAction: TextInputAction.newline,
-                          decoration: InputDecoration(
-                            hintText: running
-                                ? (agent?.steering ?? false
-                                      ? '補充指示，插入目前回合'
-                                      : '下一則，排在目前回合後')
-                                : '輸入訊息，/ 開頭是指令',
-                            hintMaxLines: 1,
-                            filled: true,
-                            fillColor: scheme.surface,
-                            isDense: true,
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 10,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(22),
-                              borderSide: BorderSide.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      if (running)
-                        IconButton.filledTonal(
-                          tooltip: '停止',
-                          icon: const Icon(Icons.stop_rounded),
-                          onPressed: c.cancel,
-                        ),
-                      GestureDetector(
-                        onLongPress: canSend && running
-                            ? () => _send(queue: true)
-                            : null,
-                        child: IconButton.filled(
-                          tooltip: running ? '送出（長按＝排隊）' : '送出',
-                          icon: const Icon(Icons.arrow_upward_rounded),
-                          onPressed: canSend ? _send : null,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                if (wide)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Text(
-                      'Ctrl / ⌘ + Enter 傳送 · Enter 換行',
-                      style: TextStyle(fontSize: 11, color: scheme.outline),
+                    padding: const EdgeInsets.fromLTRB(4, 4, 8, 8),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        if (agent?.image ?? true)
+                          PopupMenuButton<_AttachmentAction>(
+                            icon: const Icon(
+                              Icons.add_photo_alternate_outlined,
+                            ),
+                            tooltip: '附加圖片',
+                            onSelected: (action) async {
+                              switch (action) {
+                                case _AttachmentAction.gallery:
+                                  await _pick(ImageSource.gallery);
+                                case _AttachmentAction.camera:
+                                  await _pick(ImageSource.camera);
+                                case _AttachmentAction.paste:
+                                  await _pasteImage(notifyEmpty: true);
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: _AttachmentAction.gallery,
+                                child: Text('從相簿選擇'),
+                              ),
+                              PopupMenuItem(
+                                value: _AttachmentAction.camera,
+                                child: Text('拍照'),
+                              ),
+                              PopupMenuItem(
+                                value: _AttachmentAction.paste,
+                                child: Text('貼上剪貼簿圖片'),
+                              ),
+                            ],
+                          ),
+                        Expanded(
+                          child: TextField(
+                            controller: _text,
+                            focusNode: _focus,
+                            minLines: 1,
+                            maxLines: 6,
+                            textInputAction: TextInputAction.newline,
+                            contentInsertionConfiguration: _supportsImages
+                                ? ContentInsertionConfiguration(
+                                    allowedMimeTypes: ClipboardImage.mimeTypes,
+                                    onContentInserted: _insertKeyboardImage,
+                                  )
+                                : null,
+                            decoration: InputDecoration(
+                              hintText: running
+                                  ? (agent?.steering ?? false
+                                        ? '補充指示，插入目前回合'
+                                        : '下一則，排在目前回合後')
+                                  : '輸入訊息，/ 開頭是指令',
+                              hintMaxLines: 1,
+                              filled: true,
+                              fillColor: scheme.surface,
+                              isDense: true,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 10,
+                              ),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(22),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        if (running)
+                          IconButton.filledTonal(
+                            tooltip: '停止',
+                            icon: const Icon(Icons.stop_rounded),
+                            onPressed: c.cancel,
+                          ),
+                        GestureDetector(
+                          onLongPress: canSend && running
+                              ? () => _send(queue: true)
+                              : null,
+                          child: IconButton.filled(
+                            tooltip: running ? '送出（長按＝排隊）' : '送出',
+                            icon: const Icon(Icons.arrow_upward_rounded),
+                            onPressed: canSend ? _send : null,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-              ],
+                  if (wide)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Text(
+                        'Ctrl / ⌘ + Enter 傳送 · Enter 換行',
+                        style: TextStyle(fontSize: 11, color: scheme.outline),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+/// Preserve Flutter's selection, text paste and undo behavior when there is no image.
+class _ImagePasteAction extends Action<PasteTextIntent> {
+  _ImagePasteAction({required this.canPasteImage, required this.pasteImage});
+  final bool Function() canPasteImage;
+  final Future<bool> Function() pasteImage;
+
+  @override
+  bool consumesKey(PasteTextIntent intent) =>
+      canPasteImage() || (callingAction?.consumesKey(intent) ?? false);
+
+  @override
+  Object? invoke(PasteTextIntent intent) {
+    final fallback = callingAction;
+    if (!canPasteImage()) return fallback?.invoke(intent);
+    unawaited(
+      pasteImage().then((handled) {
+        if (!handled) fallback?.invoke(intent);
+      }),
+    );
+    return null;
   }
 }
 

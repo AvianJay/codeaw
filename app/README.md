@@ -8,6 +8,13 @@ Unsent text is retained for recently opened conversations. Use Ctrl+Enter or Com
 
 Side gutters beside scrollable content also accept mouse-wheel scrolling while the content stays within its reading width.
 
+For agents that accept images, Ctrl+V / Command+V in the message box pastes clipboard pictures as removable preview attachments. The image menu also offers “貼上剪貼簿圖片”. PNG, JPEG, WebP, and GIF are supported, along with Android keyboard image insertion. Ordinary text paste and undo keep their normal behavior. In browsers, use the keyboard shortcut if clipboard permission for the image-menu action is unavailable.
+
+```sh
+flutter test test/composer_paste_test.dart
+flutter test --platform chrome test/image_clipboard_web_test.dart
+```
+
 ```powershell
 flutter test test/adaptive_layout_test.dart
 # Optional visual previews in test/screenshots/:
