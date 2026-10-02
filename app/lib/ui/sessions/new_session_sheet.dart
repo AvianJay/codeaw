@@ -165,6 +165,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 for (final a in agents)
                   ChoiceChip(
                     avatar: AgentAvatar(agentId: a.id, label: a.name, size: 20),
+                    showCheckmark: false,
                     label: Text(a.name),
                     selected: _agentId == a.id,
                     onSelected: (_) => setState(() => _agentId = a.id),

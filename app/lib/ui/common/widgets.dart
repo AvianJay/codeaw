@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../app_state.dart';
 import '../../data/bridge_client.dart';
@@ -95,7 +96,7 @@ class StateBadge extends StatelessWidget {
 
 /// Picks a stable color per agent id.
 Color agentColor(String agentId) {
-  switch (agentId) {
+  switch (agentId.trim().toLowerCase()) {
     case 'claude':
       return const Color(0xFFD97757);
     case 'codex':
@@ -104,13 +105,20 @@ Color agentColor(String agentId) {
       return const Color(0xFF3B82F6);
     case 'gemini':
       return const Color(0xFF8E75B2);
+    case 'deepseek':
+      return const Color(0xFF4D6BFE);
   }
   final h = agentId.codeUnits.fold<int>(7, (a, c) => (a * 31 + c) & 0xffff);
   return HSLColor.fromAHSL(1, (h % 360).toDouble(), 0.55, 0.5).toColor();
 }
 
 class AgentAvatar extends StatelessWidget {
-  const AgentAvatar({super.key, required this.agentId, this.size = 32, this.label});
+  const AgentAvatar({
+    super.key,
+    required this.agentId,
+    this.size = 32,
+    this.label,
+  });
   final String agentId;
   final double size;
   final String? label;
@@ -119,12 +127,42 @@ class AgentAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = agentColor(agentId);
     final text = (label ?? agentId).trim();
+    final id = agentId.trim().toLowerCase();
+    final asset = switch (id) {
+      'claude' ||
+      'codex' ||
+      'kimi' ||
+      'gemini' ||
+      'deepseek' => 'assets/agents/$id.svg',
+      _ => null,
+    };
     return Container(
       width: size,
       height: size,
       alignment: Alignment.center,
-      decoration: BoxDecoration(color: c.withValues(alpha: 0.16), borderRadius: BorderRadius.circular(size * 0.3)),
-      child: Text(text.isEmpty ? '?' : text.characters.first.toUpperCase(), style: TextStyle(color: c, fontWeight: FontWeight.w700, fontSize: size * 0.45)),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(size * 0.3),
+      ),
+      child: asset == null
+          ? Text(
+              text.isEmpty ? '?' : text.characters.first.toUpperCase(),
+              style: TextStyle(
+                color: c,
+                fontWeight: FontWeight.w700,
+                fontSize: size * 0.45,
+              ),
+            )
+          : Padding(
+              padding: EdgeInsets.all(size * 0.18),
+              child: SvgPicture.asset(
+                asset,
+                width: size * 0.64,
+                height: size * 0.64,
+                colorFilter: ColorFilter.mode(c, BlendMode.srcIn),
+                semanticsLabel: text.isEmpty ? id : text,
+              ),
+            ),
     );
   }
 }

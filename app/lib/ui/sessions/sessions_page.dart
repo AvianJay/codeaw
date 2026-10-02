@@ -193,14 +193,18 @@ class _SessionsPageState extends State<SessionsPage> {
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: ChoiceChip(
-                          avatar: Icon(
-                            Icons.circle,
-                            size: 10,
-                            color: a.status == 'error'
-                                ? scheme.error
-                                : agentColor(a.id),
+                          avatar: AgentAvatar(
+                            agentId: a.id,
+                            label: a.name,
+                            size: 20,
                           ),
-                          label: Text(a.name),
+                          showCheckmark: false,
+                          label: Text(
+                            a.name,
+                            style: a.status == 'error'
+                                ? TextStyle(color: scheme.error)
+                                : null,
+                          ),
                           selected: _agentFilter == a.id,
                           onSelected: (_) => setState(
                             () => _agentFilter = _agentFilter == a.id
