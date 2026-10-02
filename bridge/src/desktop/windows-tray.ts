@@ -291,6 +291,74 @@ function Show-Devices {
     $form.Activate()
 }
 
+function Refresh-Updater {
+    $script:update = Invoke-Control 'updaterStatus'
+    $busy = $script:update.state -in @('checking', 'downloading')
+    $script:updateChannel.Enabled = -not $busy
+    $script:updateCheck.Enabled = -not $busy
+    $script:updateDownload.Enabled = (-not $busy) -and $script:update.updateAvailable
+    $script:updateInstall.Enabled = (-not $busy) -and $script:update.canInstall -and $script:update.updateAvailable
+    $script:updateInstalled.Text = '目前版本：' + $script:update.installedVersion + ' · ' + $script:update.buildChannel + ' · ' + $script:update.target
+    $script:updateMessage.Text = $script:update.message
+    $script:updateProgress.Visible = $script:update.state -eq 'downloading'
+    if ($script:update.progress) { $script:updateProgress.Value = [Math]::Min(100, [int]($script:update.progress * 100)) }
+    $script:updateInstall.Text = if ($script:update.state -eq 'ready' -and $script:update.kind -eq 'installer') { '執行安裝程式' } else { '下載更新並驗證' }
+}
+
+function Show-Updater {
+    $form = New-Window 'Bridge 更新' 660 388
+    $script:updateInstalled = Add-Label $form '' 24 24 612 28
+    Add-Label $form '更新頻道' 24 67 92 28 | Out-Null
+    $script:updateChannel = [System.Windows.Forms.ComboBox]::new()
+    $script:updateChannel.Location = [System.Drawing.Point]::new(120, 64)
+    $script:updateChannel.Size = [System.Drawing.Size]::new(184, 28)
+    $script:updateChannel.DropDownStyle = 'DropDownList'
+    $script:updateChannel.Items.AddRange(@('release', 'nightly'))
+    $form.Controls.Add($script:updateChannel)
+    $script:updateMessage = Add-Label $form '' 24 112 612 100
+    $script:updateMessage.AutoEllipsis = $true
+    $script:updateProgress = [System.Windows.Forms.ProgressBar]::new()
+    $script:updateProgress.Location = [System.Drawing.Point]::new(24, 218)
+    $script:updateProgress.Size = [System.Drawing.Size]::new(612, 20)
+    $form.Controls.Add($script:updateProgress)
+    Add-Label $form '更新會中止執行中的回合。設定與配對裝置會保留。' 24 254 612 28 | Out-Null
+    $script:updateCheck = Add-Button $form '檢查更新' 24 304 120 {
+        try { Invoke-Control 'checkUpdate' | Out-Null; Refresh-Updater } catch { Show-Error $_ }
+    }
+    $script:updateDownload = Add-Button $form '下載可攜版' 160 304 136 {
+        try { Invoke-Control 'prepareBridgeUpdate' @{ kind = 'portable' } | Out-Null; Refresh-Updater } catch { Show-Error $_ }
+    }
+    $script:updateInstall = Add-Button $form '下載更新並驗證' 312 304 160 {
+        try {
+            if ($script:update.state -eq 'ready' -and $script:update.kind -eq 'installer') {
+                if ([System.Windows.Forms.MessageBox]::Show('安裝 bridge 更新？安裝時執行中的回合將中止。', 'Bridge 更新', 'OKCancel', 'Question') -ne 'OK') { return }
+                $installer = Invoke-Control 'bridgeUpdateInstaller'
+                Start-Process -FilePath $installer.file -ArgumentList ('/D=' + $installer.directory)
+                if ($installer.stopCustomProfile) { Invoke-Control 'stop' | Out-Null }
+                $script:window.Close()
+            } else { Invoke-Control 'prepareBridgeUpdate' @{ kind = 'installer' } | Out-Null; Refresh-Updater }
+        } catch { Show-Error $_ }
+    }
+    Add-Button $form '版本說明' 488 304 148 {
+        try { Start-Process -FilePath $script:update.releaseUrl } catch { Show-Error $_ }
+    } | Out-Null
+    try {
+        $initial = Invoke-Control 'updaterStatus'
+        $script:updateChannel.SelectedItem = $initial.channel
+        $script:updateChannel.Add_SelectedIndexChanged({
+            try {
+                Invoke-Control 'setUpdateChannel' @{ channel = [string]$script:updateChannel.SelectedItem } | Out-Null
+                Invoke-Control 'checkUpdate' | Out-Null
+                Refresh-Updater
+            } catch { Show-Error $_ }
+        })
+        if ($initial.state -eq 'idle') { Invoke-Control 'checkUpdate' | Out-Null }
+        Refresh-Updater
+    } catch { Show-Error $_ }
+    $form.Show()
+    $form.Activate()
+}
+
 $script:tray = [System.Windows.Forms.NotifyIcon]::new()
 $script:tray.Icon = $script:trayIcon
 $script:tray.Text = 'codeaw bridge'
@@ -303,6 +371,7 @@ $menu.Items.Add('配對手機…').Add_Click({ Show-Pair })
 $menu.Items.Add('設定…').Add_Click({ Show-Settings })
 $menu.Items.Add('已配對裝置…').Add_Click({ Show-Devices })
 $menu.Items.Add('安裝 ACP agents…').Add_Click({ Show-AgentInstaller })
+$menu.Items.Add('Bridge 更新…').Add_Click({ Show-Updater })
 $script:startupItem = $menu.Items.Add('登入後自動啟動系統匣')
 $script:startupItem.Add_Click({
     try {
@@ -344,7 +413,8 @@ $script:timer.Add_Tick({
         $script:failures = 0
         $script:statusItem.Text = 'Bridge ' + $status.state + ' · ' + $status.clients + ' 台連線 · :' + $status.port
         $script:tray.Text = 'codeaw bridge · ' + $status.state + ' · ' + $status.clients + ' connected'
-        switch ($status.page) { 'pair' { Show-Pair }; 'settings' { Show-Settings }; 'devices' { Show-Devices }; 'agents' { Show-AgentInstaller } }
+        switch ($status.page) { 'pair' { Show-Pair }; 'settings' { Show-Settings }; 'devices' { Show-Devices }; 'agents' { Show-AgentInstaller }; 'updates' { Show-Updater } }
+        if ($script:page -eq 'Bridge 更新' -and $script:window -and -not $script:window.IsDisposed) { Refresh-Updater }
         if ($script:page -eq '安裝 ACP agents' -and $script:window -and -not $script:window.IsDisposed) {
             $install = Invoke-Control 'installerStatus'
             $script:installBusy = $install.state -eq 'installing'

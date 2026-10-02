@@ -14,6 +14,7 @@ const { values } = parseArgs({ options: {
 } });
 if (!["x64", "arm64"].includes(values.arch)) throw new Error("Installer architecture must be x64 or arm64");
 const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+pkg.version = process.env.CODEAW_BUILD_VERSION ?? pkg.version;
 if (!/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?$/.test(pkg.version)) throw new Error("Invalid package version for NSIS");
 const version = pkg.version.split(/[-+]/)[0].split(".").map(Number);
 if (version.some((part) => part > 65535)) throw new Error("NSIS version components must be at most 65535");

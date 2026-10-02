@@ -3,7 +3,7 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export function createUpdateManifest({ directory, repository, channel, version, buildNumber, tag, commit }) {
+export function createManifest({ directory, repository, channel, version, buildNumber, tag, commit }, files) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository) ||
       !['release', 'nightly'].includes(channel) ||
       !/^\d+\.\d+\.\d+$/.test(version) ||
@@ -13,7 +13,7 @@ export function createUpdateManifest({ directory, repository, channel, version, 
   }
   const base = `https://github.com/${repository}/releases/download/${tag}`;
   const assets = {};
-  for (const [platform, name] of [['android', 'codeaw-universal.apk'], ['ios', 'codeaw-ios-unsigned.ipa']]) {
+  for (const [platform, name] of files) {
     const path = resolve(directory, name);
     const size = statSync(path).size;
     if (size <= 0) throw new Error(`Empty update asset: ${name}`);
@@ -32,6 +32,10 @@ export function createUpdateManifest({ directory, repository, channel, version, 
     releaseUrl: `https://github.com/${repository}/releases/tag/${tag}`,
     assets,
   };
+}
+
+export function createUpdateManifest(metadata) {
+  return createManifest(metadata, [['android', 'codeaw-universal.apk'], ['ios', 'codeaw-ios-unsigned.ipa']]);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

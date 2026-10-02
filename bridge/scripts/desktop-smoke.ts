@@ -26,6 +26,11 @@ runtime.installer.list = async () => [
   { id: "codex-acp", name: "Codex", version: "1.0.0", description: "ACP adapter for Codex", configured: true, kind: "npx", supported: true, target: "windows-x86_64" },
   { id: "test-unsupported", name: "Unsupported fixture", version: "1.0.0", description: "No Windows distribution", configured: false, kind: undefined, supported: false, target: "windows-x86_64" },
 ];
+// Render the updater with deterministic data; never contact a release server or launch an installer.
+const updateFixture = { ...runtime.updater.getStatus(), state: "available" as const, updateAvailable: true,
+  canInstall: true, installedVersion: "0.1.0+41", message: "Bridge 0.1.0+42 is available." };
+runtime.updater.getStatus = () => updateFixture;
+runtime.updater.check = () => updateFixture;
 
 async function run(command: string, args: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -95,7 +100,14 @@ try {
                     if ($script:installButton.Enabled) { throw 'Unsupported agent can be installed' }
                     Show-Devices
                 }
-                4 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; [System.Windows.Forms.Application]::Exit() }
+                4 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; Show-Updater }
+                5 {
+                    if (-not $script:updateCheck.Enabled -or -not $script:updateInstall.Enabled -or -not $script:updateDownload.Enabled) { throw 'Bridge updater actions did not load' }
+                    if ($script:updateInstalled.Text -notmatch '0\.1\.0\+41' -or $script:updateMessage.Text -notmatch '0\.1\.0\+42') { throw 'Bridge updater versions did not load' }
+                    $script:updateCheck.PerformClick()
+                    Capture-Window 'updates'
+                    [System.Windows.Forms.Application]::Exit()
+                }
             }
             $script:step++
         } catch { [Console]::Error.WriteLine($_); $script:smokeFailed = $true; [System.Windows.Forms.Application]::Exit() }
@@ -124,7 +136,7 @@ try {
   await run("powershell.exe", ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptFile,
     "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output,
     "-IconPath", fileURLToPath(new URL("../src/assets/codeaw.ico", import.meta.url))]);
-  for (const name of ["tray-menu", "pair", "settings", "agents", "devices"]) {
+  for (const name of ["tray-menu", "pair", "settings", "agents", "devices", "updates"]) {
     if (!fs.existsSync(path.join(output, `${name}.png`))) throw new Error(`Missing ${name} screenshot`);
   }
   process.stdout.write(`Desktop windows rendered; service host compiled. Screenshots: ${output}\n`);

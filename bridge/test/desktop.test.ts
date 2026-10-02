@@ -16,6 +16,7 @@ import { setLogSilent } from "../src/util/log.js";
 import { startBridge, type BridgeOptions } from "../src/bridge.js";
 import { createAppLaunch } from "../src/desktop/pairing.js";
 import { ACP_REGISTRY_URL, platformTarget } from "../src/agents/registry.js";
+import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../src/version.js";
 
 setLogSilent(true);
 const homes: string[] = [];
@@ -55,6 +56,19 @@ afterEach(async () => {
 });
 
 describe("desktop runtime", () => {
+  it("exposes update state through local IPC without opening remote update administration", async () => {
+    const runtime = await start();
+    const file = runtime.loaded.file;
+    expect(await requestControl(file, { command: "status" })).toMatchObject({ version: VERSION, buildNumber: BUILD_NUMBER, channel: UPDATE_CHANNEL });
+    expect(await requestControl(file, { command: "updaterStatus" })).toMatchObject({ state: "idle", channel: UPDATE_CHANNEL });
+    await expect(requestControl(file, { command: "setUpdateChannel", channel: "invalid" })).rejects.toThrow(/channel/);
+    const channel = UPDATE_CHANNEL === "release" ? "nightly" : "release";
+    expect(await requestControl(file, { command: "setUpdateChannel", channel })).toMatchObject({ channel, state: "idle" });
+    await expect(requestControl(file, { command: "prepareBridgeUpdate", kind: "portable" })).rejects.toThrow(/newer/);
+    await expect(requestControl(file, { command: "bridgeUpdateInstaller" })).rejects.toThrow(/verified/);
+    expect((await fetch(`http://127.0.0.1:${runtime.bridge!.port()}/api/prepareBridgeUpdate`)).status).toBe(401);
+  });
+
   it("installs through local IPC, keeps the bridge running until restart and loads the new agent", async () => {
     const runtime = await start();
     const file = runtime.loaded.file;
@@ -243,6 +257,21 @@ describe("background CLI", () => {
       child.once("exit", (code) => code === 0 ? resolve(output) : reject(new Error(`${args.join(" ")}: ${output}`)));
     });
   }
+
+  it("retries update checks after a previous failure in the running bridge", async () => {
+    const file = configFile();
+    let checks = 0;
+    let update = { state: "error", message: "Previous update check failed", installedVersion: `${VERSION}+${BUILD_NUMBER}`,
+      channel: UPDATE_CHANNEL, target: "windows-x64", releaseUrl: "https://github.com/AvianJay/codeaw/releases/latest", updateAvailable: false };
+    servers.push(await serveControl(file, async (request) => {
+      if (request.command === "status") return { state: "running" };
+      if (request.command === "updaterStatus") return update;
+      if (request.command === "checkUpdate") { checks++; update = { ...update, state: "current", message: "Bridge is up to date." }; return update; }
+      throw new Error("Unexpected update command");
+    }));
+    expect(await cli(file, ["update", "check"])).toContain("Bridge is up to date.");
+    expect(checks).toBe(1);
+  });
 
   it("survives the launching CLI, avoids duplicate background processes, restarts and stops", async () => {
     const file = configFile();

@@ -142,6 +142,21 @@ codeaw-bridge stop                  # 等待 bridge 正常停止
 
 本機管理透過 Windows named pipe／Unix socket，沒有新增可從手機連線呼叫的管理 HTTP API。背景／服務模式不會把配對碼寫進日誌。
 
+### Bridge 更新
+
+Windows 系統匣的「Bridge 更新…」可檢查版本、切換 `release`／`nightly` 頻道，並下載更新。也可執行 `codeaw-bridge update --window` 開啟更新視窗。
+
+```powershell
+codeaw-bridge update check
+codeaw-bridge update check --channel nightly
+codeaw-bridge update install     # 已安裝的 Windows 版：驗證後開啟 NSIS 安裝程式
+codeaw-bridge update download    # 下載目前平台的可攜版並驗證
+```
+
+更新只會在使用者操作後下載或安裝。下載會檢查檔案大小及 SHA-256；nightly 會比較建置編號。頻道選擇保存在設定資料夾，不修改 agent 設定。安裝更新會中止執行中的回合，保留設定與配對裝置；已註冊 Windows 服務時需先移除服務再更新。可攜版、Linux、macOS 或從原始碼執行時，使用 `update download` 取得已驗證的壓縮檔，停止 bridge 後解壓並替換執行檔與 `web/`。下載保存在設定資料夾的 `updates/`，更新完成後可刪除。
+
+CI 發布 `bridge-update.json`，包含各平台安裝包與可攜版的網址、大小及 SHA-256，並將版本、建置編號、頻道與目標平台寫入執行檔。首次發布更新 manifest 前，檢查會提示該頻道尚未提供更新資料。
+
 ### Windows 防火牆
 
 如果手機連不上，但電腦自己可以連，請用系統管理員身分允許來自 tailnet 的連線：

@@ -13,6 +13,7 @@ import { BridgeRuntime, type DesktopPage } from "./desktop/runtime.js";
 import { manageService } from "./desktop/service.js";
 import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
 import { AgentInstaller, type InstallStatus } from "./agents/install.js";
+import { BridgeUpdater, installBridgeUpdate, type BridgeUpdateStatus } from "./updater.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -27,6 +28,7 @@ Commands:
   status           Show bridge status and connected device count
   settings         Open the Windows settings window
   agents <action>  list / install <id> (ACP registry agents)
+  update <action>  check / download / install (verified bridge updates)
   autostart <action> install / uninstall / status (Windows login tray)
   init             Write a starter config if none exists
   pair             Print a QR / one-time code (valid 5 minutes)
@@ -40,7 +42,8 @@ Options:
   -p, --port <port>    Override listen.port (0 = random)
       --background     Start detached; logs go to the config folder's bridge.log
       --tray           Show the Windows tray when starting
-      --window         Open the pairing or ACP installer window (pair / agents)
+      --window         Open the pairing, ACP installer or updater window
+      --channel <name>  Select release or nightly for bridge updates
       --headless       Suppress interactive pairing (for service managers)
       --debug          Verbose logging
   -h, --help           Show this help
@@ -62,6 +65,7 @@ async function main(): Promise<void> {
     config: { type: "string", short: "c" }, port: { type: "string", short: "p" },
     background: { type: "boolean" }, tray: { type: "boolean" }, window: { type: "boolean" },
     headless: { type: "boolean" }, debug: { type: "boolean" }, help: { type: "boolean", short: "h" },
+    channel: { type: "string" },
   } });
   if (values.help) { process.stdout.write(HELP); return; }
   if (values.debug) setLogLevel("debug");
@@ -73,9 +77,10 @@ async function main(): Promise<void> {
     throw new Error("Native tray and windows are currently available on Windows");
   }
 
-  const showDesktop = async (page?: DesktopPage) => {
+  const showDesktop = async (page?: DesktopPage, channel?: string) => {
     const loaded = ensureConfig(file);
     await startBackground(file, { port, debug: values.debug });
+    if (channel !== undefined) await requestControl(file, { command: "setUpdateChannel", channel });
     await requestControl(file, { command: "show", page: page ?? (new DeviceStore(loaded.home).list().length === 0 ? "pair" : undefined) });
     await launchDesktop(file);
     log.info("bridge running in the background; use the tray menu to pair or change settings");
@@ -88,6 +93,47 @@ async function main(): Promise<void> {
     }
     case "tray": await showDesktop(); return;
     case "settings": await showDesktop("settings"); return;
+    case "update": {
+      const action = positionals[1] ?? "check";
+      if (!["check", "download", "install"].includes(action) || (values.channel !== undefined && !["release", "nightly"].includes(values.channel))) {
+        throw new Error("Usage: codeaw-bridge update <check|download|install> [--channel release|nightly] [--window]");
+      }
+      if (values.window) { await showDesktop("updates", values.channel); return; }
+      const running = await runningStatus(file);
+      const updater = new BridgeUpdater(file);
+      const status = () => running ? requestControl<BridgeUpdateStatus>(file, { command: "updaterStatus" }) : Promise.resolve(updater.getStatus());
+      const wait = async (requireSuccess = true) => {
+        let found = await status();
+        let message = "";
+        while (["checking", "downloading"].includes(found.state)) {
+          if (found.message !== message) { message = found.message; process.stdout.write(message + "\n"); }
+          if (!running) found = await updater.wait();
+          else { await new Promise((resolve) => setTimeout(resolve, 500)); found = await status(); }
+        }
+        if (requireSuccess && found.state === "error") throw new Error(found.message);
+        return found;
+      };
+      if (values.channel) {
+        if (running) await requestControl(file, { command: "setUpdateChannel", channel: values.channel });
+        else updater.setChannel(values.channel);
+      }
+      let found = await wait(false);
+      // Reuse a verified installer staged by the tray or a previous CLI invocation.
+      if (!(action === "install" && found.state === "ready" && found.kind === "installer")) {
+        if (running) await requestControl(file, { command: "checkUpdate" }); else updater.check();
+        found = await wait();
+        process.stdout.write(`${found.message}\nInstalled: ${found.installedVersion} · ${found.channel} · ${found.target}\n${found.releaseUrl}\n`);
+        if (action === "check" || !found.updateAvailable) return;
+        const kind = action === "install" ? "installer" : "portable";
+        if (running) await requestControl(file, { command: "prepareBridgeUpdate", kind }); else updater.prepare(kind);
+        found = await wait();
+      }
+      if (action === "install") {
+        await installBridgeUpdate(file, found);
+        process.stdout.write("Verified bridge installer opened. Complete the installer to update and restart the tray.\n");
+      } else process.stdout.write(found.message + "\n");
+      return;
+    }
     case "agents": {
       if (values.window) { await showDesktop("agents"); return; }
       const action = positionals[1] ?? "list";

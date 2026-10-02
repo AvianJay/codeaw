@@ -200,7 +200,7 @@ jobs:
 
   bridge:
     name: Bridge (${{ matrix.platform }})
-    needs: web
+    needs: [prepare, web]
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
@@ -246,6 +246,12 @@ jobs:
         with:
           name: codeaw-web-assets
           path: bridge/dist/web
+      - name: Embed bridge update metadata
+        env:
+          APP_VERSION: ${{ needs.prepare.outputs.version }}
+          UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
+          BUILD_TARGET: ${{ matrix.platform }}
+        run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
       - name: Build every package bin
         run: npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
@@ -254,6 +260,8 @@ jobs:
         run: choco install nsis --yes --no-progress
       - name: Build Windows installer
         if: startsWith(matrix.platform, 'windows-')
+        env:
+          CODEAW_BUILD_VERSION: ${{ needs.prepare.outputs.version }}
         run: npm run build:installer -- --skip-build --arch=${{ matrix.arch }}
       - name: Smoke test native executable
         if: matrix.platform == 'linux-x64'
@@ -310,6 +318,9 @@ jobs:
         run: node scripts/installer-smoke.mjs dist/download/codeaw-bridge-windows-x64-setup.exe
       - name: Test tray survives CLI exit
         run: node scripts/tray-smoke.mjs dist/bin/codeaw-bridge.exe
+      - run: npm ci
+      - name: Render packaged desktop windows including updater
+        run: npm run smoke:desktop -- dist/desktop-smoke/packaged-tray.ps1
 
   release:
     name: Publish app and bridge release
@@ -335,10 +346,11 @@ jobs:
           pattern: nightly-*
           path: dist
           merge-multiple: true
-      - name: Generate app updater manifest
+      - name: Generate updater manifests
         run: |
           node --test scripts/create-update-manifest.test.mjs
           node scripts/create-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
+          node scripts/create-bridge-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
       - name: Generate checksums and release notes
         run: |
           set -euo pipefail
@@ -350,6 +362,7 @@ jobs:
 
           - Android: signed universal APK, per-ABI APKs, and AAB.
           - App updater: app-update.json contains the channel, version, download URLs, sizes, and SHA-256 checksums.
+          - Bridge updater: bridge-update.json contains verified installer and portable downloads for every platform.
           - iOS: unsigned IPA (sign before installing on an iPhone or iPad).
           - Web: mobile and desktop browser app, included with every bridge release and also available as codeaw-web.tar.gz.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
