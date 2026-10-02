@@ -1,0 +1,4 @@
+tags:
+  e2e:
+    timeout: 2x
+  screenshots:

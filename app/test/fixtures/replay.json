@@ -1,0 +1,2481 @@
+{
+ "raw": [
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "config_option_update",
+     "configOptions": [
+      {
+       "id": "mode",
+       "name": "Mode",
+       "category": "mode",
+       "type": "select",
+       "currentValue": "ask",
+       "options": [
+        {
+         "value": "ask",
+         "name": "Ask"
+        },
+        {
+         "value": "code",
+         "name": "Code"
+        }
+       ]
+      }
+     ]
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 1
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "current_mode_update",
+     "currentModeId": "ask"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 2
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "availableCommands": [
+      {
+       "name": "hello",
+       "description": "say hi",
+       "input": null
+      }
+     ],
+     "sessionUpdate": "available_commands_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 3
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "echo hello streaming world",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_5d78c8823418",
+       "promptId": "p_5d78c8823418"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 4
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 5
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "hello s",
+      "type": "text"
+     },
+     "messageId": "ma75190",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "ma75190"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 6
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "treamin",
+      "type": "text"
+     },
+     "messageId": "ma75190",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "ma75190"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 7
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "g world",
+      "type": "text"
+     },
+     "messageId": "ma75190",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "ma75190"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 8
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 9
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "tool",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_3255809ac36c",
+       "promptId": "p_3255809ac36c"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 10
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 11
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "t1",
+     "title": "npm test",
+     "kind": "execute",
+     "status": "pending",
+     "content": [
+      {
+       "terminalId": "t1",
+       "type": "terminal"
+      }
+     ],
+     "_meta": {
+      "terminal_info": {
+       "terminal_id": "t1"
+      }
+     },
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 12
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "t1",
+     "status": "in_progress",
+     "_meta": {
+      "terminal_output": {
+       "terminal_id": "t1",
+       "data": "line1\n"
+      }
+     },
+     "sessionUpdate": "tool_call_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 13
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "t1",
+     "_meta": {
+      "terminal_output": {
+       "terminal_id": "t1",
+       "data": "line2\n"
+      }
+     },
+     "sessionUpdate": "tool_call_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 14
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "t1",
+     "status": "completed",
+     "rawOutput": {
+      "exit_code": 0
+     },
+     "_meta": {
+      "terminal_exit": {
+       "terminal_id": "t1",
+       "exit_code": 0,
+       "signal": null
+      }
+     },
+     "sessionUpdate": "tool_call_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 15
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "done",
+      "type": "text"
+     },
+     "messageId": "af4b6c8",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "af4b6c8"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 16
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 17
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "edit",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_c429ebc3567a",
+       "promptId": "p_c429ebc3567a"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 18
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 19
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "e1",
+     "title": "Edit a.ts",
+     "kind": "edit",
+     "status": "in_progress",
+     "content": [
+      {
+       "path": "/p/a.ts",
+       "oldText": "foo()",
+       "newText": "bar()",
+       "type": "diff"
+      }
+     ],
+     "locations": [
+      {
+       "path": "/p/a.ts",
+       "line": 3
+      }
+     ],
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 20
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "e1",
+     "status": "completed",
+     "content": [
+      {
+       "content": {
+        "text": "Edited 1 line",
+        "type": "text"
+       },
+       "type": "content"
+      }
+     ],
+     "sessionUpdate": "tool_call_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 21
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 22
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "perm",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_1e60452d5b20",
+       "promptId": "p_1e60452d5b20"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 23
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 24
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "p1",
+     "title": "rm -rf build",
+     "kind": "delete",
+     "status": "pending",
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 25
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "permission_request",
+     "requestId": "r_93f28f433294",
+     "toolCall": {
+      "toolCallId": "p1",
+      "title": "rm -rf build"
+     },
+     "options": [
+      {
+       "optionId": "allow",
+       "name": "Allow",
+       "kind": "allow_once"
+      },
+      {
+       "optionId": "reject",
+       "name": "Reject",
+       "kind": "reject_once"
+      }
+     ]
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 26
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "requires_action",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 27
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "permission_resolved",
+     "requestId": "r_93f28f433294",
+     "outcome": {
+      "outcome": "selected",
+      "optionId": "allow"
+     },
+     "optionName": "Allow",
+     "by": "A"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 28
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 29
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "p1",
+     "status": "completed",
+     "sessionUpdate": "tool_call_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 30
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "allowed",
+      "type": "text"
+     },
+     "messageId": "a494979",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "a494979"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 31
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 32
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "elicit",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_802df9b20076",
+       "promptId": "p_802df9b20076"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 33
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 34
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "elicitation_request",
+     "requestId": "r_59fb2b853dd6",
+     "request": {
+      "sessionId": "fake:s72c61a65",
+      "requestedSchema": {
+       "type": "object",
+       "properties": {
+        "question_0": {
+         "title": "Framework",
+         "oneOf": [
+          {
+           "const": "React",
+           "title": "React"
+          },
+          {
+           "const": "Vue",
+           "title": "Vue"
+          }
+         ],
+         "type": "string"
+        }
+       }
+      },
+      "mode": "form",
+      "message": "Which framework?"
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 35
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "requires_action",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 36
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "elicitation_resolved",
+     "requestId": "r_59fb2b853dd6",
+     "action": "accept",
+     "by": "A"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 37
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 38
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "answer=Vue",
+      "type": "text"
+     },
+     "messageId": "aa7a5dd",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "aa7a5dd"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 39
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 40
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "title Fixture Session",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_67c487bbb76b",
+       "promptId": "p_67c487bbb76b"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 41
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 42
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "title": "Fixture Session",
+     "sessionUpdate": "session_info_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 43
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "ok",
+      "type": "text"
+     },
+     "messageId": "a6c5735",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "a6c5735"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 44
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 45
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "slow 6",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_95afbca6cb57",
+       "promptId": "p_95afbca6cb57"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 46
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 47
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 48
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "1 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 49
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "2 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 50
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "3 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 51
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "4 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 52
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "5 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 53
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 54
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "slow 10",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_24d22732df2e",
+       "promptId": "p_24d22732df2e"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 55
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 56
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 57
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "echo queued one",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_4d6d2d1111c7",
+       "promptId": "p_4d6d2d1111c7",
+       "queued": true
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 58
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 1
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 59
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "1 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 60
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "2 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 61
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "3 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 62
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "4 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 63
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "5 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 64
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "6 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 65
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "7 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 66
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "8 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 67
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "9 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 68
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 1
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 69
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "dequeued",
+     "promptId": "p_4d6d2d1111c7"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 70
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 71
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "queu",
+      "type": "text"
+     },
+     "messageId": "mdd684f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "mdd684f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 72
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "ed o",
+      "type": "text"
+     },
+     "messageId": "mdd684f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "mdd684f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 73
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "ne",
+      "type": "text"
+     },
+     "messageId": "mdd684f",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "mdd684f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 74
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "end_turn",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 75
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "sessionUpdate": "user_message_chunk",
+     "content": {
+      "text": "slow 300",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_3046a362564f",
+       "promptId": "p_3046a362564f"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 76
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "running",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 77
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 ",
+      "type": "text"
+     },
+     "messageId": "slowc691ce",
+     "sessionUpdate": "agent_message_chunk",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowc691ce"
+      }
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 78
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "cancelled",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 79
+     }
+    }
+   }
+  }
+ ],
+ "compacted": [
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "configOptions": [
+      {
+       "currentValue": "ask",
+       "options": [
+        {
+         "value": "ask",
+         "name": "Ask"
+        },
+        {
+         "value": "code",
+         "name": "Code"
+        }
+       ],
+       "type": "select",
+       "id": "mode",
+       "name": "Mode",
+       "category": "mode"
+      }
+     ],
+     "sessionUpdate": "config_option_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 1
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "currentModeId": "ask",
+     "sessionUpdate": "current_mode_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 2
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "availableCommands": [
+      {
+       "name": "hello",
+       "description": "say hi",
+       "input": null
+      }
+     ],
+     "sessionUpdate": "available_commands_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 3
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "echo hello streaming world",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_5d78c8823418",
+       "promptId": "p_5d78c8823418"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 4
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "hello streaming world",
+      "type": "text"
+     },
+     "messageId": "ma75190",
+     "_meta": {
+      "codeaw": {
+       "mid": "ma75190"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 8
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "tool",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_3255809ac36c",
+       "promptId": "p_3255809ac36c"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 10
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "t1",
+     "title": "npm test",
+     "kind": "execute",
+     "status": "completed",
+     "content": [
+      {
+       "terminalId": "t1",
+       "type": "terminal"
+      }
+     ],
+     "rawOutput": {
+      "exit_code": 0
+     },
+     "_meta": {
+      "terminal_info": {
+       "terminal_id": "t1"
+      },
+      "terminal_exit": {
+       "terminal_id": "t1",
+       "exit_code": 0,
+       "signal": null
+      },
+      "terminal_output": {
+       "terminal_id": "t1",
+       "data": "line1\nline2\n"
+      }
+     },
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 15
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "done",
+      "type": "text"
+     },
+     "messageId": "af4b6c8",
+     "_meta": {
+      "codeaw": {
+       "mid": "af4b6c8"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 16
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "edit",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_c429ebc3567a",
+       "promptId": "p_c429ebc3567a"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 18
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "e1",
+     "title": "Edit a.ts",
+     "kind": "edit",
+     "status": "completed",
+     "content": [
+      {
+       "path": "/p/a.ts",
+       "oldText": "foo()",
+       "newText": "bar()",
+       "type": "diff"
+      },
+      {
+       "content": {
+        "text": "Edited 1 line",
+        "type": "text"
+       },
+       "type": "content"
+      }
+     ],
+     "locations": [
+      {
+       "path": "/p/a.ts",
+       "line": 3
+      }
+     ],
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 21
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "perm",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_1e60452d5b20",
+       "promptId": "p_1e60452d5b20"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 23
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "toolCallId": "p1",
+     "title": "rm -rf build",
+     "kind": "delete",
+     "status": "completed",
+     "sessionUpdate": "tool_call"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 30
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "permission_request",
+     "requestId": "r_93f28f433294",
+     "toolCall": {
+      "toolCallId": "p1",
+      "title": "rm -rf build"
+     },
+     "options": [
+      {
+       "optionId": "allow",
+       "name": "Allow",
+       "kind": "allow_once"
+      },
+      {
+       "optionId": "reject",
+       "name": "Reject",
+       "kind": "reject_once"
+      }
+     ]
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 26
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "permission_resolved",
+     "requestId": "r_93f28f433294",
+     "outcome": {
+      "outcome": "selected",
+      "optionId": "allow"
+     },
+     "optionName": "Allow",
+     "by": "A"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 28
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "allowed",
+      "type": "text"
+     },
+     "messageId": "a494979",
+     "_meta": {
+      "codeaw": {
+       "mid": "a494979"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 31
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "elicit",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_802df9b20076",
+       "promptId": "p_802df9b20076"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 33
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "elicitation_request",
+     "requestId": "r_59fb2b853dd6",
+     "request": {
+      "sessionId": "fake:s72c61a65",
+      "requestedSchema": {
+       "type": "object",
+       "properties": {
+        "question_0": {
+         "title": "Framework",
+         "oneOf": [
+          {
+           "const": "React",
+           "title": "React"
+          },
+          {
+           "const": "Vue",
+           "title": "Vue"
+          }
+         ],
+         "type": "string"
+        }
+       }
+      },
+      "mode": "form",
+      "message": "Which framework?"
+     }
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 35
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "elicitation_resolved",
+     "requestId": "r_59fb2b853dd6",
+     "action": "accept",
+     "by": "A"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 37
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "answer=Vue",
+      "type": "text"
+     },
+     "messageId": "aa7a5dd",
+     "_meta": {
+      "codeaw": {
+       "mid": "aa7a5dd"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 39
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "title Fixture Session",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_67c487bbb76b",
+       "promptId": "p_67c487bbb76b"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 41
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "title": "Fixture Session",
+     "_meta": {},
+     "sessionUpdate": "session_info_update"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 43
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "ok",
+      "type": "text"
+     },
+     "messageId": "a6c5735",
+     "_meta": {
+      "codeaw": {
+       "mid": "a6c5735"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 44
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "slow 6",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_95afbca6cb57",
+       "promptId": "p_95afbca6cb57"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 46
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 1 2 3 4 5 ",
+      "type": "text"
+     },
+     "messageId": "slowb61961",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowb61961"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 53
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "slow 10",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_24d22732df2e",
+       "promptId": "p_24d22732df2e"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 55
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 1 2 3 4 5 6 7 8 9 ",
+      "type": "text"
+     },
+     "messageId": "slowad141f",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowad141f"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 68
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "echo queued one",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_4d6d2d1111c7",
+       "promptId": "p_4d6d2d1111c7",
+       "queued": true
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 58
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "dequeued",
+     "promptId": "p_4d6d2d1111c7"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 70
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "queued one",
+      "type": "text"
+     },
+     "messageId": "mdd684f",
+     "_meta": {
+      "codeaw": {
+       "mid": "mdd684f"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 74
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "slow 300",
+      "type": "text"
+     },
+     "_meta": {
+      "codeaw": {
+       "mid": "u-p_3046a362564f",
+       "promptId": "p_3046a362564f"
+      }
+     },
+     "sessionUpdate": "user_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 76
+     }
+    }
+   }
+  },
+  {
+   "method": "session/update",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "update": {
+     "content": {
+      "text": "0 ",
+      "type": "text"
+     },
+     "messageId": "slowc691ce",
+     "_meta": {
+      "codeaw": {
+       "mid": "slowc691ce"
+      }
+     },
+     "sessionUpdate": "agent_message_chunk"
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 78
+     }
+    }
+   }
+  },
+  {
+   "method": "_codeaw/event",
+   "params": {
+    "sessionId": "fake:s72c61a65",
+    "event": {
+     "type": "state",
+     "state": "idle",
+     "stopReason": "cancelled",
+     "queued": 0
+    },
+    "_meta": {
+     "codeaw": {
+      "seq": 79
+     }
+    }
+   }
+  }
+ ]
+}
