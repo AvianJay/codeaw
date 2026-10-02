@@ -93,6 +93,7 @@ class _FileViewPageState extends State<FileViewPage> {
             child: Image.network(
               client.httpUri('/api/fs/raw', {'path': widget.path}).toString(),
               headers: client.authHeaders,
+              errorBuilder: (_, _, _) => const Text('無法載入圖片'),
             ),
           ),
         );

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -6,6 +7,7 @@ import '../../data/bridge_client.dart';
 import 'code_view.dart';
 import 'markdown_details.dart';
 import 'markdown_image.dart';
+import 'markdown_link.dart';
 
 /// Agent markdown. `streaming` keeps unfinished code fences cheap while tokens arrive.
 class Markdown extends StatelessWidget {
@@ -74,6 +76,32 @@ class _MarkdownText extends StatelessWidget {
   final bool streaming;
   final TextStyle? style;
 
+  Future<void> _openLink(BuildContext context, String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
+    } else {
+      final file = markdownFileLink(url, basePath: basePath);
+      if (file != null && client != null) {
+        context.push(
+          Uri(
+            path: '/file',
+            queryParameters: {
+              'path': file.path,
+              if (file.line != null) 'line': '${file.line}',
+            },
+          ).toString(),
+        );
+        return;
+      }
+    }
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('無法開啟這個連結')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return GptMarkdown(
@@ -95,12 +123,7 @@ class _MarkdownText extends StatelessWidget {
         fontFamily: 'monospace',
         fontFamilyFallback: ['Roboto Mono', 'Noto Sans Mono'],
       ),
-      onLinkTap: (url, title) {
-        final uri = Uri.tryParse(url);
-        if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-          launchUrl(uri, mode: LaunchMode.externalApplication);
-        }
-      },
+      onLinkTap: (url, title) => _openLink(context, url),
       codeBuilder: (context, name, code, closed) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: CodeBlock(
