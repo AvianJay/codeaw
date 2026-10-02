@@ -22,6 +22,8 @@ export interface BridgeOptions {
   port?: number;
   agentStartTimeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Override the public Flutter web asset directory. */
+  webRoot?: string;
 }
 
 export interface Bridge {
@@ -62,7 +64,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   manager.start();
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds());
   const terminals = new TerminalManager(guard);
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname() });
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot: opts.webRoot });
 
   const servers = new Map<string, http.Server>();
   const binding = new Set<string>();

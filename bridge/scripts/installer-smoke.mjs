@@ -48,6 +48,8 @@ try {
   for (const file of ["codeaw-bridge.exe", "launch.ps1", "uninstall.exe", "LICENSE", "README.md"]) {
     if (!fs.existsSync(path.join(destination, file))) throw new Error(`Installer did not copy ${file}`);
   }
+  const hasWeb = fs.existsSync(path.resolve("dist/bin/web/index.html"));
+  if (hasWeb && !fs.existsSync(path.join(destination, "web/index.html"))) throw new Error("Installer did not copy the web app");
   for (const file of ["codeaw bridge.lnk", "Pair phone.lnk", "Settings.lnk", "Uninstall.lnk"]) {
     if (!fs.existsSync(path.join(menu, file))) throw new Error(`Installer did not create ${file}`);
   }
@@ -55,6 +57,11 @@ try {
   if (!(await cli("status")).includes("stopped")) throw new Error("Silent install unexpectedly launched the bridge");
   await cli("start", "--background");
   if (!(await cli("status")).includes("running")) throw new Error("Installed bridge did not start");
+  if (hasWeb) {
+    const port = (await cli("status")).match(/127\.0\.0\.1:(\d+)/)?.[1];
+    const page = await fetch(`http://127.0.0.1:${port}/`);
+    if (page.status !== 200 || !(await page.text()).includes("<title>codeaw</title>")) throw new Error("Installed bridge did not serve its web app");
+  }
   await setup();
   if (!(await cli("status")).includes("stopped")) throw new Error("Update did not stop the running bridge");
   if (fs.readFileSync(path.join(state, "config.yaml"), "utf8") !== config) throw new Error("Update changed user config");
@@ -64,6 +71,7 @@ try {
   await cli("start", "--background");
   await uninstall();
   installed = false;
+  if (hasWeb && fs.existsSync(path.join(destination, "web"))) throw new Error("Uninstall left web app assets");
   if (!fs.existsSync(path.join(destination, "keep-me.txt"))) throw new Error("Uninstall removed a user file");
   if (fs.existsSync(menu)) throw new Error("Uninstall left Start Menu shortcuts");
   if (fs.readFileSync(path.join(state, "config.yaml"), "utf8") !== config || !fs.existsSync(path.join(state, "devices.json"))) throw new Error("Uninstall changed user state");

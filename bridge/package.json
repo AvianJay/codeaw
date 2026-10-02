@@ -15,6 +15,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:web": "node scripts/build-web.mjs",
     "build:bin": "npm run build && node scripts/build-binaries.mjs",
     "build:installer": "node scripts/build-installer.mjs",
     "dev": "tsx src/index.ts",

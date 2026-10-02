@@ -88,8 +88,80 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  ios:
+    name: Unsigned iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.6'
+          cache: true
+      - run: flutter pub get
+      - name: Build iOS without signing
+        run: flutter build ios --release --no-codesign --build-number="$GITHUB_RUN_NUMBER"
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          test -d build/ios/iphoneos/Runner.app
+          mkdir -p ../dist "$RUNNER_TEMP/unsigned-ipa/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$RUNNER_TEMP/unsigned-ipa/Payload/Runner.app"
+          (cd "$RUNNER_TEMP/unsigned-ipa" && zip -qry "$GITHUB_WORKSPACE/dist/codeaw-ios-unsigned.ipa" Payload)
+          unzip -t ../dist/codeaw-ios-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-ios
+          path: dist/*.ipa
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  web:
+    name: Web app (mobile and desktop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.41.6'
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - name: Build web app with local renderer assets
+        run: flutter build web --release --no-web-resources-cdn --build-number="$GITHUB_RUN_NUMBER"
+      - name: Archive web app
+        run: |
+          mkdir -p ../dist
+          tar -czf ../dist/codeaw-web.tar.gz -C build/web .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codeaw-web-assets
+          path: app/build/web/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nightly-web
+          path: dist/codeaw-web.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   bridge:
     name: Bridge (${{ matrix.platform }})
+    needs: web
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -129,6 +201,10 @@ jobs:
         with:
           bun-version: '1.4.2'
       - run: npm ci
+      - uses: actions/download-artifact@v5
+        with:
+          name: codeaw-web-assets
+          path: bridge/dist/web
       - name: Build every package bin
         run: npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
@@ -150,7 +226,7 @@ jobs:
           mkdir -p ../dist
           cp ../LICENSE dist/bin/LICENSE
           if [[ "$PLATFORM" == windows-* ]]; then
-            zip -j "../dist/codeaw-bridge-${PLATFORM}.zip" dist/bin/*
+            (cd dist/bin && zip -qr "../../../dist/codeaw-bridge-${PLATFORM}.zip" .)
             cp dist/installer/*-setup.exe ../dist/
           else
             tar -czf "../dist/codeaw-bridge-${PLATFORM}.tar.gz" -C dist/bin .
@@ -188,7 +264,7 @@ jobs:
 
   release:
     name: Update nightly release
-    needs: [android, bridge, bridge-installer-test]
+    needs: [android, ios, web, bridge, bridge-installer-test]
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -213,9 +289,12 @@ jobs:
           This release is updated in place after each successful build.
 
           - Android: signed universal APK, per-ABI APKs, and AAB.
+          - iOS: unsigned IPA (sign before installing on an iPhone or iPad).
+          - Web: mobile and desktop browser app, included with every bridge release and also available as codeaw-web.tar.gz.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
           - Windows: per-user NSIS installers and portable ZIPs for x64 and ARM64.
           - Bridge still requires Tailscale and the chosen ACP agents to be installed separately.
+          - Open the bridge's HTTPS URL from Tailscale Serve to use the browser app.
           - Verify downloads with SHA256SUMS.
 
           [Workflow run](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)

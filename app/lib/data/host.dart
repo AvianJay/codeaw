@@ -1,8 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 
 /// A paired bridge: where to reach it and the device token it issued.
 class HostConfig {
@@ -31,10 +31,20 @@ class HostConfig {
   /// `ws://host:port/acp` → `http://host:port`.
   static Uri httpBase(String wsUrl) {
     final u = Uri.parse(wsUrl);
-    return u.replace(scheme: u.scheme == 'wss' ? 'https' : 'http', path: '', query: null);
+    return Uri(scheme: u.scheme == 'wss' || u.scheme == 'https' ? 'https' : 'http', host: u.host, port: u.hasPort ? u.port : null);
   }
 
   Uri httpUri(String wsUrl, String path, [Map<String, String>? query]) => httpBase(wsUrl).replace(path: path, queryParameters: query);
+}
+
+/// Accept browser URLs as well as the native app's ws/wss URLs.
+String bridgeWebSocketUrl(String input, {bool secure = false}) {
+  final text = input.trim();
+  final uri = Uri.tryParse(text.contains('://') ? text : '${secure ? 'wss' : 'ws'}://$text');
+  if (uri == null || !const ['http', 'https', 'ws', 'wss'].contains(uri.scheme) || uri.host.isEmpty || uri.userInfo.isNotEmpty) {
+    throw PairingException('請輸入有效的 bridge 網址（http、https、ws 或 wss）');
+  }
+  return Uri(scheme: uri.scheme == 'https' || uri.scheme == 'wss' ? 'wss' : 'ws', host: uri.host, port: uri.hasPort ? uri.port : null, path: '/acp').toString();
 }
 
 class HostStore {
@@ -83,16 +93,15 @@ class PairingException implements Exception {
 /// Exchanges a one-time code for a device token, trying each URL until one answers.
 Future<HostConfig> pairWithBridge(PairingLink link, String deviceName) async {
   final errors = <String>[];
-  final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
+  final client = http.Client();
   try {
     for (final url in link.urls) {
       final uri = HostConfig.httpBase(url).replace(path: '/api/pair');
       try {
-        final req = await client.postUrl(uri).timeout(const Duration(seconds: 8));
-        req.headers.contentType = ContentType.json;
-        req.write(jsonEncode({'code': link.code, 'deviceName': deviceName}));
-        final res = await req.close().timeout(const Duration(seconds: 8));
-        final body = await res.transform(utf8.decoder).join();
+        final res = await client
+            .post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({'code': link.code, 'deviceName': deviceName}))
+            .timeout(const Duration(seconds: 8));
+        final body = utf8.decode(res.bodyBytes);
         final json = body.isEmpty ? <String, dynamic>{} : jsonDecode(body) as Map<String, dynamic>;
         if (res.statusCode != 200) {
           throw PairingException('${json['error'] ?? 'HTTP ${res.statusCode}'}');
@@ -112,7 +121,7 @@ Future<HostConfig> pairWithBridge(PairingLink link, String deviceName) async {
       }
     }
   } finally {
-    client.close(force: true);
+    client.close();
   }
   throw PairingException('連不上 bridge。請確認手機已連上 Tailscale、電腦上的 bridge 正在執行。\n${errors.join('\n')}');
 }

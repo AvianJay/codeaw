@@ -3,7 +3,7 @@
 在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
-- 手機上用 **App**（Flutter，Android）：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
+- 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
 - **斷線不中斷**：手機斷線或 App 被關掉時，agent 照樣工作，權限請求會等你回來。重新連上後只補傳漏掉的部分；同一個對話可以同時開在多台裝置上。
 - **接續電腦上既有的對話**：你在終端機開過的 Claude Code／Codex session 都會出現在 App 的清單裡。
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
@@ -125,9 +125,11 @@ Windows 服務在沒有登入桌面時也能運行。登入後執行 `codeaw-bri
 
 ### （選用）HTTPS／wss
 
-預設直接走 `ws://100.x.y.z:7860`，WireGuard 已經加密。若想用 MagicDNS + HTTPS，可以執行 `tailscale serve --bg 7860`，再把 App 的網址改成 `wss://<電腦>.<tailnet>.ts.net/acp`。不過 Tailscale Serve 對 WebSocket 有不穩的回報，不建議當成預設。
+原生 App 預設直接走 `ws://100.x.y.z:7860`，WireGuard 已經加密。也可以執行 `tailscale serve --bg 7860`，再把 App 的網址改成 `wss://<電腦>.<tailnet>.ts.net/acp`。Web 使用同一個 HTTPS 網址，頁面、API 與 WebSocket 都由 bridge 提供。
 
 ## 2. 手機端（App）
+
+Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly 下載 `codeaw-ios-unsigned.ipa`，以自己的簽署／側載工具重新簽署後安裝。Unsigned IPA 沒有 Apple 簽章或 provisioning profile，無法直接點開安裝，也不是 App Store／TestFlight 發行包。
 
 1. 安裝 Tailscale App，並登入同一個 tailnet。
 2. 安裝 codeaw App：[nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 的 `codeaw-arm64-v8a.apk` 或 `codeaw-universal.apk`（或用 `cd app && flutter build apk --release --split-per-abi` 自己建置）。
@@ -151,6 +153,29 @@ App 在背景但仍保持連線時，則由 App 自己跳本機通知。
 
 ## 開發
 
+### Web（手機與電腦）
+
+Nightly 的 bridge 安裝包與可攜式壓縮檔已附上 `web/`。可攜式版解壓縮時請保留執行檔旁的 `web/` 資料夾；另外提供 `codeaw-web.tar.gz`。
+
+1. 啟動 bridge，執行 `tailscale serve --bg 7860`（自訂 port 請改成實際值）。
+2. 在已連上同一個 tailnet 的手機或電腦，用瀏覽器開啟 Tailscale 顯示的 `https://<電腦>.<tailnet>.ts.net/`。
+3. 在電腦執行 `codeaw-bridge pair`，把配對碼輸入網頁。Bridge 網址會自動填入；HTTPS 下也能掃描原生 App 使用的配對 QR code。
+4. iPhone／iPad 可在 Safari 選「加入主畫面」。Android、Windows、macOS 和 Linux 也可直接使用瀏覽器。
+
+Web 的配對保存在目前瀏覽器與 origin；相機與加密儲存需要 HTTPS（本機開發可用 `http://localhost:7860`）。頁面可公開載入，但 session、檔案與終端機仍需有效的裝置 token。瀏覽器不使用原生 App 的本機通知；在背景或關閉頁面時，通知仍透過 bridge 的 ntfy 設定傳送。
+
+從原始碼建置並由 bridge 提供頁面：
+
+```powershell
+cd bridge
+npm install
+npm run build:web   # 需要 Flutter；產生 app/build/web 並複製到 bridge/dist/web
+npm run build
+npm start -- start
+```
+
+`npm run build:bin` 會把已建置的 `dist/web` 複製到執行檔旁；若也要打包 Web，請先執行 `npm run build:web`。開發時 `npm run dev -- start` 也能直接使用 `app/build/web`。
+
 ### Nightly 建置
 
 GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` push、每日台灣時間 02:00，或手動執行時建置。所有建置成功後，首次建立 `nightly` prerelease，之後只移動同一個 tag 並更新同一個 release、附件及 `SHA256SUMS`。
@@ -158,6 +183,8 @@ GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` 
 在 repository 的 Actions secrets 設定 `KEYSTORE_BASE64`（keystore 的 Base64）、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`。密碼同時用於 keystore 與 key；CI 缺少任何一項會失敗。Android 會產出已簽章的 universal APK、三個 ABI APK 與 AAB，版本編號使用 workflow run number。
 
 Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件提供 NSIS `*-setup.exe` 與可攜式 ZIP，其餘為 tar.gz，全部列入 `SHA256SUMS`。
+
+Web 先建置，再附入所有 bridge 發行包與 Windows 安裝程式。iOS 在 macOS runner 執行 `flutter build ios --release --no-codesign`，把 `Runner.app` 放進 `Payload/` 壓縮成 `codeaw-ios-unsigned.ipa`，不需要 Apple 簽署 secrets。本機 iOS 建置需 macOS／Xcode，也可以用相同方式打包。
 
 本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
 

@@ -1,9 +1,10 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
+import 'bridge_socket.dart';
 import 'host.dart';
 import 'models.dart';
 
@@ -51,7 +52,7 @@ class BridgeClient extends ChangeNotifier {
   ServerRequestHandler? onServerRequest;
 
   JsonRpcPeer? _peer;
-  WebSocket? _ws;
+  WebSocketChannel? _ws;
   bool _running = false;
   bool _disposed = false;
   bool _foreground = true;
@@ -95,17 +96,11 @@ class BridgeClient extends ChangeNotifier {
     final errors = <String>[];
     for (final url in host.urls) {
       try {
-        final ws = await WebSocket.connect(url, headers: {'Authorization': 'Bearer ${host.token}'}).timeout(const Duration(seconds: 8));
-        ws.pingInterval = const Duration(seconds: 15);
+        final ws = connectBridgeSocket(url, host.token);
+        _ws = ws;
         final done = Completer<void>();
-        final peer = JsonRpcPeer(
-          send: (text) {
-            if (ws.readyState == WebSocket.open) ws.add(text);
-          },
-          onRequest: _handleRequest,
-          onNotification: _handleNotification,
-        );
-        ws.listen(
+        final peer = JsonRpcPeer(send: ws.sink.add, onRequest: _handleRequest, onNotification: _handleNotification);
+        ws.stream.listen(
           (data) {
             if (data is String) peer.handle(data);
           },
@@ -117,8 +112,13 @@ class BridgeClient extends ChangeNotifier {
           },
           cancelOnError: true,
         );
-        _ws = ws;
         _peer = peer;
+        await ws.ready.timeout(const Duration(seconds: 8));
+        if (_disposed) {
+          peer.close();
+          await ws.sink.close();
+          return null;
+        }
         final init = await peer.request('initialize', {
           'protocolVersion': 1,
           'clientCapabilities': {
@@ -147,11 +147,11 @@ class BridgeClient extends ChangeNotifier {
           }
         }));
       } catch (e) {
-        errors.add(e is RpcError ? e.detail : '$e');
+        errors.add(e is RpcError ? e.detail : '連線失敗（${e.runtimeType}）');
         _peer?.close();
         _peer = null;
         try {
-          await _ws?.close();
+          await _ws?.sink.close();
         } catch (_) {}
         _ws = null;
       }
@@ -204,7 +204,7 @@ class BridgeClient extends ChangeNotifier {
 
   /// Drops the socket as if the network went away (tests).
   @visibleForTesting
-  Future<void> debugDropConnection() async => _ws?.close();
+  Future<void> debugDropConnection() async => _ws?.sink.close();
 
   AgentInfo? agent(String id) {
     for (final a in agents) {
@@ -214,7 +214,7 @@ class BridgeClient extends ChangeNotifier {
   }
 
   /// Authenticated URL for bridge-hosted bytes (blobs, raw files).
-  Uri httpUri(String path, [Map<String, String>? query]) => host.httpUri(activeUrl ?? host.urls.first, path, query);
+  Uri httpUri(String path, [Map<String, String>? query]) => host.httpUri(activeUrl ?? host.urls.first, path, {...?query, if (kIsWeb) 'token': host.token});
 
   Map<String, String> get authHeaders => {'Authorization': 'Bearer ${host.token}'};
 
@@ -224,7 +224,7 @@ class BridgeClient extends ChangeNotifier {
     _running = false;
     reconnectNow();
     _peer?.close();
-    unawaited(_ws?.close());
+    unawaited(_ws?.sink.close());
     _messages.close();
     _activity.close();
     _connected.close();

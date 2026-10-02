@@ -19,6 +19,12 @@ try {
   await cli("start", "--background");
   const status = await cli("status");
   if (!status.includes("running")) throw new Error("Packaged background bridge is not running");
+  if (fs.existsSync(path.join(path.dirname(executable), "web/index.html"))) {
+    const port = status.match(/127\.0\.0\.1:(\d+)/)?.[1];
+    if (!port) throw new Error("Packaged bridge did not report its HTTP address");
+    const page = await fetch(`http://127.0.0.1:${port}/`);
+    if (page.status !== 200 || !(await page.text()).includes("<title>codeaw</title>")) throw new Error("Packaged bridge did not serve its web app");
+  }
   await cli("start", "--background");
   const duplicate = await cli("status");
   if (status.match(/PID (\d+)/)?.[1] !== duplicate.match(/PID (\d+)/)?.[1]) throw new Error("Duplicate background process");

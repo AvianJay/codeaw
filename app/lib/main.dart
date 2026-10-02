@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -61,8 +62,10 @@ class _CodeawAppState extends State<CodeawApp> {
   void initState() {
     super.initState();
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
-    final appLinks = AppLinks();
-    _links = appLinks.uriLinkStream.listen(_onLink);
+    if (!kIsWeb) {
+      final appLinks = AppLinks();
+      _links = appLinks.uriLinkStream.listen(_onLink);
+    }
   }
 
   void _onLifecycle(AppLifecycleState s) {

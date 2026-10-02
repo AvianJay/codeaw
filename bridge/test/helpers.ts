@@ -27,6 +27,7 @@ export interface TestBridgeOptions {
   hosts?: string[];
   /** Keep the temp home after stop() (to restart a bridge on the same agent state). */
   keepHome?: boolean;
+  webRoot?: string;
 }
 
 export interface TestBridge {
@@ -56,7 +57,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
   });
   const dataDir = path.join(home, opts.freshData ? `data-${Date.now()}` : "data");
   const loaded: LoadedConfig = { config, file: path.join(home, "config.yaml"), home, dataDir };
-  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl });
+  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot });
   const tokens = new Map<string, string>();
   return {
     bridge,

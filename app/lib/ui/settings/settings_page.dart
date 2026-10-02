@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -128,7 +129,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     ),
                   ],
                   const _Section('其他'),
-                  ListTile(
+                  if (!kIsWeb) ListTile(
                     leading: const Icon(Icons.notifications_outlined),
                     title: const Text('允許 App 通知'),
                     subtitle: const Text('App 在背景但仍連線時，用手機通知提醒'),

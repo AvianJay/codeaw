@@ -10,6 +10,7 @@ import type { DeviceStore } from "./auth.js";
 import { mimeFor, type PathGuard } from "./ext.js";
 import { FrontendConnection, type FrontendDeps } from "./frontend.js";
 import type { SessionStore } from "../session/store.js";
+import { findWebRoot, serveWeb } from "./web.js";
 
 const log = logger("http");
 const HEARTBEAT_MS = 20_000;
@@ -19,6 +20,7 @@ export interface HttpDeps extends FrontendDeps {
   devices: DeviceStore;
   store: SessionStore;
   hostName: string;
+  webRoot?: string;
 }
 
 function bearer(req: http.IncomingMessage, url: URL): string | undefined {
@@ -68,6 +70,7 @@ export interface HttpHandlers {
 }
 
 export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
+  const webRoot = deps.webRoot ?? findWebRoot();
   const acpServer = new AcpServer({
     // Every connection supplies its own agent in prepareWebSocketUpgrade(); this is never used.
     createAgent: () => acp.agent({ name: "codeaw-unbound" }),
@@ -78,6 +81,10 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
   const onRequest: http.RequestListener = async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
+      if (serveWeb(req, res, url.pathname, webRoot)) return;
+      if (["GET", "HEAD"].includes(req.method ?? "") && !/^\/(api|acp)(\/|$)/.test(url.pathname)) {
+        return sendJson(res, 404, { error: "Web app not found. Run npm run build:web in bridge, or install a release with its web folder." });
+      }
       if (req.method === "GET" && url.pathname === "/api/health") {
         return sendJson(res, 200, { ok: true, name: "codeaw-bridge", version: VERSION, host: deps.hostName });
       }

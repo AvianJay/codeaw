@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'bridge_client.dart';
@@ -25,9 +26,13 @@ class LocalNotifier {
   );
 
   Future<void> init() async {
+    if (kIsWeb) return;
     try {
       await _plugin.initialize(
-        settings: const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
+        settings: const InitializationSettings(
+          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          iOS: DarwinInitializationSettings(requestAlertPermission: false, requestBadgePermission: false, requestSoundPermission: false),
+        ),
         onDidReceiveNotificationResponse: (r) {
           final id = r.payload;
           if (id != null && id.isNotEmpty) onOpenSession(id);
@@ -43,7 +48,9 @@ class LocalNotifier {
   }
 
   Future<void> requestPermission() async {
+    if (kIsWeb) return;
     await _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.requestNotificationsPermission();
+    await _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
   void watch(BridgeClient client, String Function(String agentId) agentName, String? Function(String sessionId) title) {
@@ -65,8 +72,13 @@ class LocalNotifier {
     });
   }
 
-  Future<void> _show(String sessionId, String title, String body) =>
-      _plugin.show(id: sessionId.hashCode & 0x7fffffff, title: title, body: body, notificationDetails: const NotificationDetails(android: _channel), payload: sessionId);
+  Future<void> _show(String sessionId, String title, String body) => _plugin.show(
+    id: sessionId.hashCode & 0x7fffffff,
+    title: title,
+    body: body,
+    notificationDetails: const NotificationDetails(android: _channel, iOS: DarwinNotificationDetails()),
+    payload: sessionId,
+  );
 
   void dispose() => _sub?.cancel();
 }

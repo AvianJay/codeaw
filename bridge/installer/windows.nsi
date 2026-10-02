@@ -151,6 +151,11 @@ Section "$(CoreName)" Core
   File /oname=launch.ps1 "${INSTALLER_DIR}\launch.ps1"
   File /oname=LICENSE "${REPO_DIR}\LICENSE"
   File /oname=README.md "${REPO_DIR}\README.md"
+  !ifdef WEB_DIR
+    SetOutPath "$INSTDIR\web"
+    File /r "${WEB_DIR}\*"
+    SetOutPath "$INSTDIR"
+  !endif
   WriteUninstaller "$INSTDIR\uninstall.exe"
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
@@ -214,6 +219,9 @@ Section "Uninstall"
   Delete "$INSTDIR\launch.ps1"
   Delete "$INSTDIR\LICENSE"
   Delete "$INSTDIR\README.md"
+  !ifdef WEB_DIR
+    RMDir /r "$INSTDIR\web"
+  !endif
   Delete "$INSTDIR\uninstall.exe"
   ; Remove only known application files, leaving custom files and ~/.codeaw intact.
   RMDir "$INSTDIR"

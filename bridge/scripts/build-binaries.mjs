@@ -20,6 +20,11 @@ if (!bins || Object.keys(bins).length === 0) throw new Error("No package.json bi
 
 const outputDir = path.resolve(bridgeDir, values["out-dir"]);
 fs.mkdirSync(outputDir, { recursive: true });
+// Keep the browser client with portable releases and installers.
+const webDir = path.join(bridgeDir, "dist/web");
+if (fs.existsSync(path.join(webDir, "index.html")) && path.resolve(outputDir, "web") !== webDir) {
+  fs.cpSync(webDir, path.join(outputDir, "web"), { recursive: true });
+}
 for (const [name, entry] of Object.entries(bins)) {
   const suffix = values.target.includes("windows") ? ".exe" : "";
   const result = spawn.sync("bun", [
