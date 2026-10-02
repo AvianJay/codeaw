@@ -61,7 +61,7 @@ try {
     $script:smoke.Dispose()
     if ($script:smokeFailed) { exit 1 }
 `;
-  const script = TRAY_SCRIPT.replace("[string]$PipeName)", "[string]$PipeName, [string]$OutputDirectory)")
+  const script = TRAY_SCRIPT.replace("[string]$LogFile)", "[string]$LogFile, [string]$OutputDirectory)")
     .replace("[System.Windows.Forms.Application]::Run()", smoke)
     .replace("function Show-Error($ErrorRecord) {", "function Show-Error($ErrorRecord) { throw $ErrorRecord; #");
   const scriptFile = path.join(home, "smoke.ps1");

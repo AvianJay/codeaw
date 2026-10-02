@@ -210,6 +210,7 @@ npm test                 # vitest：用腳本化的假 agent，不花 token
 npm run typecheck
 npm run smoke            # 對本機真的 agent 做握手 / 列 session / 開 session（不送 prompt）
 npm run smoke:desktop    # Windows：隔離設定渲染三個原生視窗、編譯服務 host；不安裝服務／自動啟動
+npm run smoke:tray       # Windows：驗證打包版 CLI 結束後系統匣仍存活，重複啟動只有一個圖示
 npx tsx scripts/dev-bridge.ts --host 0.0.0.0 --port 7861   # 只有假 agent 的 bridge，方便調 UI
 
 cd ../app

@@ -261,6 +261,8 @@ jobs:
         run: Expand-Archive -LiteralPath dist/download/codeaw-bridge-windows-x64.zip -DestinationPath dist/bin
       - name: Test install, update and uninstall
         run: node scripts/installer-smoke.mjs dist/download/codeaw-bridge-windows-x64-setup.exe
+      - name: Test tray survives CLI exit
+        run: node scripts/tray-smoke.mjs dist/bin/codeaw-bridge.exe
 
   release:
     name: Update nightly release

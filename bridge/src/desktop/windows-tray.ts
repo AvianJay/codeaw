@@ -1,7 +1,8 @@
 /** Embedded so npm installs and standalone Bun executables need no external UI assets. */
 export const TRAY_SCRIPT = String.raw`
-param([Parameter(Mandatory=$true)][string]$PipeName)
+param([Parameter(Mandatory=$true)][string]$PipeName, [string]$ReadyFile, [string]$LogFile)
 $ErrorActionPreference = 'Stop'
+try {
 $script:mutex = [System.Threading.Mutex]::new($false, ('Local\' + $PipeName + '-tray'))
 try { $owned = $script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
 if (-not $owned) { $script:mutex.Dispose(); exit 0 }
@@ -283,6 +284,7 @@ $script:timer.Add_Tick({
 })
 try {
     $script:timer.Start()
+    if ($ReadyFile) { [IO.File]::WriteAllText($ReadyFile, ('{"pid":' + $PID + '}')) }
     [System.Windows.Forms.Application]::Run()
 } finally {
     $script:timer.Stop()
@@ -293,5 +295,11 @@ try {
     $menu.Dispose()
     $script:mutex.ReleaseMutex()
     $script:mutex.Dispose()
+    if ($ReadyFile -and [IO.File]::Exists($ReadyFile)) { [IO.File]::Delete($ReadyFile) }
+}
+} catch {
+    if ($LogFile) { [IO.File]::AppendAllText($LogFile, ([DateTime]::UtcNow.ToString('o') + ' Tray failed: ' + $_.Exception.Message + [Environment]::NewLine)) }
+    else { [Console]::Error.WriteLine($_.Exception.Message) }
+    exit 1
 }
 `;
