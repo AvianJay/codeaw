@@ -42,13 +42,34 @@ try {
         try { $script:window.DrawToBitmap($bitmap, [System.Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height)); $bitmap.Save((Join-Path $OutputDirectory ($Name + '.png'))) }
         finally { $bitmap.Dispose() }
     }
+    function Capture-Menu {
+        $menu.Show([System.Drawing.Point]::new(20, 20))
+        [System.Windows.Forms.Application]::DoEvents()
+        [System.Threading.Thread]::Sleep(200)
+        $menu.Refresh()
+        $menu.Update()
+        [System.Windows.Forms.Application]::DoEvents()
+        if ($menu.Items[2].Text -ne '配對手機…' -or $menu.Items[3].Text -ne '設定…') { throw 'Chinese tray menu labels are corrupted' }
+        $bitmap = [System.Drawing.Bitmap]::new($menu.Width, $menu.Height)
+        try {
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            try {
+                $paint = [System.Windows.Forms.PaintEventArgs]::new($graphics, [System.Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height))
+                $flags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+                $menu.GetType().GetMethod('OnPaintBackground', $flags).Invoke($menu, @($paint)) | Out-Null
+                $menu.GetType().GetMethod('OnPaint', $flags).Invoke($menu, @($paint)) | Out-Null
+            } finally { $graphics.Dispose() }
+            $bitmap.Save((Join-Path $OutputDirectory 'tray-menu.png'))
+        }
+        finally { $bitmap.Dispose(); $menu.Close() }
+    }
     $script:step = 0
     $script:smoke = [System.Windows.Forms.Timer]::new()
     $script:smoke.Interval = 1200
     $script:smoke.Add_Tick({
         try {
             switch ($script:step) {
-                0 { Show-Pair }
+                0 { Capture-Menu; Show-Pair }
                 1 { if (-not $script:qr.Image -or $script:pairCode.Text.Length -ne 9) { throw 'Pair window did not load' }; Capture-Window 'pair'; Show-Settings }
                 2 { if ($script:agents.Items.Count -ne 2 -or $script:folders.Text -ne 'D:\projects') { throw 'Settings window did not load' }; Capture-Window 'settings'; Show-Devices }
                 3 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; [System.Windows.Forms.Application]::Exit() }
@@ -61,7 +82,8 @@ try {
     $script:smoke.Dispose()
     if ($script:smokeFailed) { exit 1 }
 `;
-  const script = TRAY_SCRIPT.replace("[string]$LogFile)", "[string]$LogFile, [string]$OutputDirectory)")
+  const traySource = process.argv[2] ? fs.readFileSync(path.resolve(process.argv[2]), "utf8").replace(/^\ufeff/, "") : TRAY_SCRIPT;
+  const script = traySource.replace("[string]$LogFile)", "[string]$LogFile, [string]$OutputDirectory)")
     .replace("[System.Windows.Forms.Application]::Run()", smoke)
     .replace("function Show-Error($ErrorRecord) {", "function Show-Error($ErrorRecord) { throw $ErrorRecord; #");
   const scriptFile = path.join(home, "smoke.ps1");
@@ -78,7 +100,7 @@ try {
   await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", check, "-Installer", installer]);
   await run("powershell.exe", ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptFile,
     "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output]);
-  for (const name of ["pair", "settings", "devices"]) {
+  for (const name of ["tray-menu", "pair", "settings", "devices"]) {
     if (!fs.existsSync(path.join(output, `${name}.png`))) throw new Error(`Missing ${name} screenshot`);
   }
   process.stdout.write(`Desktop windows rendered; service host compiled. Screenshots: ${output}\n`);

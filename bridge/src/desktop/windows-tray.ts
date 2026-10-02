@@ -1,9 +1,9 @@
-/** Embedded so npm installs and standalone Bun executables need no external UI assets. */
-export const TRAY_SCRIPT = String.raw`
+/** Use a cooked template so bundler Unicode escapes become characters, not PowerShell text. */
+export const TRAY_SCRIPT = `
 param([Parameter(Mandatory=$true)][string]$PipeName, [string]$ReadyFile, [string]$LogFile)
 $ErrorActionPreference = 'Stop'
 try {
-$script:mutex = [System.Threading.Mutex]::new($false, ('Local\' + $PipeName + '-tray'))
+$script:mutex = [System.Threading.Mutex]::new($false, ('Local\\' + $PipeName + '-tray'))
 try { $owned = $script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
 if (-not $owned) { $script:mutex.Dispose(); exit 0 }
 Add-Type -AssemblyName System.Windows.Forms

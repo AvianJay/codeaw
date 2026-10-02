@@ -35,6 +35,13 @@ let started = false;
 try {
   started = true;
   await showTray();
+  const generatedScript = fs.readFileSync(path.join(state, "runtime", "tray.ps1"), "utf8");
+  if (/\\u[0-9a-f]{4}/i.test(generatedScript) || !generatedScript.includes("配對手機") || !generatedScript.includes("設定…")) {
+    throw new Error("Packaged tray script corrupted its Chinese menu labels");
+  }
+  const snapshots = path.resolve("dist", "desktop-smoke");
+  fs.mkdirSync(snapshots, { recursive: true });
+  fs.writeFileSync(path.join(snapshots, "packaged-tray.ps1"), generatedScript);
   await pause();
   const first = await trays();
   if (first.length !== 1) throw new Error("Packaged CLI exited without a surviving tray process");
