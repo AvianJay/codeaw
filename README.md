@@ -18,7 +18,7 @@ Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦�
 
 ## 1. 電腦端（bridge）
 
-需求：Node ≥ 22、[Tailscale](https://tailscale.com/download)，以及要用的 agent 的 ACP adapter：
+需求：[Tailscale](https://tailscale.com/download)，以及要用的 agent 的 ACP adapter。下列 npm 安裝方式與從原始碼執行 bridge 需要 Node ≥ 22.12；預先編譯的 bridge 安裝包內含 runtime：
 
 ```powershell
 npm i -g @agentclientprotocol/claude-agent-acp    # Claude Code
@@ -29,6 +29,24 @@ npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP
 ```
 
 安裝 bridge：
+
+Linux 一行安裝（預設 nightly）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AvianJay/codeaw/master/install.sh | sh
+```
+
+安裝器自動選擇 x64／ARM64 與 glibc／musl，下載後驗證 `SHA256SUMS`，將執行檔與 `web/` 安裝到 `${XDG_DATA_HOME:-~/.local/share}/codeaw-bridge`，並在 `~/.local/bin/codeaw-bridge` 建立指令連結。不需 sudo、Node 或 Bun；需要 `curl`、`tar`、`sha256sum` 與一般 Linux 命令列工具。若 `~/.local/bin` 尚未加入 PATH，依安裝完成時的提示設定，再執行 `codeaw-bridge start`，首次啟動會建立設定並顯示配對 QR code。Tailscale 與 ACP agents 仍需另外安裝。
+
+可指定穩定版（`latest`）、版本 tag，或安裝路徑：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AvianJay/codeaw/master/install.sh | sh -s -- --version latest
+curl -fsSL https://raw.githubusercontent.com/AvianJay/codeaw/master/install.sh | sh -s -- --version v0.1.0
+sh install.sh --install-dir "$HOME/apps/codeaw-bridge" --bin-dir "$HOME/.local/bin"
+```
+
+重跑同一指令即可更新，保留 `~/.codeaw` 的設定、配對與歷史；更新後需停止並重新啟動 bridge 程序，服務模式則執行 `codeaw-bridge service restart`。一般 `codeaw-bridge restart` 只重新載入設定，不會載入新的執行檔。要登入自動啟動，可在安裝後執行 `codeaw-bridge service install && codeaw-bridge service start`（需要可用的 systemd user session；詳見下方服務模式）。
 
 Windows 可從 [nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 下載 `codeaw-bridge-windows-x64-setup.exe` 或 `codeaw-bridge-windows-arm64-setup.exe`。NSIS 安裝程式以目前使用者安裝到 `%LOCALAPPDATA%\Programs\codeaw-bridge`，提供開始選單的系統匣、配對、設定與移除捷徑；可選擇登入自動啟動及桌面捷徑。安裝完成後可直接啟動系統匣。安裝包包含 runtime，Tailscale 與 ACP agents 需另外安裝。
 

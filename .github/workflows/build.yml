@@ -286,6 +286,11 @@ jobs:
           mkdir -p ../dist
           cp ../LICENSE dist/bin/LICENSE
           tar -czf "../dist/codeaw-bridge-${PLATFORM}.tar.gz" -C dist/bin .
+      - name: Test Linux one-command installer
+        if: matrix.platform == 'linux-x64'
+        env:
+          CODEAW_TEST_PACKAGE: ../dist/codeaw-bridge-linux-x64.tar.gz
+        run: python3 ../scripts/test-linux-installer.py
       - uses: actions/upload-artifact@v4
         with:
           name: nightly-bridge-${{ matrix.platform }}
@@ -354,6 +359,7 @@ jobs:
       - name: Generate checksums and release notes
         run: |
           set -euo pipefail
+          cp install.sh dist/install.sh
           (cd dist && sha256sum * > SHA256SUMS)
           cat > "$RUNNER_TEMP/nightly-notes.md" <<EOF
           $UPDATE_CHANNEL build $APP_VERSION+$GITHUB_RUN_NUMBER from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
@@ -367,6 +373,7 @@ jobs:
           - Web: mobile and desktop browser app, included with every bridge release and also available as codeaw-web.tar.gz.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
           - Windows: per-user NSIS installers and portable ZIPs for x64 and ARM64.
+          - Linux: run \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/master/install.sh | sh\` for a per-user installation with checksum verification (nightly by default; add \`-s -- --version latest\` after \`sh\` for stable).
           - Bridge still requires Tailscale and the chosen ACP agents to be installed separately.
           - Open the bridge's HTTPS URL from Tailscale Serve to use the browser app.
           - Verify downloads with SHA256SUMS.
