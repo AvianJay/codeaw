@@ -6,6 +6,8 @@ The workspace adapts to the window width in logical pixels: phones below 720 use
 
 Unsent text is retained for recently opened conversations. Use Ctrl+Enter or Command+Enter to send; Enter inserts a new line.
 
+The model chip offers the agent's model list and a “自訂模型名稱” action for entering a model ID directly. Custom IDs must be supported by the current agent; rejected changes show the agent's error and keep the previous selection.
+
 Side gutters beside scrollable content also accept mouse-wheel scrolling while the content stays within its reading width.
 
 The working indicator shows estimated average TPS beside the current activity. Each completed turn keeps its estimated TPS, total elapsed time, and buttons to copy the full response, reuse the prompt in the composer, or copy the turn and thought text from the overflow menu. TPS includes visible thought/response text over the whole turn, including tools and waits; `≈` marks the text-based estimate. Reusing a prompt preserves any existing draft and lets you edit it before sending.

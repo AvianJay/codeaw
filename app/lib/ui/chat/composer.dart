@@ -530,6 +530,22 @@ class ConfigBar extends StatelessWidget {
                     style: TextStyle(color: Theme.of(ctx).colorScheme.outline),
                   ),
                 ),
+              if (o.category == 'model' || o.id == 'model')
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined),
+                  title: const Text('自訂模型名稱'),
+                  onTap: () async {
+                    final value = await showDialog<String>(
+                      context: ctx,
+                      builder: (_) => _CustomModelDialog(
+                        currentValue: o.currentValue as String? ?? '',
+                      ),
+                    );
+                    if (ctx.mounted && value != null) {
+                      Navigator.pop(ctx, value);
+                    }
+                  },
+                ),
               RadioGroup<String>(
                 groupValue: '${o.currentValue}',
                 onChanged: (v) => Navigator.pop(ctx, v),
@@ -572,4 +588,72 @@ class ConfigBar extends StatelessWidget {
       await controller.setConfig(o, picked);
     }
   }
+}
+
+class _CustomModelDialog extends StatefulWidget {
+  const _CustomModelDialog({required this.currentValue});
+  final String currentValue;
+
+  @override
+  State<_CustomModelDialog> createState() => _CustomModelDialogState();
+}
+
+class _CustomModelDialogState extends State<_CustomModelDialog> {
+  late final TextEditingController _text;
+
+  @override
+  void initState() {
+    super.initState();
+    _text = TextEditingController(text: widget.currentValue)
+      ..selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: widget.currentValue.length,
+      );
+  }
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = _text.text.trim();
+    if (value.isNotEmpty) Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('自訂模型名稱'),
+    scrollable: true,
+    content: SizedBox(
+      width: 400,
+      child: TextField(
+        controller: _text,
+        autofocus: true,
+        autocorrect: false,
+        enableSuggestions: false,
+        textInputAction: TextInputAction.done,
+        decoration: const InputDecoration(
+          labelText: '模型名稱',
+          helperText: '請輸入目前代理支援的模型 ID。',
+          helperMaxLines: 2,
+        ),
+        onSubmitted: (_) => _submit(),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      ValueListenableBuilder<TextEditingValue>(
+        valueListenable: _text,
+        builder: (context, value, _) => FilledButton(
+          onPressed: value.text.trim().isEmpty ? null : _submit,
+          child: const Text('套用'),
+        ),
+      ),
+    ],
+  );
 }
