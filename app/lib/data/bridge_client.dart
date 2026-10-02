@@ -36,6 +36,7 @@ class BridgeClient extends ChangeNotifier {
   final _messages = StreamController<SessionMessage>.broadcast(sync: true);
   final _activity = StreamController<Map<String, dynamic>>.broadcast(sync: true);
   final _connected = StreamController<void>.broadcast();
+  final _terminalEvents = StreamController<Map<String, dynamic>>.broadcast(sync: true);
 
   /// Updates/events/replays for sessions.
   Stream<SessionMessage> get messages => _messages.stream;
@@ -45,6 +46,7 @@ class BridgeClient extends ChangeNotifier {
 
   /// Fires after every successful (re)connection + initialize.
   Stream<void> get connected => _connected.stream;
+  Stream<Map<String, dynamic>> get terminalEvents => _terminalEvents.stream;
 
   ServerRequestHandler? onServerRequest;
 
@@ -171,6 +173,8 @@ class BridgeClient extends ChangeNotifier {
         _messages.add(SessionMessage(method, params));
       case '_codeaw/activity':
         _activity.add(params);
+      case '_codeaw/terminal/event':
+        _terminalEvents.add(params);
     }
   }
 
@@ -224,6 +228,7 @@ class BridgeClient extends ChangeNotifier {
     _messages.close();
     _activity.close();
     _connected.close();
+    _terminalEvents.close();
     super.dispose();
   }
 }

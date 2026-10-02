@@ -42,6 +42,7 @@ class _SessionsPageState extends State<SessionsPage> {
               ),
             ]),
             actions: [
+              IconButton(icon: const Icon(Icons.terminal_rounded), tooltip: '終端機', onPressed: () => context.push('/terminal')),
               IconButton(icon: const Icon(Icons.settings_outlined), tooltip: '設定', onPressed: () => context.push('/settings')),
             ],
           ),

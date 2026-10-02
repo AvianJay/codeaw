@@ -216,12 +216,45 @@ out on the bridge.
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
 | `_codeaw/git/diff` | `{cwd, path?, staged?}` | `{diff, truncated}` |
+| `_codeaw/terminal/open` | `{cwd?, terminalId?, afterSeq?, cols?, rows?}` | `{terminalId, cwd, shell, exited, exitCode?, lastSeq, full, events}` |
+| `_codeaw/terminal/write` | `{terminalId, data}` | `{}` |
+| `_codeaw/terminal/resize` | `{terminalId, cols, rows}` | `{}` |
+| `_codeaw/terminal/detach` | `{terminalId}` | `{}` |
+| `_codeaw/terminal/close` | `{terminalId}` | `{}` |
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
 
 File-system methods only accept paths inside the configured workspaces or a
 known session `cwd`.
+
+### Interactive terminals
+
+Terminals are separate from ACP agent sessions. `open` starts an interactive
+PowerShell on Windows or the host's `$SHELL` (falling back to `/bin/sh`) on POSIX.
+The starting `cwd` must be an allowed workspace directory. The shell itself has
+the bridge account's usual permissions; the workspace check is not a sandbox.
+There is one retained shell per device and starting directory, with at most eight
+per device. Only the authenticated device that created a terminal can attach,
+write, resize, detach or close it. Dimensions range from 2 to 500; defaults are
+80 columns and 24 rows. Input is limited to 64 KiB per request.
+
+Live `_codeaw/terminal/event` notifications contain
+`{terminalId, seq, type: "data", data}` or
+`{terminalId, seq, type: "exit", exitCode}`. Output is raw terminal text, including
+ANSI escape sequences. `open` returns retained events newer than `afterSeq`, plus
+`lastSeq`. Notifications can arrive before the open response: buffer them until
+the response is applied and discard duplicate sequence numbers. `full: true`
+means reset the screen and replay all retained events, because the client is new
+or its sequence is outside the retained history.
+
+Leaving the screen detaches without stopping commands. Terminals survive socket
+reconnects but expire after ten minutes with no attached viewers, and disappear
+when the bridge restarts. About 512 Ki UTF-16 code units of recent output are
+retained in memory, with no terminal output written into the agent event log.
+`close` ends the shell and releases its slot; a later `open` starts a new shell.
+The Node distribution uses prebuilt node-pty bindings; standalone Bun 1.4.2
+releases use Bun's built-in PTY support.
 
 ## Extension notifications
 
@@ -230,6 +263,7 @@ known session `cwd`.
 | bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?}` — sent to **all** connections, attached or not |
 | bridge → client | `_codeaw/replay` | see `session/load` |
 | bridge → client | `_codeaw/event` | see event log |
+| bridge → client | `_codeaw/terminal/event` | see interactive terminals |
 | client → bridge | `_codeaw/client/state` | `{foreground: bool, activeSessionId?}` |
 | client → bridge | `_codeaw/session/detach` | `{sessionId}` — stop pushing this session's updates/requests to this connection |
 

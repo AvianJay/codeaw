@@ -13,6 +13,7 @@ import 'ui/files/git_page.dart';
 import 'ui/pair/pair_page.dart';
 import 'ui/sessions/sessions_page.dart';
 import 'ui/settings/settings_page.dart';
+import 'ui/terminal/terminal_page.dart';
 
 String sessionRoute(String id) => '/session?id=${Uri.encodeQueryComponent(id)}';
 
@@ -36,6 +37,7 @@ void main() {
       GoRoute(path: '/file', builder: (_, s) => FileViewPage(path: s.uri.queryParameters['path'] ?? '', line: int.tryParse(s.uri.queryParameters['line'] ?? ''))),
       GoRoute(path: '/git', builder: (_, s) => GitPage(cwd: s.uri.queryParameters['cwd'] ?? '')),
       GoRoute(path: '/settings', builder: (_, _) => const SettingsPage()),
+      GoRoute(path: '/terminal', builder: (_, s) => TerminalPage(cwd: s.uri.queryParameters['cwd'] ?? '')),
     ],
   );
   unawaited(state.load());

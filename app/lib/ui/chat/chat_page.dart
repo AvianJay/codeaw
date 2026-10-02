@@ -74,6 +74,11 @@ class _ChatPageState extends State<ChatPage> {
             ]),
             actions: [
               IconButton(
+                tooltip: '終端機',
+                icon: const Icon(Icons.terminal_rounded),
+                onPressed: c.cwd.isEmpty ? null : () => context.push('/terminal?cwd=${Uri.encodeQueryComponent(c.cwd)}'),
+              ),
+              IconButton(
                 tooltip: '檔案',
                 icon: const Icon(Icons.folder_outlined),
                 onPressed: c.cwd.isEmpty ? null : () => context.push('/files?path=${Uri.encodeQueryComponent(c.cwd)}'),

@@ -71,6 +71,7 @@ class _FilesPageState extends State<FilesPage> {
             Text(_path, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: scheme.outline)),
           ]),
           actions: [
+            IconButton(tooltip: '終端機', icon: const Icon(Icons.terminal_rounded), onPressed: () => context.push('/terminal?cwd=${Uri.encodeQueryComponent(_path)}')),
             IconButton(
               tooltip: _showHidden ? '隱藏 . 開頭的檔案' : '顯示 . 開頭的檔案',
               icon: Icon(_showHidden ? Icons.visibility_rounded : Icons.visibility_off_outlined),

@@ -99,6 +99,9 @@ export class TestClient {
     const c = new TestClient();
     const record = (method: string) => (ctx: { params: any }) => {
       c.received.push({ method, params: ctx.params });
+      if (method === "_codeaw/terminal/event" && ctx.params.data?.includes("\x1b[6n")) {
+        void c.request("_codeaw/terminal/write", { terminalId: ctx.params.terminalId, data: "\x1b[1;1R" });
+      }
     };
     const any = (p: unknown) => p as any;
     const app = acp
@@ -107,6 +110,7 @@ export class TestClient {
       .onNotification("_codeaw/event", any, record("_codeaw/event"))
       .onNotification("_codeaw/replay", any, record("_codeaw/replay"))
       .onNotification("_codeaw/activity", any, record("_codeaw/activity"))
+      .onNotification("_codeaw/terminal/event", any, record("_codeaw/terminal/event"))
       .onRequest("session/request_permission", async (ctx) => {
         c.received.push({ method: "session/request_permission", params: ctx.params });
         c.permissionSignals.push(ctx.signal);

@@ -7,6 +7,7 @@ import 'data/host.dart';
 import 'data/notifications.dart';
 import 'data/session_controller.dart';
 import 'data/sessions_model.dart';
+import 'data/terminal_controller.dart';
 
 /// App-wide state: the paired bridge and the objects bound to its connection.
 class AppState extends ChangeNotifier {
@@ -18,6 +19,7 @@ class AppState extends ChangeNotifier {
   BridgeClient? client;
   SessionHub? hub;
   SessionsModel? sessions;
+  TerminalHub? terminals;
   bool loaded = false;
 
   /// A pairing link received before/while the pair screen is shown (QR scanned by the system camera).
@@ -53,6 +55,7 @@ class AppState extends ChangeNotifier {
     client = c;
     hub = SessionHub(c);
     sessions = SessionsModel(c);
+    terminals = TerminalHub(c);
     notifier.watch(c, (id) => c.agent(id)?.name ?? id, (id) => sessions?.byId(id)?.displayTitle);
     // Remember which URL worked so the next start tries it first.
     c.addListener(() {
@@ -63,9 +66,11 @@ class AppState extends ChangeNotifier {
   void _unbind() {
     hub?.dispose();
     sessions?.dispose();
+    terminals?.dispose();
     client?.dispose();
     hub = null;
     sessions = null;
+    terminals = null;
     client = null;
   }
 }

@@ -6,6 +6,7 @@
 - 手機上用 **App**（Flutter，Android）：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
 - **斷線不中斷**：手機斷線或 App 被關掉時，agent 照樣工作，權限請求會等你回來。重新連上後只補傳漏掉的部分；同一個對話可以同時開在多台裝置上。
 - **接續電腦上既有的對話**：你在終端機開過的 Claude Code／Codex session 都會出現在 App 的清單裡。
+- **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
 Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp

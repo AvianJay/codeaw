@@ -5,6 +5,7 @@ import type { PushNotifier } from "../notify/ntfy.js";
 import type { ClientHandle, SessionManager } from "../session/manager.js";
 import { logger } from "../util/log.js";
 import { gitDiff, gitStatus, listDir, readFile, type PathGuard } from "./ext.js";
+import type { TerminalManager } from "../terminal/manager.js";
 
 const log = logger("client");
 
@@ -13,6 +14,7 @@ export interface FrontendDeps {
   registry: AgentRegistry;
   guard: PathGuard;
   notifier: PushNotifier;
+  terminals: TerminalManager;
 }
 
 const passthrough = (params: unknown) => (params ?? {}) as Record<string, any>;
@@ -33,6 +35,7 @@ export class FrontendConnection implements ClientHandle {
   constructor(
     readonly deviceName: string,
     private readonly deps: FrontendDeps,
+    private readonly deviceId: string,
   ) {
     const { manager } = deps;
     const bind = <T extends { client: acp.AgentContext }>(ctx: T): T => {
@@ -77,6 +80,11 @@ export class FrontendConnection implements ClientHandle {
       .onRequest("_codeaw/fs/read", passthrough, (ctx) => readFile(deps.guard, ctx.params.path, ctx.params.maxBytes))
       .onRequest("_codeaw/git/status", passthrough, (ctx) => gitStatus(deps.guard, ctx.params.cwd))
       .onRequest("_codeaw/git/diff", passthrough, (ctx) => gitDiff(deps.guard, ctx.params.cwd, ctx.params.path, ctx.params.staged))
+      .onRequest("_codeaw/terminal/open", passthrough, (ctx) => deps.terminals.open(this.deviceId, this, ctx.params))
+      .onRequest("_codeaw/terminal/write", passthrough, (ctx) => deps.terminals.write(this.deviceId, ctx.params))
+      .onRequest("_codeaw/terminal/resize", passthrough, (ctx) => deps.terminals.resize(this.deviceId, ctx.params))
+      .onRequest("_codeaw/terminal/close", passthrough, (ctx) => deps.terminals.close(this.deviceId, ctx.params.terminalId))
+      .onRequest("_codeaw/terminal/detach", passthrough, (ctx) => deps.terminals.detach(this.deviceId, this, ctx.params.terminalId))
       .onRequest("_codeaw/session/reimport", passthrough, (ctx) => this.flushed(manager.reimport(String(ctx.params.sessionId))))
       .onRequest("_codeaw/notify/info", passthrough, () => deps.notifier.info())
       .onRequest("_codeaw/notify/test", passthrough, async () => ({
@@ -124,6 +132,7 @@ export class FrontendConnection implements ClientHandle {
     if (this.disposed) return;
     this.disposed = true;
     this.deps.manager.removeClient(this);
+    this.deps.terminals.removeClient(this);
     log.info(`${this.deviceName} disconnected`);
   }
 }

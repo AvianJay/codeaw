@@ -11,6 +11,7 @@ import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/timeline.dart';
+import 'package:codeaw/data/terminal_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Future<void> until(bool Function() cond, {Duration timeout = const Duration(seconds: 10)}) async {
@@ -115,5 +116,41 @@ void main() {
     c.timeline.flush();
     expect(c2.timeline.debugSnapshot()['items'], c.timeline.debugSnapshot()['items']);
     expect(c2.lastSeq, c.lastSeq);
+  });
+
+  test('terminal streams, reattaches without duplicates, and restarts after shell exit', () async {
+    final client = connect();
+    await client.connected.first.timeout(const Duration(seconds: 15));
+    final hub = TerminalHub(client);
+    cleanups.add(hub.dispose);
+    final c = hub.open(info['home'] as String);
+    await c.attach();
+    expect(c.error, isNull);
+    expect(c.canInput, isTrue);
+    final id = c.terminalId;
+    await until(() => Platform.isWindows ? c.terminal.buffer.getText().contains('> ') : c.lastSeq > 0);
+    await c.write(Platform.isWindows ? "Write-Output ('flutter-' + 'terminal')\r" : "printf 'flutter-%s\\n' terminal\r");
+    await until(() => c.terminal.buffer.getText().contains('flutter-terminal'));
+    final seq = c.lastSeq;
+    await client.debugDropConnection();
+    await until(() => !client.isOnline);
+    expect(c.canInput, isFalse);
+    client.reconnectNow();
+    await until(() => c.canInput, timeout: const Duration(seconds: 15));
+    expect(c.terminalId, id);
+    expect(c.lastSeq, greaterThanOrEqualTo(seq));
+    expect('flutter-terminal'.allMatches(c.terminal.buffer.getText()), hasLength(1));
+    await c.write('node -e "console.log(\'busy-\' + \'started\');setInterval(()=>{},1000)"\r');
+    await until(() => c.terminal.buffer.getText().contains('busy-started'));
+    await c.write('\x03');
+    await until(() => RegExp(r'[>$#%]\s*$').hasMatch(c.terminal.buffer.getText()));
+    await c.write('exit 3\r');
+    await until(() => c.exited);
+    expect(c.exitCode, 3);
+    expect(c.canInput, isFalse);
+    await c.restart();
+    expect(c.terminalId, isNot(id));
+    expect(c.canInput, isTrue);
+    c.detach();
   });
 }

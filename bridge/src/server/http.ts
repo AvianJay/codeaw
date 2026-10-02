@@ -135,7 +135,7 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
       socket.end("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       return;
     }
-    const frontend = new FrontendConnection(device.name, deps);
+    const frontend = new FrontendConnection(device.name, deps, device.id);
     const upgrade = acpServer.prepareWebSocketUpgrade({ agent: frontend.app });
     const onHeaders = (headers: string[], request: http.IncomingMessage) => {
       if (request === req) headers.push(`Acp-Connection-Id: ${upgrade.connectionId}`);

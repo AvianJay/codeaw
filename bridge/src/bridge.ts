@@ -11,6 +11,7 @@ import { SessionManager } from "./session/manager.js";
 import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
 import { tailscaleIPv4 } from "./util/tailscale.js";
+import { TerminalManager } from "./terminal/manager.js";
 
 const log = logger("bridge");
 
@@ -60,7 +61,8 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   manager.notifier = notifier;
   manager.start();
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds());
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, devices, store, hostName: os.hostname() });
+  const terminals = new TerminalManager(guard);
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname() });
 
   const servers = new Map<string, http.Server>();
   let port = opts.port ?? config.listen.port;
@@ -109,6 +111,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     async stop() {
       if (retry) clearInterval(retry);
       notifier.dispose();
+      await terminals.dispose();
       await handlers.close();
       await Promise.all(
         [...servers.values()].map(

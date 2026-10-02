@@ -25,6 +25,7 @@ for (const [name, entry] of Object.entries(bins)) {
   const result = spawnSync("bun", [
     "build", path.resolve(bridgeDir, entry), "--compile", "--minify", "--sourcemap",
     "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig",
+    "--external", "@lydell/node-pty",
     `--target=${values.target}`, "--outfile", path.join(outputDir, name + suffix),
   ], { cwd: bridgeDir, stdio: "inherit" });
   if (result.error) throw result.error;
