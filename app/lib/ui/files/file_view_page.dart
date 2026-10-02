@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 import '../../acp/jsonrpc.dart';
 import '../../app_state.dart';
@@ -82,7 +83,14 @@ class _FileViewPageState extends State<FileViewPage> {
               ]),
             ),
           if (isMarkdown && _rendered)
-            Padding(padding: const EdgeInsets.all(8), child: SelectionArea(child: Markdown(text)))
+            Padding(
+              padding: const EdgeInsets.all(8),
+              child: SelectionArea(child: Markdown(
+                text,
+                client: AppScope.of(context).client,
+                basePath: (RegExp(r'^[a-zA-Z]:[\\/]|^\\\\').hasMatch(widget.path) ? p.windows : p.posix).dirname(widget.path),
+              )),
+            )
           else
             CodeBlock(code: text, language: languageForPath(widget.path), lineNumbers: true, wrap: _wrap),
         ],

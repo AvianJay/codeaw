@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
+import '../../data/bridge_client.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
 import '../../data/timeline.dart';
@@ -31,7 +32,7 @@ class TimelineItemView extends StatelessWidget {
             ? UserMessageView(m)
             : m.role == MessageRole.thought
                 ? ThoughtView(m)
-                : AgentMessageView(m, streaming: isLast && controller.running),
+                : AgentMessageView(m, streaming: isLast && controller.running, client: controller.client, basePath: controller.cwd),
         ToolItem t => ToolCallCard(t, controller: controller),
         PermissionItem p => PermissionCard(p, controller: controller),
         ElicitationItem e => ElicitationCard(e, controller: controller),
@@ -171,9 +172,11 @@ class BlockImage extends StatelessWidget {
 }
 
 class AgentMessageView extends StatelessWidget {
-  const AgentMessageView(this.m, {super.key, required this.streaming});
+  const AgentMessageView(this.m, {super.key, required this.streaming, this.client, this.basePath});
   final MessageItem m;
   final bool streaming;
+  final BridgeClient? client;
+  final String? basePath;
 
   @override
   Widget build(BuildContext context) {
@@ -186,7 +189,7 @@ class AgentMessageView extends StatelessWidget {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製訊息'), duration: Duration(seconds: 1)));
         },
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (text.isNotEmpty) SelectionArea(child: Markdown(text, streaming: streaming)),
+          if (text.isNotEmpty) SelectionArea(child: Markdown(text, streaming: streaming, client: client, basePath: basePath)),
           for (final p in m.parts.where((p) => p['type'] == 'image')) Padding(padding: const EdgeInsets.only(top: 6), child: BlockImage(p)),
         ]),
       ),

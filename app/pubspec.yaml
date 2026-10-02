@@ -18,6 +18,7 @@ dependencies:
   http: ^1.6.0
   image_picker: ^1.2.3
   mobile_scanner: ^7.4.2
+  path: ^1.9.1
   re_highlight: ^0.0.3
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.2

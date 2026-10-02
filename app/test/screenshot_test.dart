@@ -18,6 +18,7 @@ import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/working_indicator.dart';
 import 'package:codeaw/ui/common/diff_view.dart';
+import 'package:codeaw/ui/common/markdown.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
 import 'package:codeaw/util/diff.dart';
@@ -75,11 +76,19 @@ class _Harness {
       );
 }
 
-Future<void> _shoot(WidgetTester tester, Widget app, String name) async {
+Future<void> _shoot(WidgetTester tester, Widget app, String name, {bool decodeImages = false}) async {
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.625;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(app);
+  if (decodeImages) {
+    final providers = tester.widgetList<Image>(find.byType(Image)).map((w) => w.image).toList();
+    await tester.runAsync(() async {
+      for (final provider in providers) {
+        await precacheImage(provider, tester.element(find.byType(MaterialApp)));
+      }
+    });
+  }
   for (var i = 0; i < 6; i++) {
     await tester.pump(const Duration(milliseconds: 120));
   }
@@ -212,6 +221,43 @@ void main() {
   testWidgets('pair page', (tester) async {
     final h = _Harness()..state.host = null;
     await _shoot(tester, h.wrap(const PairPage()), 'pair');
+  });
+
+  testWidgets('markdown screenshot details collapsed and expanded', (tester) async {
+    final h = _Harness();
+    final image = base64Encode(File('test/fixtures/markdown_phone.png').readAsBytesSync());
+    Widget page({required bool open}) => h.wrap(
+      Scaffold(
+        appBar: AppBar(title: const Text('Add iOS web build hosting')),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: SelectionArea(child: Markdown('''
+- iOS：產出 `codeaw-ios-unsigned.ipa`，待 macOS CI 實際驗證。
+- Web：手機、電腦皆可用，由 bridge host，並隨發行包附上 `web/`。
+
+Web build 與測試通過。遠端使用可執行 `tailscale serve -bg 7860`，再開啟 HTTPS 網址。
+
+<details${open ? ' open' : ''}>
+<summary>手機尺寸實測畫面</summary>
+
+![手機畫面](data:image/png;base64,$image)
+
+點擊圖片可放大檢視。
+</details>
+''')),
+        ),
+      ),
+      brightness: Brightness.dark,
+    );
+    await _shoot(tester, page(open: false), 'markdown_collapsed');
+    // A fresh tree exercises the HTML open attribute rather than carrying state.
+    await tester.pumpWidget(const SizedBox());
+    await _shoot(tester, page(open: true), 'markdown_expanded', decodeImages: true);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
   });
 
   testWidgets('diff view', (tester) async {
