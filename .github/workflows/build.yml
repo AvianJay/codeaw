@@ -106,8 +106,10 @@ jobs:
             target: bun-linux-arm64-musl
           - platform: windows-x64
             target: bun-windows-x64
+            arch: x64
           - platform: windows-arm64
             target: bun-windows-arm64
+            arch: arm64
           - platform: macos-x64
             target: bun-darwin-x64
           - platform: macos-arm64
@@ -129,6 +131,14 @@ jobs:
       - run: npm ci
       - name: Build every package bin
         run: npm run build:bin -- --target=${{ matrix.target }}
+      - name: Install NSIS
+        if: startsWith(matrix.platform, 'windows-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nsis
+      - name: Build Windows installer
+        if: startsWith(matrix.platform, 'windows-')
+        run: npm run build:installer -- --skip-build --arch=${{ matrix.arch }}
       - name: Smoke test native executable
         if: matrix.platform == 'linux-x64'
         run: node scripts/background-smoke.mjs dist/bin/codeaw-bridge
@@ -141,6 +151,7 @@ jobs:
           cp ../LICENSE dist/bin/LICENSE
           if [[ "$PLATFORM" == windows-* ]]; then
             zip -j "../dist/codeaw-bridge-${PLATFORM}.zip" dist/bin/*
+            cp dist/installer/*-setup.exe ../dist/
           else
             tar -czf "../dist/codeaw-bridge-${PLATFORM}.tar.gz" -C dist/bin .
           fi
@@ -152,9 +163,32 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  bridge-installer-test:
+    name: Windows installer smoke
+    needs: bridge
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: bridge
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@v5
+        with:
+          name: nightly-bridge-windows-x64
+          path: bridge/dist/download
+      - name: Extract packaged bridge
+        run: Expand-Archive -LiteralPath dist/download/codeaw-bridge-windows-x64.zip -DestinationPath dist/bin
+      - name: Test install, update and uninstall
+        run: node scripts/installer-smoke.mjs dist/download/codeaw-bridge-windows-x64-setup.exe
+
   release:
     name: Update nightly release
-    needs: [android, bridge]
+    needs: [android, bridge, bridge-installer-test]
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -180,6 +214,7 @@ jobs:
 
           - Android: signed universal APK, per-ABI APKs, and AAB.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
+          - Windows: per-user NSIS installers and portable ZIPs for x64 and ARM64.
           - Bridge still requires Tailscale and the chosen ACP agents to be installed separately.
           - Verify downloads with SHA256SUMS.
 

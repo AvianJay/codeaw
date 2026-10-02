@@ -45,7 +45,7 @@ export function requestControl<T = any>(file: string, request: ControlRequest, t
 }
 
 export function isUnavailable(error: unknown): boolean {
-  return ["ENOENT", "ECONNREFUSED", "ECONNRESET"].includes((error as NodeJS.ErrnoException).code ?? "");
+  return ["ENOENT", "ECONNREFUSED", "ECONNRESET", "EPIPE"].includes((error as NodeJS.ErrnoException).code ?? "");
 }
 
 export async function runningStatus(file: string): Promise<any | undefined> {

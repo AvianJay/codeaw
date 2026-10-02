@@ -16,13 +16,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:bin": "npm run build && node scripts/build-binaries.mjs",
+    "build:installer": "node scripts/build-installer.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
-    "smoke:desktop": "tsx scripts/desktop-smoke.ts"
+    "smoke:desktop": "tsx scripts/desktop-smoke.ts",
+    "smoke:installer": "node scripts/installer-smoke.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.6.0",

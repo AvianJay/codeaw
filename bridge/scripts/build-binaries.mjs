@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import spawn from "cross-spawn";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -22,12 +22,12 @@ const outputDir = path.resolve(bridgeDir, values["out-dir"]);
 fs.mkdirSync(outputDir, { recursive: true });
 for (const [name, entry] of Object.entries(bins)) {
   const suffix = values.target.includes("windows") ? ".exe" : "";
-  const result = spawnSync("bun", [
+  const result = spawn.sync("bun", [
     "build", path.resolve(bridgeDir, entry), "--compile", "--minify", "--sourcemap",
     "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig",
     "--external", "@lydell/node-pty",
     `--target=${values.target}`, "--outfile", path.join(outputDir, name + suffix),
-  ], { cwd: bridgeDir, stdio: "inherit" });
+  ], { cwd: bridgeDir, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }

@@ -28,6 +28,12 @@ npm i -g @agentclientprotocol/codex-acp           # Codex
 
 安裝 bridge：
 
+Windows 可從 [nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 下載 `codeaw-bridge-windows-x64-setup.exe` 或 `codeaw-bridge-windows-arm64-setup.exe`。NSIS 安裝程式以目前使用者安裝到 `%LOCALAPPDATA%\Programs\codeaw-bridge`，提供開始選單的系統匣、配對、設定與移除捷徑；可選擇登入自動啟動及桌面捷徑。安裝完成後可直接啟動系統匣。安裝包包含 runtime，Tailscale 與 ACP agents 需另外安裝。
+
+更新會停止 bridge 與執行中的回合；移除程式會停止 bridge 並移除登入自動啟動，保留 `~/.codeaw` 的設定、配對裝置與歷史。如果已註冊 Windows 服務，需先從管理員終端機執行 `service uninstall`，更新後再重新安裝服務。NSIS 安裝程式提供英文／繁體中文介面，也支援 `/S` 靜默安裝與 `/D=<完整安裝路徑>`（`/D` 放最後，不加引號）。
+
+從原始碼安裝：
+
 ```powershell
 cd bridge
 npm install
@@ -151,9 +157,25 @@ GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` 
 
 在 repository 的 Actions secrets 設定 `KEYSTORE_BASE64`（keystore 的 Base64）、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`。密碼同時用於 keystore 與 key；CI 缺少任何一項會失敗。Android 會產出已簽章的 universal APK、三個 ABI APK 與 AAB，版本編號使用 workflow run number。
 
-Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件為 ZIP，其餘為 tar.gz。
+Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件提供 NSIS `*-setup.exe` 與可攜式 ZIP，其餘為 tar.gz，全部列入 `SHA256SUMS`。
 
 本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
+
+建置 Windows NSIS 安裝程式另需 [NSIS 3.09+](https://nsis.sourceforge.io/Download)（建議使用最新版）；Windows 安裝 NSIS，Linux 可安裝 `nsis` 套件。預設會先建置對應的 Windows 執行檔，再產生安裝包：
+
+```powershell
+cd bridge
+npm run build:installer -- --arch=x64
+npm run build:installer -- --arch=arm64
+# 重用已建置的 dist/bin/codeaw-bridge.exe（會檢查 PE 架構）：
+npm run build:installer -- --skip-build --arch=x64
+# 自訂 compiler 路徑；也可設定 MAKENSIS：
+npm run build:installer -- --skip-build --makensis="C:\Program Files (x86)\NSIS\makensis.exe"
+```
+
+輸出為 `bridge/dist/installer/codeaw-bridge-windows-<架構>-setup.exe`；`--bin-dir`、`--out-dir` 可指定輸入與輸出資料夾。Nightly 會在 Linux runner 交叉建置 x64／ARM64 安裝包。
+
+`npm run smoke:installer` 會在 Windows 使用臨時安裝資料夾與獨立 `CODEAW_HOME`，測試靜默安裝、停止執行中的 bridge 後更新、捷徑、登入項目清理與設定保留；若目前帳號已有安裝或捷徑則拒絕覆蓋。CI 也會在 Windows runner 執行此測試，通過後才發布 nightly。
 
 ```powershell
 cd bridge
