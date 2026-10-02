@@ -9,10 +9,11 @@ import { TRAY_SCRIPT } from "./windows-tray.js";
 
 const execFileAsync = promisify(execFile);
 
-function desktopBootstrap(script: string, pipeName: string, readyFile: string, logFile: string): string {
+function desktopBootstrap(script: string, pipeName: string, readyFile: string, logFile: string, iconPath: string): string {
   const quote = (value: string) => "'" + value.replace(/'/g, "''") + "'";
   const args = ['-NoProfile', '-NonInteractive', '-STA', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
-    '-File', `"${script}"`, '-PipeName', pipeName, '-ReadyFile', `"${readyFile}"`, '-LogFile', `"${logFile}"`].join(' ');
+    '-File', `"${script}"`, '-PipeName', pipeName, '-ReadyFile', `"${readyFile}"`, '-LogFile', `"${logFile}"`,
+    '-IconPath', `"${iconPath}"`].join(' ');
   return `$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $mutex = [Threading.Mutex]::new($false, ${quote(`Local\\${pipeName}-tray`)})
@@ -47,7 +48,10 @@ export async function launchDesktop(file: string): Promise<void> {
   fs.writeFileSync(script, "\ufeff" + TRAY_SCRIPT, "utf8");
   const logFile = path.join(path.dirname(file), "desktop.log");
   const readyFile = path.join(directory, `tray-ready-${crypto.randomUUID()}.json`);
-  const bootstrap = desktopBootstrap(script, controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), readyFile, logFile);
+  // Standalone builds carry the icon in their PE resources; Node builds ship the ICO asset.
+  const invocation = bridgeInvocation();
+  const iconPath = invocation.args.length ? fileURLToPath(new URL("../assets/codeaw.ico", import.meta.url)) : invocation.executable;
+  const bootstrap = desktopBootstrap(script, controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), readyFile, logFile, iconPath);
   try {
     // Start-Process creates a Windows process independent of Bun's child job, which
     // otherwise terminates a detached PowerShell tray when this CLI exits.

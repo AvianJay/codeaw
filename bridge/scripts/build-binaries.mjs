@@ -19,6 +19,10 @@ const bins = typeof pkg.bin === "string" ? { [pkg.name.replace(/^@[^/]+\//, "")]
 if (!bins || Object.keys(bins).length === 0) throw new Error("No package.json bin entries to build.");
 
 const outputDir = path.resolve(bridgeDir, values["out-dir"]);
+const windows = values.target.includes("windows");
+if (windows && process.platform !== "win32") {
+  throw new Error("Build Windows executables on Windows so Bun can embed the app icon.");
+}
 fs.mkdirSync(outputDir, { recursive: true });
 // Keep the browser client with portable releases and installers.
 const webDir = path.join(bridgeDir, "dist/web");
@@ -26,11 +30,12 @@ if (fs.existsSync(path.join(webDir, "index.html")) && path.resolve(outputDir, "w
   fs.cpSync(webDir, path.join(outputDir, "web"), { recursive: true });
 }
 for (const [name, entry] of Object.entries(bins)) {
-  const suffix = values.target.includes("windows") ? ".exe" : "";
+  const suffix = windows ? ".exe" : "";
   const result = spawn.sync("bun", [
     "build", path.resolve(bridgeDir, entry), "--compile", "--minify", "--sourcemap",
     "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig",
     "--external", "@lydell/node-pty",
+    ...(windows ? ["--windows-icon", path.join(bridgeDir, "src/assets/codeaw.ico")] : []),
     `--target=${values.target}`, "--outfile", path.join(outputDir, name + suffix),
   ], { cwd: bridgeDir, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;

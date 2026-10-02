@@ -1,6 +1,6 @@
 /** Use a cooked template so bundler Unicode escapes become characters, not PowerShell text. */
 export const TRAY_SCRIPT = `
-param([Parameter(Mandatory=$true)][string]$PipeName, [string]$ReadyFile, [string]$LogFile)
+param([Parameter(Mandatory=$true)][string]$PipeName, [string]$ReadyFile, [string]$IconPath, [string]$LogFile)
 $ErrorActionPreference = 'Stop'
 try {
 $script:mutex = [System.Threading.Mutex]::new($false, ('Local\\' + $PipeName + '-tray'))
@@ -9,6 +9,12 @@ if (-not $owned) { $script:mutex.Dispose(); exit 0 }
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+$script:appIcon = if ([System.IO.Path]::GetExtension($IconPath) -eq '.ico') {
+    [System.Drawing.Icon]::new($IconPath)
+} else {
+    [System.Drawing.Icon]::ExtractAssociatedIcon($IconPath)
+}
+$script:trayIcon = [System.Drawing.Icon]::new($script:appIcon, [System.Windows.Forms.SystemInformation]::SmallIconSize)
 
 function Invoke-Control([string]$Command, [hashtable]$Fields = @{}) {
     $pipe = [System.IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
@@ -62,7 +68,7 @@ function New-Window([string]$Title, [int]$Width, [int]$Height) {
     $script:window.MaximizeBox = $false
     $script:window.Font = [System.Drawing.Font]::new('Microsoft JhengHei UI', 10)
     $script:window.BackColor = [System.Drawing.Color]::FromArgb(248, 250, 252)
-    $script:window.Icon = [System.Drawing.SystemIcons]::Application
+    $script:window.Icon = $script:appIcon
     return $script:window
 }
 
@@ -224,7 +230,7 @@ function Show-Devices {
 }
 
 $script:tray = [System.Windows.Forms.NotifyIcon]::new()
-$script:tray.Icon = [System.Drawing.SystemIcons]::Application
+$script:tray.Icon = $script:trayIcon
 $script:tray.Text = 'codeaw bridge'
 $menu = [System.Windows.Forms.ContextMenuStrip]::new()
 $script:statusItem = $menu.Items.Add('Bridge 啟動中…')
@@ -309,6 +315,8 @@ try {
     $script:tray.Visible = $false
     $script:tray.Dispose()
     $menu.Dispose()
+    $script:trayIcon.Dispose()
+    $script:appIcon.Dispose()
     $script:mutex.ReleaseMutex()
     $script:mutex.Dispose()
     if ($ReadyFile -and [IO.File]::Exists($ReadyFile)) { [IO.File]::Delete($ReadyFile) }

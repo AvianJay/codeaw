@@ -59,6 +59,7 @@ const output = path.join(outputDir, `codeaw-bridge-windows-${values.arch}-setup.
 const define = (key, value) => `-D${key}=${value}`;
 run(compiler, ["-V3", "-INPUTCHARSET", "UTF8", "-WX", define("APP_VERSION", pkg.version), define("PRODUCT_VERSION", [...version, 0].join(".")),
   define("ARCH", values.arch), define("BRIDGE_EXE", executable), define("REPO_DIR", path.resolve(bridgeDir, "..")),
+  define("APP_ICON", path.join(bridgeDir, "src/assets/codeaw.ico")),
   ...(fs.existsSync(path.join(binDir, "web/index.html")) ? [define("WEB_DIR", path.join(binDir, "web"))] : []),
   define("INSTALLER_DIR", path.join(bridgeDir, "installer")), define("OUTPUT_FILE", output),
   path.join(bridgeDir, "installer", "windows.nsi")]);

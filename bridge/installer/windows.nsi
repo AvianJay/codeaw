@@ -27,6 +27,8 @@ VIAddVersionKey /LANG=1033 "FileDescription" "codeaw bridge installer (${ARCH})"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (C) 2026 AvianJay"
 
 Var StartMenuFolder
+!define MUI_ICON "${APP_ICON}"
+!define MUI_UNICON "${APP_ICON}"
 !define MUI_ABORTWARNING
 !define MUI_LANGDLL_REGISTRY_ROOT HKCU
 !define MUI_LANGDLL_REGISTRY_KEY "${APP_KEY}"

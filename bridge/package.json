@@ -14,7 +14,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "build:web": "node scripts/build-web.mjs",
     "build:bin": "npm run build && node scripts/build-binaries.mjs",
     "build:installer": "node scripts/build-installer.mjs",

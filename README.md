@@ -206,7 +206,7 @@ Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（
 
 Web 先建置，再附入所有 bridge 發行包與 Windows 安裝程式。iOS 在 macOS runner 執行 `flutter build ios --release --no-codesign`，把 `Runner.app` 放進 `Payload/` 壓縮成 `codeaw-ios-unsigned.ipa`，不需要 Apple 簽署 secrets。本機 iOS 建置需 macOS／Xcode，也可以用相同方式打包。
 
-本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
+本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。Windows 執行檔需在 Windows 建置，才能嵌入與 Flutter App 相同的圖示；系統匣和原生視窗會使用這個圖示。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
 
 建置 Windows NSIS 安裝程式另需 [NSIS 3.09+](https://nsis.sourceforge.io/Download)（建議使用最新版）；Windows 安裝 NSIS，Linux 可安裝 `nsis` 套件。預設會先建置對應的 Windows 執行檔，再產生安裝包：
 
@@ -220,7 +220,7 @@ npm run build:installer -- --skip-build --arch=x64
 npm run build:installer -- --skip-build --makensis="C:\Program Files (x86)\NSIS\makensis.exe"
 ```
 
-輸出為 `bridge/dist/installer/codeaw-bridge-windows-<架構>-setup.exe`；`--bin-dir`、`--out-dir` 可指定輸入與輸出資料夾。Nightly 會在 Linux runner 交叉建置 x64／ARM64 安裝包。
+輸出為 `bridge/dist/installer/codeaw-bridge-windows-<架構>-setup.exe`；`--bin-dir`、`--out-dir` 可指定輸入與輸出資料夾。Nightly 會在 Windows runner 建置 x64／ARM64 執行檔與安裝包，安裝程式及移除程式也使用相同圖示。
 
 `npm run smoke:installer` 會在 Windows 使用臨時安裝資料夾與獨立 `CODEAW_HOME`，測試靜默安裝、停止執行中的 bridge 後更新、捷徑、登入項目清理與設定保留；若目前帳號已有安裝或捷徑則拒絕覆蓋。CI 也會在 Windows runner 執行此測試，通過後才發布 nightly。
 

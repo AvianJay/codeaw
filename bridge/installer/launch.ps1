@@ -32,7 +32,7 @@ if ($owned) { $mutex.ReleaseMutex() }
 $mutex.Dispose()
 if ($owned) {
     if (-not [IO.File]::Exists($trayScript)) { throw 'System tray script was not created' }
-    $trayArgs = '-NoProfile -NonInteractive -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $trayScript + '" -PipeName ' + $pipeName
+    $trayArgs = '-NoProfile -NonInteractive -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $trayScript + '" -PipeName ' + $pipeName + ' -IconPath "' + $bridge + '"'
     Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden -ArgumentList $trayArgs | Out-Null
 }
 exit 0

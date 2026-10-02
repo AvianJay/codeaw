@@ -162,7 +162,7 @@ jobs:
   bridge:
     name: Bridge (${{ matrix.platform }})
     needs: web
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -177,9 +177,11 @@ jobs:
           - platform: linux-arm64-musl
             target: bun-linux-arm64-musl
           - platform: windows-x64
+            runner: windows-latest
             target: bun-windows-x64
             arch: x64
           - platform: windows-arm64
+            runner: windows-latest
             target: bun-windows-arm64
             arch: arm64
           - platform: macos-x64
@@ -209,9 +211,8 @@ jobs:
         run: npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y nsis
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
       - name: Build Windows installer
         if: startsWith(matrix.platform, 'windows-')
         run: npm run build:installer -- --skip-build --arch=${{ matrix.arch }}

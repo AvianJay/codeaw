@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import YAML from "yaml";
 import { loadConfig } from "../src/config.js";
@@ -109,7 +110,8 @@ try {
   fs.writeFileSync(check, "param([string]$Installer)\n$errors=$null\n[System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$null, [ref]$errors) | Out-Null\nif ($errors.Count) { throw ($errors | Out-String) }\n");
   await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", check, "-Installer", installer]);
   await run("powershell.exe", ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptFile,
-    "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output]);
+    "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output,
+    "-IconPath", fileURLToPath(new URL("../src/assets/codeaw.ico", import.meta.url))]);
   for (const name of ["tray-menu", "pair", "settings", "devices"]) {
     if (!fs.existsSync(path.join(output, `${name}.png`))) throw new Error(`Missing ${name} screenshot`);
   }
