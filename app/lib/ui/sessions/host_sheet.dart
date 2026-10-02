@@ -3,10 +3,10 @@ import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
 import '../../data/host.dart';
+import '../common/adaptive.dart';
 
-Future<void> showHostSheet(BuildContext context) => showModalBottomSheet<void>(
+Future<void> showHostSheet(BuildContext context) => showAdaptiveSheet<void>(
   context: context,
-  showDragHandle: true,
   builder: (_) => const _HostSheet(),
 );
 
@@ -23,6 +23,7 @@ class _HostSheetState extends State<_HostSheet> {
 
   Future<void> _select(HostConfig host) async {
     final state = AppScope.read(context);
+    final router = GoRouter.of(context);
     if (identical(state.host, host)) {
       Navigator.pop(context);
       return;
@@ -34,6 +35,7 @@ class _HostSheetState extends State<_HostSheet> {
     try {
       await state.setHost(host);
       if (mounted) Navigator.pop(context);
+      router.go('/');
     } catch (_) {
       if (mounted) {
         setState(() {

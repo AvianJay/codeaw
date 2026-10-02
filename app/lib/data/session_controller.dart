@@ -35,6 +35,8 @@ class SessionController extends ChangeNotifier {
   final BridgeClient client;
   final String sessionId;
   String cwd;
+  /// Unsent text survives navigating between recently opened conversations.
+  String draft = '';
   final timeline = Timeline();
 
   String get agentId => sessionId.split(':').first;

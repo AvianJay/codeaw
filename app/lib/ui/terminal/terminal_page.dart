@@ -8,6 +8,7 @@ import '../../app_state.dart';
 import '../../data/bridge_client.dart';
 import '../../data/models.dart';
 import '../../data/terminal_controller.dart';
+import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
 class TerminalPage extends StatefulWidget {
@@ -59,9 +60,15 @@ class _TerminalPageState extends State<TerminalPage> {
       _error = null;
     });
     try {
-      final r = await _client.request('_codeaw/workspaces/list') as Map<String, dynamic>;
+      final r =
+          await _client.request('_codeaw/workspaces/list')
+              as Map<String, dynamic>;
       if (mounted) {
-        setState(() => _roots = (r['roots'] as List? ?? const []).whereType<Map<String, dynamic>>().toList());
+        setState(
+          () => _roots = (r['roots'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()
+              .toList(),
+        );
       }
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -80,7 +87,11 @@ class _TerminalPageState extends State<TerminalPage> {
   void _copy() {
     final range = _selection.selection;
     if (range == null || _shell == null) return;
-    unawaited(Clipboard.setData(ClipboardData(text: _shell!.terminal.buffer.getText(range))));
+    unawaited(
+      Clipboard.setData(
+        ClipboardData(text: _shell!.terminal.buffer.getText(range)),
+      ),
+    );
     _selection.clearSelection();
   }
 
@@ -154,12 +165,19 @@ class _TerminalPageState extends State<TerminalPage> {
             if (c?.error != null)
               MaterialBanner(
                 content: Text(c!.error!),
-                actions: [TextButton(onPressed: c.attach, child: const Text('重試'))],
+                actions: [
+                  TextButton(onPressed: c.attach, child: const Text('重試')),
+                ],
               ),
             if (c != null && c.exited)
               MaterialBanner(
                 content: Text('Shell 已結束（退出碼 ${c.exitCode ?? '—'}）'),
-                actions: [TextButton(onPressed: _client.isOnline ? c.restart : null, child: const Text('重新開啟'))],
+                actions: [
+                  TextButton(
+                    onPressed: _client.isOnline ? c.restart : null,
+                    child: const Text('重新開啟'),
+                  ),
+                ],
               ),
             if (c?.loading == true) const LinearProgressIndicator(),
             Expanded(
@@ -183,12 +201,21 @@ class _TerminalPageState extends State<TerminalPage> {
                 top: false,
                 child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 4,
+                  ),
                   child: Row(
                     children: [
-                      for (final key in [('Ctrl+C', '\x03'), ('Tab', '\t'), ('Esc', '\x1b')])
+                      for (final key in [
+                        ('Ctrl+C', '\x03'),
+                        ('Tab', '\t'),
+                        ('Esc', '\x1b'),
+                      ])
                         TextButton(
-                          onPressed: c.canInput ? () => unawaited(c.write(key.$2)) : null,
+                          onPressed: c.canInput
+                              ? () => unawaited(c.write(key.$2))
+                              : null,
                           child: Text(key.$1),
                         ),
                       for (final key in [
@@ -212,7 +239,11 @@ class _TerminalPageState extends State<TerminalPage> {
                       ),
                       IconButton(
                         tooltip: '鍵盤',
-                        onPressed: c.canInput ? () => _focus.hasFocus ? _focus.unfocus() : _focus.requestFocus() : null,
+                        onPressed: c.canInput
+                            ? () => _focus.hasFocus
+                                  ? _focus.unfocus()
+                                  : _focus.requestFocus()
+                            : null,
                         icon: const Icon(Icons.keyboard_outlined),
                       ),
                     ],
@@ -236,22 +267,31 @@ class _TerminalPageState extends State<TerminalPage> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Text(_client.isOnline ? '尚無工作目錄，請在 bridge 設定 workspace 或先建立對話' : '連上 bridge 後選擇工作目錄'),
+          child: Text(
+            _client.isOnline
+                ? '尚無工作目錄，請在 bridge 設定 workspace 或先建立對話'
+                : '連上 bridge 後選擇工作目錄',
+          ),
         ),
       );
     }
-    return ListView(
-      children: [
-        const Padding(padding: EdgeInsets.all(16), child: Text('在電腦上的資料夾開啟 shell')),
-        for (final root in _roots)
-          ListTile(
-            leading: const Icon(Icons.terminal_rounded),
-            title: Text('${root['name'] ?? folderName('${root['path']}')}'),
-            subtitle: Text('${root['path']}'),
-            trailing: const Icon(Icons.chevron_right_rounded),
-            onTap: _client.isOnline ? () => _open('${root['path']}') : null,
+    return ContentFrame(
+      child: ListView(
+        children: [
+          const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('在電腦上的資料夾開啟 shell'),
           ),
-      ],
+          for (final root in _roots)
+            ListTile(
+              leading: const Icon(Icons.terminal_rounded),
+              title: Text('${root['name'] ?? folderName('${root['path']}')}'),
+              subtitle: Text('${root['path']}'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: _client.isOnline ? () => _open('${root['path']}') : null,
+            ),
+        ],
+      ),
     );
   }
 }

@@ -12,9 +12,9 @@ import 'ui/files/file_view_page.dart';
 import 'ui/files/files_page.dart';
 import 'ui/files/git_page.dart';
 import 'ui/pair/pair_page.dart';
-import 'ui/sessions/sessions_page.dart';
 import 'ui/settings/settings_page.dart';
 import 'ui/terminal/terminal_page.dart';
+import 'ui/workspace/workspace_shell.dart';
 import 'util/browser_location.dart';
 
 String sessionRoute(String id) => '/session?id=${Uri.encodeQueryComponent(id)}';
@@ -24,32 +24,84 @@ void main() {
   final launchPairing = kIsWeb ? PairingLink.fromBrowserUri(Uri.base) : null;
   if (launchPairing != null) clearBrowserPairing();
   late final GoRouter router;
-  final state = AppState(HostStore(), openSession: (id) => router.go(sessionRoute(id)))
-    ..pendingPairing = launchPairing;
-  router = GoRouter(
-    initialLocation: launchPairing == null ? null : '/pair',
-    overridePlatformDefaultLocation: launchPairing != null,
-    refreshListenable: state,
-    redirect: (context, s) {
-      if (!state.loaded) return null;
-      final atPair = s.matchedLocation == '/pair';
-      if (!state.paired && !atPair) return '/pair';
-      return null;
-    },
-    routes: [
-      GoRoute(path: '/', builder: (_, _) => const SessionsPage()),
-      GoRoute(path: '/pair', builder: (_, _) => PairPage(autoPair: launchPairing != null)),
-      GoRoute(path: '/session', builder: (_, s) => ChatPage(sessionId: s.uri.queryParameters['id'] ?? '', cwd: s.uri.queryParameters['cwd'])),
-      GoRoute(path: '/files', builder: (_, s) => FilesPage(path: s.uri.queryParameters['path'] ?? '')),
-      GoRoute(path: '/file', builder: (_, s) => FileViewPage(path: s.uri.queryParameters['path'] ?? '', line: int.tryParse(s.uri.queryParameters['line'] ?? ''))),
-      GoRoute(path: '/git', builder: (_, s) => GitPage(cwd: s.uri.queryParameters['cwd'] ?? '')),
-      GoRoute(path: '/settings', builder: (_, _) => const SettingsPage()),
-      GoRoute(path: '/terminal', builder: (_, s) => TerminalPage(cwd: s.uri.queryParameters['cwd'] ?? '')),
-    ],
-  );
+  final state = AppState(
+    HostStore(),
+    openSession: (id) => router.go(sessionRoute(id)),
+  )..pendingPairing = launchPairing;
+  router = createAppRouter(state, autoPair: launchPairing != null);
   unawaited(state.load());
   runApp(CodeawApp(state: state, router: router));
 }
+
+GoRouter createAppRouter(
+  AppState state, {
+  bool autoPair = false,
+  String? initialLocation,
+}) => GoRouter(
+  initialLocation: autoPair ? '/pair' : initialLocation,
+  overridePlatformDefaultLocation: autoPair || initialLocation != null,
+  refreshListenable: state,
+  redirect: (context, s) {
+    if (!state.loaded) return null;
+    final atPair = s.matchedLocation == '/pair';
+    if (!state.paired && !atPair) return '/pair';
+    return null;
+  },
+  routes: [
+    GoRoute(
+      path: '/pair',
+      builder: (_, _) => PairPage(autoPair: autoPair),
+    ),
+    ShellRoute(
+      builder: (_, s, child) => WorkspaceShell(
+        key: ObjectKey(state.client),
+        location: s.uri,
+        child: child,
+      ),
+      routes: [
+        GoRoute(path: '/', builder: (_, _) => const WorkspaceHome()),
+        GoRoute(
+          path: '/session',
+          builder: (_, s) => ChatPage(
+            key: ValueKey(s.uri.queryParameters['id']),
+            sessionId: s.uri.queryParameters['id'] ?? '',
+            cwd: s.uri.queryParameters['cwd'],
+          ),
+        ),
+        GoRoute(
+          path: '/files',
+          builder: (_, s) => FilesPage(
+            key: ValueKey(s.uri.queryParameters['path']),
+            path: s.uri.queryParameters['path'] ?? '',
+          ),
+        ),
+        GoRoute(
+          path: '/file',
+          builder: (_, s) => FileViewPage(
+            key: ValueKey(s.uri.toString()),
+            path: s.uri.queryParameters['path'] ?? '',
+            line: int.tryParse(s.uri.queryParameters['line'] ?? ''),
+          ),
+        ),
+        GoRoute(
+          path: '/git',
+          builder: (_, s) => GitPage(
+            key: ValueKey(s.uri.queryParameters['cwd']),
+            cwd: s.uri.queryParameters['cwd'] ?? '',
+          ),
+        ),
+        GoRoute(path: '/settings', builder: (_, _) => const SettingsPage()),
+        GoRoute(
+          path: '/terminal',
+          builder: (_, s) => TerminalPage(
+            key: ValueKey(s.uri.queryParameters['cwd']),
+            cwd: s.uri.queryParameters['cwd'] ?? '',
+          ),
+        ),
+      ],
+    ),
+  ],
+);
 
 class CodeawApp extends StatefulWidget {
   const CodeawApp({super.key, required this.state, required this.router});
@@ -84,7 +136,9 @@ class _CodeawAppState extends State<CodeawApp> {
     if (uri.scheme != 'codeaw') return;
     if (uri.host == 'session') {
       final id = Uri.decodeComponent(uri.path.replaceFirst('/', ''));
-      if (id.isNotEmpty && widget.state.paired) widget.router.go(sessionRoute(id));
+      if (id.isNotEmpty && widget.state.paired) {
+        widget.router.go(sessionRoute(id));
+      }
     } else if (uri.host == 'pair') {
       final link = PairingLink.parse(uri.toString());
       if (link != null) {
@@ -102,13 +156,21 @@ class _CodeawAppState extends State<CodeawApp> {
   }
 
   ThemeData _theme(Brightness b) {
-    final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF0F9D8A), brightness: b);
+    final scheme = ColorScheme.fromSeed(
+      seedColor: const Color(0xFF0F9D8A),
+      brightness: b,
+    );
     return ThemeData(
       colorScheme: scheme,
       useMaterial3: true,
       visualDensity: VisualDensity.standard,
-      appBarTheme: AppBarTheme(backgroundColor: scheme.surface, scrolledUnderElevation: 1),
-      snackBarTheme: const SnackBarThemeData(behavior: SnackBarBehavior.floating),
+      appBarTheme: AppBarTheme(
+        backgroundColor: scheme.surface,
+        scrolledUnderElevation: 1,
+      ),
+      snackBarTheme: const SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
@@ -120,7 +182,13 @@ class _CodeawAppState extends State<CodeawApp> {
         listenable: widget.state,
         builder: (context, _) {
           if (!widget.state.loaded) {
-            return MaterialApp(theme: _theme(Brightness.light), darkTheme: _theme(Brightness.dark), home: const Scaffold(body: Center(child: CircularProgressIndicator())));
+            return MaterialApp(
+              theme: _theme(Brightness.light),
+              darkTheme: _theme(Brightness.dark),
+              home: const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              ),
+            );
           }
           return MaterialApp.router(
             title: 'codeaw',

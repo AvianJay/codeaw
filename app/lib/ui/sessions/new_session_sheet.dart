@@ -5,14 +5,12 @@ import '../../acp/jsonrpc.dart';
 import '../../app_state.dart';
 import '../../data/models.dart';
 import '../../main.dart';
+import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
 Future<void> showNewSessionSheet(BuildContext context) {
-  return showModalBottomSheet<void>(
+  return showAdaptiveSheet<void>(
     context: context,
-    isScrollControlled: true,
-    useSafeArea: true,
-    showDragHandle: true,
     builder: (_) => const _NewSessionSheet(),
   );
 }
@@ -36,7 +34,9 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
     super.initState();
     final state = AppScope.read(context);
     final agents = state.client?.agents ?? const [];
-    _agentId = agents.where((a) => a.status != 'error').firstOrNull?.id ?? agents.firstOrNull?.id;
+    _agentId =
+        agents.where((a) => a.status != 'error').firstOrNull?.id ??
+        agents.firstOrNull?.id;
     _loadRoots();
   }
 
@@ -49,9 +49,13 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
     }
     final roots = [for (final r in recent) (path: r, source: 'recent')];
     try {
-      final r = await state.client!.request('_codeaw/workspaces/list') as Map<String, dynamic>;
+      final r =
+          await state.client!.request('_codeaw/workspaces/list')
+              as Map<String, dynamic>;
       for (final w in (r['roots'] as List? ?? const []).whereType<Map>()) {
-        if (w['source'] == 'config' && !roots.any((x) => x.path == w['path'])) roots.add((path: '${w['path']}', source: 'workspace'));
+        if (w['source'] == 'config' && !roots.any((x) => x.path == w['path'])) {
+          roots.add((path: '${w['path']}', source: 'workspace'));
+        }
       }
     } catch (_) {}
     if (!mounted) return;
@@ -62,8 +66,10 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
   }
 
   Future<void> _browse() async {
-    final picked = await Navigator.of(context).push<String>(MaterialPageRoute(builder: (_) => FolderPickerPage(start: _cwd)));
-    if (picked != null) setState(() => _cwd = picked);
+    final picked = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => FolderPickerPage(start: _cwd)),
+    );
+    if (mounted && picked != null) setState(() => _cwd = picked);
   }
 
   Future<void> _manual() async {
@@ -72,14 +78,25 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('資料夾路徑'),
-        content: TextField(controller: controller, autofocus: true, decoration: const InputDecoration(hintText: r'D:\proj\myapp')),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: r'D:\proj\myapp'),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('確定')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('確定'),
+          ),
         ],
       ),
     );
-    if (v != null && v.isNotEmpty) setState(() => _cwd = v);
+    controller.dispose();
+    if (mounted && v != null && v.isNotEmpty) setState(() => _cwd = v);
   }
 
   Future<void> _start() async {
@@ -92,22 +109,30 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
       _error = null;
     });
     try {
-      final resp = await client.request('session/new', {
-        'cwd': cwd,
-        'mcpServers': const [],
-        '_meta': {
-          'codeaw': {'agentId': _agentId},
-        },
-      }) as Map<String, dynamic>;
+      final resp =
+          await client.request('session/new', {
+                'cwd': cwd,
+                'mcpServers': const [],
+                '_meta': {
+                  'codeaw': {'agentId': _agentId},
+                },
+              })
+              as Map<String, dynamic>;
       final id = resp['sessionId'] as String;
       state.hub!.adopt(id, cwd, resp);
       await state.sessions?.refresh();
       if (!mounted) return;
       final router = GoRouter.of(context);
+      final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
       Navigator.of(context).pop();
-      router.push('${sessionRoute(id)}&cwd=${Uri.encodeQueryComponent(cwd)}');
+      final route = '${sessionRoute(id)}&cwd=${Uri.encodeQueryComponent(cwd)}';
+      if (wide) {
+        router.go(route);
+      } else {
+        router.push(route);
+      }
     } on RpcError catch (e) {
-      setState(() => _error = e.detail);
+      if (mounted) setState(() => _error = e.detail);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -118,78 +143,127 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
     final state = AppScope.of(context);
     final agents = state.client?.agents ?? const <AgentInfo>[];
     final scheme = Theme.of(context).colorScheme;
-    return Padding(
-      padding: EdgeInsets.only(left: 20, right: 20, bottom: MediaQuery.viewInsetsOf(context).bottom + 20),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('新對話', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-          Text('Agent', style: Theme.of(context).textTheme.labelLarge),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              for (final a in agents)
-                ChoiceChip(
-                  avatar: AgentAvatar(agentId: a.id, label: a.name, size: 20),
-                  label: Text(a.name),
-                  selected: _agentId == a.id,
-                  onSelected: (_) => setState(() => _agentId = a.id),
-                ),
-            ],
-          ),
-          if (agents.where((a) => a.id == _agentId && a.status == 'error').isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text('上次啟動失敗：${agents.firstWhere((a) => a.id == _agentId).error ?? ''}', maxLines: 3, style: TextStyle(color: scheme.error, fontSize: 12)),
+    return SingleChildScrollView(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          bottom: MediaQuery.viewInsetsOf(context).bottom + 20,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('新對話', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: 16),
+            Text('Agent', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final a in agents)
+                  ChoiceChip(
+                    avatar: AgentAvatar(agentId: a.id, label: a.name, size: 20),
+                    label: Text(a.name),
+                    selected: _agentId == a.id,
+                    onSelected: (_) => setState(() => _agentId = a.id),
+                  ),
+              ],
             ),
-          const SizedBox(height: 20),
-          Text('資料夾', style: Theme.of(context).textTheme.labelLarge),
-          const SizedBox(height: 4),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxHeight: 260),
-            child: RadioGroup<String>(
-              groupValue: _cwd,
-              onChanged: (v) => setState(() => _cwd = v),
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  for (final r in _roots)
-                    RadioListTile<String>(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      value: r.path,
-                      title: Text(folderName(r.path)),
-                      subtitle: Text(r.path, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11.5)),
-                      secondary: Icon(r.source == 'recent' ? Icons.history_rounded : Icons.folder_special_outlined, size: 20),
-                    ),
-                  if (_cwd != null && !_roots.any((r) => r.path == _cwd))
-                    RadioListTile<String>(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      value: _cwd!,
-                      title: Text(folderName(_cwd!)),
-                      subtitle: Text(_cwd!, style: const TextStyle(fontSize: 11.5)),
-                    ),
-                ],
+            if (agents
+                .where((a) => a.id == _agentId && a.status == 'error')
+                .isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  '上次啟動失敗：${agents.firstWhere((a) => a.id == _agentId).error ?? ''}',
+                  maxLines: 3,
+                  style: TextStyle(color: scheme.error, fontSize: 12),
+                ),
+              ),
+            const SizedBox(height: 20),
+            Text('資料夾', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: RadioGroup<String>(
+                groupValue: _cwd,
+                onChanged: (v) => setState(() => _cwd = v),
+                child: ListView(
+                  shrinkWrap: true,
+                  children: [
+                    for (final r in _roots)
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: r.path,
+                        title: Text(folderName(r.path)),
+                        subtitle: Text(
+                          r.path,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                        secondary: Icon(
+                          r.source == 'recent'
+                              ? Icons.history_rounded
+                              : Icons.folder_special_outlined,
+                          size: 20,
+                        ),
+                      ),
+                    if (_cwd != null && !_roots.any((r) => r.path == _cwd))
+                      RadioListTile<String>(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: _cwd!,
+                        title: Text(folderName(_cwd!)),
+                        subtitle: Text(
+                          _cwd!,
+                          style: const TextStyle(fontSize: 11.5),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
-          ),
-          Row(children: [
-            TextButton.icon(onPressed: _browse, icon: const Icon(Icons.folder_open_rounded, size: 18), label: const Text('瀏覽…')),
-            TextButton.icon(onPressed: _manual, icon: const Icon(Icons.edit_outlined, size: 18), label: const Text('輸入路徑')),
-          ]),
-          if (_error != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_error!, style: TextStyle(color: scheme.error))),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: _busy || _agentId == null || _cwd == null ? null : _start,
-            style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(50)),
-            child: _busy ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('開始'),
-          ),
-        ],
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _browse,
+                  icon: const Icon(Icons.folder_open_rounded, size: 18),
+                  label: const Text('瀏覽…'),
+                ),
+                TextButton.icon(
+                  onPressed: _manual,
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: const Text('輸入路徑'),
+                ),
+              ],
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(_error!, style: TextStyle(color: scheme.error)),
+              ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _busy || _agentId == null || _cwd == null
+                  ? null
+                  : _start,
+              style: FilledButton.styleFrom(
+                minimumSize: const Size.fromHeight(50),
+              ),
+              child: _busy
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('開始'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -226,16 +300,25 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
     });
     try {
       if (path == null) {
-        final r = await client.request('_codeaw/workspaces/list') as Map<String, dynamic>;
-        _roots = (r['roots'] as List? ?? const []).whereType<Map<String, dynamic>>().toList();
+        final r =
+            await client.request('_codeaw/workspaces/list')
+                as Map<String, dynamic>;
+        _roots = (r['roots'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
         _path = null;
         _parent = null;
         _dirs = [];
       } else {
-        final r = await client.request('_codeaw/fs/list', {'path': path}) as Map<String, dynamic>;
+        final r =
+            await client.request('_codeaw/fs/list', {'path': path})
+                as Map<String, dynamic>;
         _path = r['path'] as String;
         _parent = r['parent'] as String?;
-        _dirs = (r['entries'] as List? ?? const []).whereType<Map<String, dynamic>>().where((e) => e['type'] == 'dir').toList();
+        _dirs = (r['entries'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .where((e) => e['type'] == 'dir')
+            .toList();
       }
     } on RpcError catch (e) {
       _error = e.detail;
@@ -250,22 +333,42 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
       appBar: AppBar(
         title: Text(_path == null ? '選擇資料夾' : folderName(_path!)),
         actions: [
-          if (_path != null) TextButton(onPressed: () => Navigator.pop(context, _path), child: const Text('選這裡')),
+          if (_path != null)
+            TextButton(
+              onPressed: () => Navigator.pop(context, _path),
+              child: const Text('選這裡'),
+            ),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               children: [
-                if (_error != null) Padding(padding: const EdgeInsets.all(16), child: Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      _error!,
+                      style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                      ),
+                    ),
+                  ),
                 if (_path == null) ...[
                   if (_roots.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(16),
-                      child: Text('bridge 設定檔的 workspaces 還沒有任何資料夾。可以在電腦上的 ~/.codeaw/config.yaml 加入，或直接輸入路徑。'),
+                      child: Text(
+                        'bridge 設定檔的 workspaces 還沒有任何資料夾。可以在電腦上的 ~/.codeaw/config.yaml 加入，或直接輸入路徑。',
+                      ),
                     ),
                   for (final r in _roots)
-                    ListTile(leading: const Icon(Icons.folder_special_outlined), title: Text('${r['name']}'), subtitle: Text('${r['path']}'), onTap: () => _open('${r['path']}')),
+                    ListTile(
+                      leading: const Icon(Icons.folder_special_outlined),
+                      title: Text('${r['name']}'),
+                      subtitle: Text('${r['path']}'),
+                      onTap: () => _open('${r['path']}'),
+                    ),
                 ] else ...[
                   ListTile(
                     leading: const Icon(Icons.arrow_upward_rounded),
@@ -273,7 +376,11 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
                     onTap: () => _open(_parent),
                   ),
                   for (final d in _dirs)
-                    ListTile(leading: const Icon(Icons.folder_outlined), title: Text('${d['name']}'), onTap: () => _open('${d['path']}')),
+                    ListTile(
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text('${d['name']}'),
+                      onTap: () => _open('${d['path']}'),
+                    ),
                 ],
               ],
             ),

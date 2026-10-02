@@ -5,6 +5,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../app_state.dart';
 import '../../data/host.dart';
+import '../common/adaptive.dart';
 
 class PairPage extends StatefulWidget {
   const PairPage({super.key, this.autoPair = false});
@@ -136,7 +137,7 @@ class _PairPageState extends State<PairPage> {
     final paired = AppScope.of(context).paired;
     return Scaffold(
       appBar: AppBar(title: const Text('配對電腦'), automaticallyImplyLeading: paired),
-      body: ListView(
+      body: ContentFrame(maxWidth: 560, child: ListView(
         padding: const EdgeInsets.all(20),
         children: [
           Text('在電腦上執行', style: Theme.of(context).textTheme.titleMedium),
@@ -197,7 +198,7 @@ class _PairPageState extends State<PairPage> {
             child: _busy ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('配對'),
           ),
         ],
-      ),
+      )),
     );
   }
 }
