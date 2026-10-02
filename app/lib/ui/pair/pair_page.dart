@@ -137,8 +137,8 @@ class _PairPageState extends State<PairPage> {
     final paired = AppScope.of(context).paired;
     return Scaffold(
       appBar: AppBar(title: const Text('配對電腦'), automaticallyImplyLeading: paired),
-      body: ContentFrame(maxWidth: 560, child: ListView(
-        padding: const EdgeInsets.all(20),
+      body: ContentScrollFrame(maxWidth: 560, padding: const EdgeInsets.all(20), builder: (context, padding) => ListView(
+        padding: padding,
         children: [
           Text('在電腦上執行', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),

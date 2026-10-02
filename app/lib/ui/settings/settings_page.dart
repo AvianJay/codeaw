@@ -64,8 +64,9 @@ class _SettingsPageState extends State<SettingsPage> {
           ? const SizedBox.shrink()
           : ListenableBuilder(
               listenable: client,
-              builder: (context, _) => ContentFrame(
-                child: ListView(
+              builder: (context, _) => ContentScrollFrame(
+                builder: (context, padding) => ListView(
+                  padding: padding,
                   children: [
                     const _Section('電腦'),
                     ListTile(

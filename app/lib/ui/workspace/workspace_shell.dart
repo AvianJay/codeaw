@@ -159,11 +159,12 @@ class WorkspaceHome extends StatelessWidget {
         title: const Text('工作區'),
         automaticallyImplyLeading: false,
       ),
-      body: ContentFrame(
+      body: ContentScrollFrame(
         maxWidth: 600,
-        child: Center(
+        padding: const EdgeInsets.all(32),
+        builder: (context, padding) => Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(32),
+            padding: padding,
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [

@@ -275,8 +275,9 @@ class _TerminalPageState extends State<TerminalPage> {
         ),
       );
     }
-    return ContentFrame(
-      child: ListView(
+    return ContentScrollFrame(
+      builder: (context, padding) => ListView(
+        padding: padding,
         children: [
           const Padding(
             padding: EdgeInsets.all(16),

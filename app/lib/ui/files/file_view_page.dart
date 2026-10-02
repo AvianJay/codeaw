@@ -107,51 +107,55 @@ class _FileViewPageState extends State<FileViewPage> {
       }
     } else {
       final text = f['text'] as String? ?? '';
-      body = ListView(
-        controller: _scroll,
+      body = ContentScrollFrame(
+        maxWidth: isMarkdown && _rendered ? 880 : double.infinity,
         padding: const EdgeInsets.all(8),
-        children: [
-          if (f['truncated'] == true)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '只顯示前 ${text.length} 個字元',
-                      style: TextStyle(color: scheme.outline, fontSize: 12),
+        builder: (context, padding) => ListView(
+          controller: _scroll,
+          padding: padding,
+          children: [
+            if (f['truncated'] == true)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        '只顯示前 ${text.length} 個字元',
+                        style: TextStyle(color: scheme.outline, fontSize: 12),
+                      ),
                     ),
-                  ),
-                  TextButton(
-                    onPressed: () => _load(maxBytes: 4 * 1024 * 1024),
-                    child: const Text('載入更多'),
-                  ),
-                ],
-              ),
-            ),
-          if (isMarkdown && _rendered)
-            Padding(
-              padding: const EdgeInsets.all(8),
-              child: SelectionArea(
-                child: Markdown(
-                  text,
-                  client: AppScope.of(context).client,
-                  basePath:
-                      (RegExp(r'^[a-zA-Z]:[\\/]|^\\\\').hasMatch(widget.path)
-                              ? p.windows
-                              : p.posix)
-                          .dirname(widget.path),
+                    TextButton(
+                      onPressed: () => _load(maxBytes: 4 * 1024 * 1024),
+                      child: const Text('載入更多'),
+                    ),
+                  ],
                 ),
               ),
-            )
-          else
-            CodeBlock(
-              code: text,
-              language: languageForPath(widget.path),
-              lineNumbers: true,
-              wrap: _wrap,
-            ),
-        ],
+            if (isMarkdown && _rendered)
+              Padding(
+                padding: const EdgeInsets.all(8),
+                child: SelectionArea(
+                  child: Markdown(
+                    text,
+                    client: AppScope.of(context).client,
+                    basePath:
+                        (RegExp(r'^[a-zA-Z]:[\\/]|^\\\\').hasMatch(widget.path)
+                                ? p.windows
+                                : p.posix)
+                            .dirname(widget.path),
+                  ),
+                ),
+              )
+            else
+              CodeBlock(
+                code: text,
+                language: languageForPath(widget.path),
+                lineNumbers: true,
+                wrap: _wrap,
+              ),
+          ],
+        ),
       );
     }
     return Scaffold(
@@ -185,9 +189,7 @@ class _FileViewPageState extends State<FileViewPage> {
           ),
         ],
       ),
-      body: isMarkdown && _rendered
-          ? ContentFrame(maxWidth: 880, child: body)
-          : body,
+      body: body,
     );
   }
 }

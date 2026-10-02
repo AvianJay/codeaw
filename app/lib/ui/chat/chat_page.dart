@@ -15,6 +15,8 @@ import 'elicitation_sheet.dart';
 import 'items.dart';
 import 'working_indicator.dart';
 
+const _chatContentWidth = 960.0;
+
 class ChatPage extends StatefulWidget {
   const ChatPage({super.key, required this.sessionId, this.cwd});
   final String sessionId;
@@ -171,25 +173,40 @@ class _ChatPageState extends State<ChatPage> {
               ),
             ],
           ),
-          body: ContentFrame(
-            maxWidth: 960,
-            child: Column(
-              children: [
-                const ConnectionBanner(),
-                if (c.error != null)
-                  MaterialBanner(
-                    content: Text(c.error!),
-                    actions: [
-                      TextButton(onPressed: c.attach, child: const Text('重試')),
-                    ],
-                  ),
-                if (c.timeline.plan != null && c.timeline.plan!.isNotEmpty)
-                  _PlanPanel(c.timeline.plan!),
-                Expanded(child: _TimelineList(controller: c)),
-                if (c.pending.isNotEmpty) _PendingBar(controller: c),
-                Composer(controller: c),
-              ],
-            ),
+          body: Column(
+            children: [
+              ContentWidth(
+                maxWidth: _chatContentWidth,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const ConnectionBanner(),
+                    if (c.error != null)
+                      MaterialBanner(
+                        content: Text(c.error!),
+                        actions: [
+                          TextButton(
+                            onPressed: c.attach,
+                            child: const Text('重試'),
+                          ),
+                        ],
+                      ),
+                    if (c.timeline.plan != null && c.timeline.plan!.isNotEmpty)
+                      _PlanPanel(c.timeline.plan!),
+                  ],
+                ),
+              ),
+              Expanded(child: _TimelineList(controller: c)),
+              if (c.pending.isNotEmpty)
+                ContentWidth(
+                  maxWidth: _chatContentWidth,
+                  child: _PendingBar(controller: c),
+                ),
+              ContentWidth(
+                maxWidth: _chatContentWidth,
+                child: Composer(controller: c),
+              ),
+            ],
           ),
         );
       },
@@ -217,31 +234,35 @@ class _TimelineList extends StatelessWidget {
     }
     final extra = running ? 1 : 0;
     // Newest at the bottom: a reversed list keeps the view pinned to the end while streaming.
-    return ListView.builder(
-      reverse: true,
+    return ContentScrollFrame(
+      maxWidth: _chatContentWidth,
       padding: const EdgeInsets.only(top: 8, bottom: 8),
-      itemCount: items.length + extra,
-      itemBuilder: (context, index) {
-        if (running && index == 0) {
-          return WorkingIndicator(
-            key: ValueKey('working:${controller.sessionId}'),
-            timeline: controller.timeline,
-            waitingForInput: controller.pending.values.any(
-              (req) => !req.isPermission,
-            ),
+      builder: (context, padding) => ListView.builder(
+        reverse: true,
+        padding: padding,
+        itemCount: items.length + extra,
+        itemBuilder: (context, index) {
+          if (running && index == 0) {
+            return WorkingIndicator(
+              key: ValueKey('working:${controller.sessionId}'),
+              timeline: controller.timeline,
+              waitingForInput: controller.pending.values.any(
+                (req) => !req.isPermission,
+              ),
+            );
+          }
+          final i = items.length - 1 - (index - extra);
+          final item = items[i];
+          return TimelineItemView(
+            key: ValueKey(item.key),
+            item: item,
+            controller: controller,
+            isLast:
+                i == items.length - 1 ||
+                (i == items.length - 2 && items.last is! MessageItem),
           );
-        }
-        final i = items.length - 1 - (index - extra);
-        final item = items[i];
-        return TimelineItemView(
-          key: ValueKey(item.key),
-          item: item,
-          controller: controller,
-          isLast:
-              i == items.length - 1 ||
-              (i == items.length - 2 && items.last is! MessageItem),
-        );
-      },
+        },
+      ),
     );
   }
 }

@@ -6,6 +6,8 @@ The workspace adapts to the window width in logical pixels: phones below 720 use
 
 Unsent text is retained for recently opened conversations. Use Ctrl+Enter or Command+Enter to send; Enter inserts a new line.
 
+Side gutters beside scrollable content also accept mouse-wheel scrolling while the content stays within its reading width.
+
 ```powershell
 flutter test test/adaptive_layout_test.dart
 # Optional visual previews in test/screenshots/:

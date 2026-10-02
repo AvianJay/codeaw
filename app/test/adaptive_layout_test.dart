@@ -8,11 +8,14 @@ import 'package:codeaw/data/models.dart';
 import 'package:codeaw/main.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/composer.dart';
+import 'package:codeaw/ui/chat/items.dart';
 import 'package:codeaw/ui/files/file_view_page.dart';
 import 'package:codeaw/ui/files/git_page.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
+import 'package:codeaw/ui/settings/settings_page.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,6 +37,7 @@ class _Client extends BridgeClient {
 
   final calls = <({String method, Map<String, dynamic>? params})>[];
   Completer<Map<String, dynamic>>? pendingRead;
+  String? fileText;
 
   @override
   void start() {}
@@ -87,9 +91,11 @@ class _Client extends BridgeClient {
       case '_codeaw/fs/read':
         if (pendingRead != null) return pendingRead!.future;
         return {
-          'text': params!['path'].toString().endsWith('.md')
-              ? '# codeaw\n\nA workspace for your coding agents.'
-              : 'void main() {\n  runApp(const CodeawApp());\n}\n',
+          'text':
+              fileText ??
+              (params!['path'].toString().endsWith('.md')
+                  ? '# codeaw\n\nA workspace for your coding agents.'
+                  : 'void main() {\n  runApp(const CodeawApp());\n}\n'),
         };
       case '_codeaw/git/status':
         return {
@@ -212,6 +218,129 @@ void main() {
       await h.close(tester);
     });
   }
+
+  testWidgets('mouse wheel scrolls chat from both blank gutters', (
+    tester,
+  ) async {
+    final h = _Harness();
+    await h.show(tester, const Size(1920, 900), location: sessionRoute(_first));
+    final c = h.state.hub!.peek(_first)!;
+    c.timeline.apply('session/update', {
+      'update': {
+        'sessionUpdate': 'agent_message_chunk',
+        'content': {
+          'type': 'text',
+          'text': List.generate(100, (i) => '訊息第 $i 行，保留中央閱讀寬度。').join('\n\n'),
+        },
+      },
+    });
+    c.timeline.flush();
+    await tester.pumpAndSettle();
+    final chat = find.byType(ChatPage);
+    final scroll = tester.state<ScrollableState>(
+      find.descendant(
+        of: chat,
+        matching: find.byWidgetPredicate(
+          (w) => w is Scrollable && w.axisDirection == AxisDirection.up,
+        ),
+      ),
+    );
+    expect(scroll.position.maxScrollExtent, greaterThan(200));
+    final bounds = tester.getRect(chat);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: Offset(bounds.left + 24, bounds.center.dy),
+        scrollDelta: const Offset(0, -120),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(scroll.position.pixels, closeTo(120, .1));
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: Offset(bounds.right - 24, bounds.center.dy),
+        scrollDelta: const Offset(0, 80),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(scroll.position.pixels, closeTo(40, .1));
+    expect(
+      tester.getSize(find.byType(TimelineItemView).first).width,
+      lessThanOrEqualTo(960),
+    );
+    await tester.sendEventToBinding(
+      const PointerScrollEvent(
+        kind: PointerDeviceKind.mouse,
+        position: Offset(100, 500),
+        scrollDelta: Offset(0, 80),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(scroll.position.pixels, closeTo(40, .1));
+    expect(tester.takeException(), isNull);
+    await h.close(tester);
+  });
+
+  testWidgets(
+    'mouse wheel scrolls bounded forms and markdown from their gutters',
+    (tester) async {
+      final h = _Harness();
+      await h.show(tester, const Size(1920, 460));
+      h.client.fileText = List.generate(
+        100,
+        (i) => 'Markdown paragraph $i.',
+      ).join('\n\n');
+      for (final route in [
+        '/pair',
+        '/settings',
+        '/file?path=$_cwd/README.md',
+      ]) {
+        h.router.go(route);
+        await tester.pumpAndSettle();
+        final page = route == '/pair'
+            ? find.byType(PairPage)
+            : route == '/settings'
+            ? find.byType(SettingsPage)
+            : find.byType(FileViewPage);
+      final scroll = tester.state<ScrollableState>(
+        find.descendant(
+          of: page,
+          matching: find.byWidgetPredicate(
+            (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+          ),
+        ).first,
+        );
+        expect(scroll.position.maxScrollExtent, greaterThan(0), reason: route);
+        final bounds = tester.getRect(page);
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            kind: PointerDeviceKind.mouse,
+            position: Offset(bounds.left + 24, bounds.center.dy),
+            scrollDelta: const Offset(0, 40),
+          ),
+        );
+        await tester.pumpAndSettle();
+        final afterLeft = scroll.position.pixels;
+        expect(afterLeft, greaterThan(0), reason: '$route left gutter');
+        await tester.sendEventToBinding(
+          PointerScrollEvent(
+            kind: PointerDeviceKind.mouse,
+            position: Offset(bounds.right - 24, bounds.center.dy),
+            scrollDelta: const Offset(0, -40),
+          ),
+        );
+        await tester.pumpAndSettle();
+        expect(
+          scroll.position.pixels,
+          lessThan(afterLeft),
+          reason: '$route right gutter',
+        );
+        expect(tester.takeException(), isNull);
+      }
+      await h.close(tester);
+    },
+  );
 
   testWidgets('chat survives resizing, switches sessions and keeps drafts', (
     tester,
