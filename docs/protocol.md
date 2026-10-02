@@ -19,6 +19,7 @@ the extra screens (files, git, pairing).
 | `GET /acp` (WebSocket upgrade) | ACP JSON-RPC, one text frame per message | `Authorization: Bearer <deviceToken>` (browsers may use `?token=`) |
 | `POST /api/pair` | exchange a one-time pairing code for a device token | pairing code in body |
 | `GET /api/health` | liveness, version | none |
+| `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
 

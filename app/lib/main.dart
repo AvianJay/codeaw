@@ -15,14 +15,20 @@ import 'ui/pair/pair_page.dart';
 import 'ui/sessions/sessions_page.dart';
 import 'ui/settings/settings_page.dart';
 import 'ui/terminal/terminal_page.dart';
+import 'util/browser_location.dart';
 
 String sessionRoute(String id) => '/session?id=${Uri.encodeQueryComponent(id)}';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  final launchPairing = kIsWeb ? PairingLink.fromBrowserUri(Uri.base) : null;
+  if (launchPairing != null) clearBrowserPairing();
   late final GoRouter router;
-  final state = AppState(HostStore(), openSession: (id) => router.go(sessionRoute(id)));
+  final state = AppState(HostStore(), openSession: (id) => router.go(sessionRoute(id)))
+    ..pendingPairing = launchPairing;
   router = GoRouter(
+    initialLocation: launchPairing == null ? null : '/pair',
+    overridePlatformDefaultLocation: launchPairing != null,
     refreshListenable: state,
     redirect: (context, s) {
       if (!state.loaded) return null;
@@ -32,7 +38,7 @@ void main() {
     },
     routes: [
       GoRoute(path: '/', builder: (_, _) => const SessionsPage()),
-      GoRoute(path: '/pair', builder: (_, _) => const PairPage()),
+      GoRoute(path: '/pair', builder: (_, _) => PairPage(autoPair: launchPairing != null)),
       GoRoute(path: '/session', builder: (_, s) => ChatPage(sessionId: s.uri.queryParameters['id'] ?? '', cwd: s.uri.queryParameters['cwd'])),
       GoRoute(path: '/files', builder: (_, s) => FilesPage(path: s.uri.queryParameters['path'] ?? '')),
       GoRoute(path: '/file', builder: (_, s) => FileViewPage(path: s.uri.queryParameters['path'] ?? '', line: int.tryParse(s.uri.queryParameters['line'] ?? ''))),

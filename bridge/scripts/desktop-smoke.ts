@@ -37,6 +37,11 @@ try {
   await runtime.start();
   runtime.bridge!.devices.addDeviceWithToken("Test phone", "synthetic-smoke-token");
   const smoke = String.raw`
+    function Start-Process {
+        param([string]$FilePath, [string]$ArgumentList)
+        $script:appExecutable = $FilePath
+        $script:appArguments = $ArgumentList
+    }
     function Capture-Window([string]$Name) {
         $bitmap = [System.Drawing.Bitmap]::new($script:window.Width, $script:window.Height)
         try { $script:window.DrawToBitmap($bitmap, [System.Drawing.Rectangle]::new(0, 0, $bitmap.Width, $bitmap.Height)); $bitmap.Save((Join-Path $OutputDirectory ($Name + '.png'))) }
@@ -49,7 +54,7 @@ try {
         $menu.Refresh()
         $menu.Update()
         [System.Windows.Forms.Application]::DoEvents()
-        if ($menu.Items[2].Text -ne '配對手機…' -or $menu.Items[3].Text -ne '設定…') { throw 'Chinese tray menu labels are corrupted' }
+        if ($menu.Items[2].Text -ne '開啟 App' -or $menu.Items[3].Text -ne '配對手機…' -or $menu.Items[4].Text -ne '設定…') { throw 'Chinese tray menu labels are corrupted' }
         $bitmap = [System.Drawing.Bitmap]::new($menu.Width, $menu.Height)
         try {
             $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -69,7 +74,12 @@ try {
     $script:smoke.Add_Tick({
         try {
             switch ($script:step) {
-                0 { Capture-Menu; Show-Pair }
+                0 {
+                    Capture-Menu
+                    $menu.Items[2].PerformClick()
+                    if ($script:appArguments -notmatch '^--app="http://127\.0\.0\.1:\d+/\?pair=&c=[A-Z0-9]+&n=.+"$' -or -not [IO.File]::Exists($script:appExecutable)) { throw 'Open App did not launch Edge with the local pairing URL' }
+                    Show-Pair
+                }
                 1 { if (-not $script:qr.Image -or $script:pairCode.Text.Length -ne 9) { throw 'Pair window did not load' }; Capture-Window 'pair'; Show-Settings }
                 2 { if ($script:agents.Items.Count -ne 2 -or $script:folders.Text -ne 'D:\projects') { throw 'Settings window did not load' }; Capture-Window 'settings'; Show-Devices }
                 3 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; [System.Windows.Forms.Application]::Exit() }
@@ -84,7 +94,7 @@ try {
 `;
   const traySource = process.argv[2] ? fs.readFileSync(path.resolve(process.argv[2]), "utf8").replace(/^\ufeff/, "") : TRAY_SCRIPT;
   const script = traySource.replace("[string]$LogFile)", "[string]$LogFile, [string]$OutputDirectory)")
-    .replace("[System.Windows.Forms.Application]::Run()", smoke)
+    .replace("[System.Windows.Forms.Application]::Run()", () => smoke)
     .replace("function Show-Error($ErrorRecord) {", "function Show-Error($ErrorRecord) { throw $ErrorRecord; #");
   const scriptFile = path.join(home, "smoke.ps1");
   fs.writeFileSync(scriptFile, "\ufeff" + script);

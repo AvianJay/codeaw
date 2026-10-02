@@ -22,6 +22,7 @@ dependencies:
   re_highlight: ^0.0.3
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.2
+  web: ^1.1.1
   web_socket_channel: ^3.0.3
   xterm: 4.0.0
 

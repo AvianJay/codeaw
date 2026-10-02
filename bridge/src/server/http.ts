@@ -107,6 +107,10 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
       const device = deps.devices.authenticate(bearer(req, url));
       if (!device) return sendJson(res, 401, { error: "Unauthorized" });
 
+      if (req.method === "GET" && url.pathname === "/api/device") {
+        return sendJson(res, 200, { deviceId: device.id });
+      }
+
       const blob = url.pathname.match(/^\/api\/blobs\/([0-9a-f]{64})$/);
       if (req.method === "GET" && blob) {
         const found = deps.store.blob(blob[1]);

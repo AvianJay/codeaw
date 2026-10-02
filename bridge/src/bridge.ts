@@ -12,6 +12,7 @@ import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
 import { tailscaleIPv4 } from "./util/tailscale.js";
 import { TerminalManager } from "./terminal/manager.js";
+import { findWebRoot } from "./server/web.js";
 
 const log = logger("bridge");
 
@@ -27,6 +28,7 @@ export interface BridgeOptions {
 }
 
 export interface Bridge {
+  webRoot?: string;
   manager: SessionManager;
   registry: AgentRegistry;
   devices: DeviceStore;
@@ -39,6 +41,7 @@ export interface Bridge {
 
 export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}): Promise<Bridge> {
   const { config, home, dataDir } = loaded;
+  const webRoot = opts.webRoot ?? findWebRoot();
   const store = new SessionStore(dataDir);
   const devices = new DeviceStore(home);
   // The registry and the manager reference each other through the handler interface.
@@ -64,7 +67,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   manager.start();
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds());
   const terminals = new TerminalManager(guard);
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot: opts.webRoot });
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot });
 
   const servers = new Map<string, http.Server>();
   const binding = new Set<string>();
@@ -135,6 +138,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   retry?.unref();
 
   return {
+    webRoot,
     manager,
     registry,
     devices,

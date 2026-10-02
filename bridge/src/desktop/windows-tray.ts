@@ -34,6 +34,21 @@ function Show-Error($ErrorRecord) {
     [System.Windows.Forms.MessageBox]::Show([string]$ErrorRecord, 'codeaw bridge', 'OK', 'Error') | Out-Null
 }
 
+function Show-App {
+    try { $app = Invoke-Control 'app' } catch { Show-Error $_; return }
+    $edge = Get-Command msedge.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+    if (-not $edge) {
+        foreach ($folder in @('ProgramFilesX86', 'ProgramFiles', 'LocalApplicationData')) {
+            $candidate = Join-Path ([Environment]::GetFolderPath($folder)) 'Microsoft\\Edge\\Application\\msedge.exe'
+            if ([System.IO.File]::Exists($candidate)) { $edge = $candidate; break }
+        }
+    }
+    try {
+        if ($edge) { Start-Process -FilePath $edge -ArgumentList ('--app="' + $app.url + '"') }
+        else { Start-Process -FilePath $app.url }
+    } catch { Show-Error '無法開啟 App，請確認已安裝 Microsoft Edge 或預設瀏覽器。' }
+}
+
 function New-Window([string]$Title, [int]$Width, [int]$Height) {
     if ($script:window -and -not $script:window.IsDisposed) { $script:window.Close() }
     $script:page = $Title
@@ -215,6 +230,7 @@ $menu = [System.Windows.Forms.ContextMenuStrip]::new()
 $script:statusItem = $menu.Items.Add('Bridge 啟動中…')
 $script:statusItem.Enabled = $false
 $menu.Items.Add('-') | Out-Null
+$menu.Items.Add('開啟 App').Add_Click({ Show-App })
 $menu.Items.Add('配對手機…').Add_Click({ Show-Pair })
 $menu.Items.Add('設定…').Add_Click({ Show-Settings })
 $menu.Items.Add('已配對裝置…').Add_Click({ Show-Devices })
@@ -248,7 +264,7 @@ $menu.Items.Add('停止 bridge 並退出').Add_Click({
     }
 })
 $script:tray.ContextMenuStrip = $menu
-$script:tray.Add_DoubleClick({ Show-Pair })
+$script:tray.Add_DoubleClick({ Show-App })
 $script:tray.Visible = $true
 $script:failures = 0
 $script:timer = [System.Windows.Forms.Timer]::new()

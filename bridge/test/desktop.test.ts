@@ -13,7 +13,8 @@ import { launchdPlist, quoteWindowsArgument, systemdUnit } from "../src/desktop/
 import { desktopSettings } from "../src/desktop/settings.js";
 import { loginCommand } from "../src/desktop/autostart.js";
 import { setLogSilent } from "../src/util/log.js";
-import { startBridge } from "../src/bridge.js";
+import { startBridge, type BridgeOptions } from "../src/bridge.js";
+import { createAppLaunch } from "../src/desktop/pairing.js";
 
 setLogSilent(true);
 const homes: string[] = [];
@@ -30,8 +31,8 @@ function configFile() {
   return file;
 }
 
-async function start(file = configFile()) {
-  const runtime = new BridgeRuntime(loadConfig(file));
+async function start(file = configFile(), options: BridgeOptions = {}) {
+  const runtime = new BridgeRuntime(loadConfig(file), options);
   runtimes.push(runtime);
   await runtime.start();
   return runtime;
@@ -52,6 +53,45 @@ afterEach(async () => {
 });
 
 describe("desktop runtime", () => {
+  it("opens the live local web app with a one-time code and keeps launching off HTTP", async () => {
+    const file = configFile();
+    const webRoot = path.join(path.dirname(file), "web");
+    fs.mkdirSync(webRoot);
+    fs.writeFileSync(path.join(webRoot, "index.html"), "<!doctype html><title>codeaw</title>");
+    const runtime = await start(file, { webRoot });
+    const app = await requestControl(file, { command: "app" });
+    const url = new URL(app.url);
+    expect(url.origin).toBe(`http://127.0.0.1:${runtime.bridge!.port()}`);
+    expect(url.searchParams.has("pair")).toBe(true);
+    expect(url.searchParams.has("token")).toBe(false);
+    expect(await (await fetch(url)).text()).toContain("<title>codeaw</title>");
+    const response = await fetch(new URL("/api/pair", url), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: url.searchParams.get("c"), deviceName: "Desktop App" }),
+    });
+    expect(response.status).toBe(200);
+    expect(runtime.bridge!.devices.isPairingCodePending(url.searchParams.get("c")!)).toBe(false);
+    expect(runtime.bridge!.devices.pair(url.searchParams.get("c")!, "Another App")).toHaveProperty("status", 403);
+    expect((await fetch(new URL("/api/app", url))).status).toBe(401);
+    const next = new URL((await requestControl(file, { command: "app" })).url);
+    expect(next.searchParams.get("c")).not.toBe(url.searchParams.get("c"));
+    expect(runtime.bridge!.devices.isPairingCodePending(next.searchParams.get("c")!)).toBe(true);
+  });
+
+  it("reports missing web assets without issuing a code", async () => {
+    const file = configFile();
+    await start(file, { webRoot: path.join(path.dirname(file), "missing") });
+    await expect(requestControl(file, { command: "app" })).rejects.toThrow(/npm run build:web/);
+    expect(fs.existsSync(path.join(path.dirname(file), "pairing.json"))).toBe(false);
+  });
+
+  it("uses loopback for wildcard and IPv6 listeners and rejects remote-only listeners", () => {
+    const home = path.dirname(configFile());
+    expect(new URL(createAppLaunch(home, 7860, ["100.64.0.10:7860", "0.0.0.0:7860"]).url).host).toBe("127.0.0.1:7860");
+    expect(new URL(createAppLaunch(home, 7860, ["::1:7860"]).url).host).toBe("[::1]:7860");
+    expect(() => createAppLaunch(home, 7860, ["100.64.0.10:7860"])).toThrow(/local listener/);
+  });
+
   it("uses the live port for pairing and keeps administration off the phone HTTP server", async () => {
     const runtime = await start();
     const file = runtime.loaded.file;

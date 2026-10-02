@@ -7,7 +7,8 @@ import '../../app_state.dart';
 import '../../data/host.dart';
 
 class PairPage extends StatefulWidget {
-  const PairPage({super.key});
+  const PairPage({super.key, this.autoPair = false});
+  final bool autoPair;
 
   @override
   State<PairPage> createState() => _PairPageState();
@@ -50,6 +51,12 @@ class _PairPageState extends State<PairPage> {
     if (link != null) {
       state.pendingPairing = null;
       _fill(link);
+      if (widget.autoPair) {
+        _name.text = '桌面 App';
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _pair();
+        });
+      }
     }
   }
 
@@ -77,7 +84,7 @@ class _PairPageState extends State<PairPage> {
   }
 
   Future<void> _pair() async {
-    if (!_secureBrowser) return;
+    if (_busy || !_secureBrowser) return;
     final url = _url.text.trim();
     final code = _code.text.trim();
     if (url.isEmpty || code.isEmpty) {
@@ -103,7 +110,16 @@ class _PairPageState extends State<PairPage> {
     final state = AppScope.read(context);
     final router = GoRouter.of(context);
     try {
-      final host = await pairWithBridge(link, _name.text.trim().isEmpty ? 'codeaw 裝置' : _name.text.trim());
+      HostConfig? existing;
+      if (widget.autoPair) {
+        for (final saved in state.hosts) {
+          if (saved.urls.any((url) => HostConfig.httpBase(url).origin == HostConfig.httpBase(withPath).origin)) {
+            existing = saved;
+            break;
+          }
+        }
+      }
+      final host = await pairWithBridge(link, _name.text.trim().isEmpty ? 'codeaw 裝置' : _name.text.trim(), existingHost: existing);
       await state.setHost(host);
       await state.notifier.requestPermission();
       router.go('/');

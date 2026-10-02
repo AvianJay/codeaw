@@ -117,6 +117,19 @@ class PairingLink {
   final String code;
   final String? hostName;
 
+  /// Browser launches use the serving bridge's origin, never a URL from the query.
+  static PairingLink? fromBrowserUri(Uri uri) {
+    if (!const ['http', 'https'].contains(uri.scheme) || uri.host.isEmpty) return null;
+    final route = uri.fragment.startsWith('/') ? Uri.tryParse(uri.fragment) : null;
+    final params = uri.queryParameters.containsKey('pair')
+        ? uri.queryParameters
+        : route?.queryParameters;
+    if (params == null || !params.containsKey('pair')) return null;
+    final code = params['c']?.trim();
+    if (code == null || code.isEmpty) return null;
+    return PairingLink([bridgeWebSocketUrl(uri.origin)], code, params['n']);
+  }
+
   static PairingLink? parse(String text) {
     final uri = Uri.tryParse(text.trim());
     if (uri == null || uri.scheme != 'codeaw' || uri.host != 'pair') return null;
@@ -134,14 +147,25 @@ class PairingException implements Exception {
   String toString() => message;
 }
 
-/// Exchanges a one-time code for a device token, trying each URL until one answers.
-Future<HostConfig> pairWithBridge(PairingLink link, String deviceName) async {
+/// Exchanges a one-time code, or reuses a verified pairing when reopening the desktop app.
+Future<HostConfig> pairWithBridge(PairingLink link, String deviceName, {HostConfig? existingHost}) async {
   final errors = <String>[];
   final client = http.Client();
   try {
     for (final url in link.urls) {
       final uri = HostConfig.httpBase(url).replace(path: '/api/pair');
       try {
+        if (existingHost != null && existingHost.urls.any((saved) => HostConfig.httpBase(saved).origin == uri.origin)) {
+          try {
+            final check = await client.get(uri.replace(path: '/api/device'), headers: {'Authorization': 'Bearer ${existingHost.token}'})
+                .timeout(const Duration(seconds: 4));
+            if (check.statusCode == 200) {
+              return existingHost.withUrls([url, ...existingHost.urls.where((saved) => saved != url)]);
+            }
+          } catch (_) {
+            // An unavailable or revoked saved pairing falls back to the new code.
+          }
+        }
         final res = await client
             .post(uri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({'code': link.code, 'deviceName': deviceName}))
             .timeout(const Duration(seconds: 8));

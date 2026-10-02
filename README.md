@@ -83,8 +83,9 @@ Harness 的 [ACP server](https://github.com/deepseek-ai/deepseek-harness/blob/ma
 
 ### 系統匣與背景運行
 
-Windows 執行 `codeaw-bridge tray`（或不帶指令）後可以關掉終端機，bridge 會繼續在背景運行。重複啟動會連到同一個 bridge，同一桌面只會有一個系統匣圖示。雙擊圖示開啟配對視窗，右鍵選單提供：
+Windows 執行 `codeaw-bridge tray`（或不帶指令）後可以關掉終端機，bridge 會繼續在背景運行。重複啟動會連到同一個 bridge，同一桌面只會有一個系統匣圖示。雙擊圖示開啟 App，右鍵選單提供：
 
+- **開啟 App**：以 Edge 獨立 App 視窗開啟本機 Web App，自動使用一次性配對碼並進入會話列表，無須掃碼或手動輸入。重複開啟會沿用有效的配對；已撤銷時自動重新配對。未安裝 Edge 時使用預設瀏覽器；原始碼開發需先在 `bridge` 執行 `npm run build:web`。啟動後會移除網址中的配對參數。
 - **配對手機**：QR code、可複製的網址與配對碼、五分鐘倒數、重新產生配對碼及配對成功提示。也能執行 `codeaw-bridge pair --window`。
 - **設定**：連接埠、工作目錄、agent 開關與閒置時間。保留 YAML 註解及進階欄位；儲存後重啟，若新連接埠無法使用則回復原設定。也能執行 `codeaw-bridge settings`。
 - **已配對裝置**、**開啟日誌**、**登入後自動啟動系統匣**、**重新啟動 bridge**。

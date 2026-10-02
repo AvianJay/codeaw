@@ -57,13 +57,17 @@ describe("bridge-hosted web app", () => {
     expect((await fetch(bridge.http + "/api/fs/raw?path=x")).status).toBe(401);
     expect((await fetch(bridge.http + "/api/unknown")).status).toBe(401);
     expect((await fetch(bridge.http + "/acp")).status).toBe(401);
+    expect((await fetch(bridge.http + "/api/device")).status).toBe(401);
     const code = bridge.bridge.devices.createPairingCode();
     const res = await fetch(bridge.http + "/api/pair", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ code, deviceName: "Browser" }),
     });
     expect(res.status).toBe(200);
-    const { token } = await res.json() as { token: string };
+    const { token, deviceId } = await res.json() as { token: string; deviceId: string };
+    const check = await fetch(bridge.http + "/api/device", { headers: { Authorization: `Bearer ${token}` } });
+    expect(check.status).toBe(200);
+    expect(await check.json()).toEqual({ deviceId });
     const ws = new WebSocket(`${bridge.url}?token=${token}`);
     try {
       const initialized = new Promise<any>((resolve, reject) => {
@@ -81,5 +85,7 @@ describe("bridge-hosted web app", () => {
       expect(raw.status).toBe(200);
       expect(await raw.text()).toBe("browser file");
     } finally { ws.terminate(); }
+    bridge.bridge.devices.revoke(deviceId);
+    expect((await fetch(bridge.http + "/api/device", { headers: { Authorization: `Bearer ${token}` } })).status).toBe(401);
   });
 });

@@ -1,9 +1,10 @@
 import path from "node:path";
+import fs from "node:fs";
 import type net from "node:net";
 import { loadConfig, type LoadedConfig } from "../config.js";
 import { startBridge, type Bridge, type BridgeOptions } from "../bridge.js";
 import { serveControl, type ControlRequest } from "./control.js";
-import { createPairing } from "./pairing.js";
+import { createAppLaunch, createPairing } from "./pairing.js";
 import { desktopSettings, saveDesktopSettings } from "./settings.js";
 import { loginStartupEnabled, setLoginStartup } from "./autostart.js";
 export type DesktopPage = "pair" | "settings" | "devices";
@@ -62,6 +63,11 @@ export class BridgeRuntime {
       case "pair": {
         if (!this.bridge || this.state !== "running") throw new Error("Bridge is not running");
         return createPairing(this.loaded.home, this.bridge.port(), this.bridge.addresses());
+      }
+      case "app": {
+        if (!this.bridge || this.state !== "running") throw new Error("Bridge is not running");
+        if (!this.bridge.webRoot || !fs.existsSync(path.join(this.bridge.webRoot, "index.html"))) throw new Error("Web app not found. Run npm run build:web in bridge, or install a release with its web folder.");
+        return createAppLaunch(this.loaded.home, this.bridge.port(), this.bridge.addresses());
       }
       case "settings": return desktopSettings(loadConfig(this.loaded.file));
       case "autostart": return { enabled: await loginStartupEnabled(this.loaded.file) };
