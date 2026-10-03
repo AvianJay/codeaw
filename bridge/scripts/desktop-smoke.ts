@@ -20,7 +20,9 @@ fs.mkdirSync(output, { recursive: true });
 const file = path.join(home, "config.yaml");
 fs.writeFileSync(file, YAML.stringify({ listen: { hosts: ["127.0.0.1"], port: 0 }, workspaces: ["D:\\projects"],
   agents: { claude: { name: "Claude Code", command: "unused" }, codex: { name: "Codex", command: "unused", enabled: false } } }));
-const runtime = new BridgeRuntime(loadConfig(file));
+// The packaged tray is exercised from source, so use the extracted release's web assets.
+const webRoot = process.argv[2] ? fileURLToPath(new URL("../dist/bin/web/", import.meta.url)) : undefined;
+const runtime = new BridgeRuntime(loadConfig(file), { webRoot });
 // Deterministic installer UI fixtures; this smoke never downloads or installs an agent.
 runtime.installer.list = async () => [
   { id: "codex-acp", name: "Codex", version: "1.0.0", description: "ACP adapter for Codex", configured: true, kind: "npx", supported: true, target: "windows-x86_64" },
@@ -46,6 +48,8 @@ async function run(command: string, args: string[]): Promise<void> {
 
 try {
   await runtime.start();
+  const app = await fetch(`http://127.0.0.1:${runtime.bridge!.port()}/`);
+  if (app.status !== 200 || !(await app.text()).includes("<title>codeaw</title>")) throw new Error("Desktop smoke bridge did not serve its web app");
   runtime.bridge!.devices.addDeviceWithToken("Test phone", "synthetic-smoke-token");
   const smoke = String.raw`
     function Start-Process {
