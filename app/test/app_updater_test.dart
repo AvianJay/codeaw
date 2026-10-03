@@ -128,6 +128,20 @@ void main() {
   });
 
   test(
+    'migrated build numbers update legacy ABI installations without resetting version codes',
+    () {
+      final next = AppRelease.fromJson(_manifest(build: 5017));
+      for (final legacyBuild in ['14', '1014', '2014', '4014']) {
+        expect(next.isNewerThan('0.1.0', legacyBuild), isTrue);
+      }
+      expect(next.isNewerThan('0.1.0', '5017'), isFalse);
+      expect(next.isNewerThan('0.1.0', '5018'), isFalse);
+      final later = AppRelease.fromJson(_manifest(build: 5018));
+      expect(later.isNewerThan('0.1.0', '5017'), isTrue);
+    },
+  );
+
+  test(
     'defaults to the build channel, persists changes and separates build preferences',
     () async {
       final updater = _updater();

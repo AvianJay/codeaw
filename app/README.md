@@ -39,6 +39,8 @@ App updates are available from settings and the pairing screen, independently of
 
 Nightly CI builds default to the `nightly` channel; `vX.Y.Z` tag builds default to `release`. Users can switch channels, and their selection is saved separately for each installed build channel. Release builds compare semantic versions and build numbers, so newer nightlies with the same app version are detected. The manifest is `app-update.json` in the GitHub Release assets: nightly uses `releases/download/nightly`, release uses `releases/latest/download`. A channel without a published manifest shows a retryable message and a link to the release page. The same Android signing key must be used for both channels; Android can reject a switch to a lower version code.
 
+CI uses a shared build number of `5000 + GITHUB_RUN_NUMBER` for all packages and update manifests. Universal and per-ABI APKs use the same exact Android version code; each ABI is built independently with `--target-platform`, because Flutter's `--split-per-abi` adds architecture offsets. Gradle filters native dependencies to the requested targets so each ABI package includes its matching Flutter engine. The reserved range lets older installations such as `0.1.0+2014` (arm64: run 14 + 2000) and `0.1.0+4014` (x86_64: run 14 + 4000) detect and install new builds without uninstalling. CI inspects every APK's actual package ID, version name, version code and native architectures with Android build-tools before publishing, so a mismatch fails the build.
+
 For local builds, the default channel is `release`. To build a nightly client:
 
 ```sh

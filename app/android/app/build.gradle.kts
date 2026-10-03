@@ -14,6 +14,17 @@ require(!hasReleaseSigning || releaseSigningValues.all { !it.isNullOrBlank() }) 
     "Release signing requires KEYSTORE_PATH, KEYSTORE_ALIAS, and KEYSTORE_PASSWORD."
 }
 
+val abiForPlatform = mapOf(
+    "android-arm" to "armeabi-v7a",
+    "android-arm64" to "arm64-v8a",
+    "android-x64" to "x86_64",
+)
+val targetAbis = providers.gradleProperty("target-platform")
+    .getOrElse("android-arm,android-arm64,android-x64")
+    .split(",")
+    .map { platform -> requireNotNull(abiForPlatform[platform]) { "Unsupported Android target: $platform" } }
+val splitPerAbi = providers.gradleProperty("split-per-abi").getOrElse("false").toBoolean()
+
 android {
     namespace = "tw.avianjay.codeaw"
     compileSdk = flutter.compileSdkVersion
@@ -53,6 +64,14 @@ android {
     }
 
     buildTypes {
+        configureEach {
+            // Flutter otherwise includes dependencies for every supported ABI,
+            // even when --target-platform builds the engine for just one ABI.
+            if (!splitPerAbi) {
+                ndk.abiFilters.clear()
+                ndk.abiFilters.addAll(targetAbis)
+            }
+        }
         release {
             signingConfig = signingConfigs.getByName(if (hasReleaseSigning) "release" else "debug")
         }

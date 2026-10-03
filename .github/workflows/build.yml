@@ -24,8 +24,14 @@ jobs:
       channel: ${{ steps.build.outputs.channel }}
       version: ${{ steps.build.outputs.version }}
       tag: ${{ steps.build.outputs.tag }}
+      build_number: ${{ steps.build.outputs.build_number }}
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Test build numbering and APK metadata checks
+        run: node --test scripts/ci-build-number.test.mjs scripts/verify-apk-versions.test.mjs
       - id: build
         shell: bash
         run: |
@@ -39,7 +45,8 @@ jobs:
             version="${tag#v}"
           fi
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          printf 'channel=%s\nversion=%s\ntag=%s\n' "$channel" "$version" "$tag" >> "$GITHUB_OUTPUT"
+          build_number=$(node scripts/ci-build-number.mjs "$GITHUB_RUN_NUMBER")
+          printf 'channel=%s\nversion=%s\ntag=%s\nbuild_number=%s\n' "$channel" "$version" "$tag" "$build_number" >> "$GITHUB_OUTPUT"
 
   android:
     name: Signed Android releases
@@ -48,6 +55,7 @@ jobs:
     env:
       UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      APP_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
     timeout-minutes: 45
     defaults:
       run:
@@ -59,6 +67,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -98,14 +109,21 @@ jobs:
             fi
           done
           mkdir -p ../dist
-          flutter build apk --release --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+          flutter build apk --release --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
           cp build/app/outputs/flutter-apk/app-release.apk ../dist/codeaw-universal.apk
-          flutter build apk --release --split-per-abi --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
-          for abi in armeabi-v7a arm64-v8a x86_64; do
-            cp "build/app/outputs/flutter-apk/app-${abi}-release.apk" "../dist/codeaw-${abi}.apk"
+          # --split-per-abi adds architecture offsets to versionCode. Build each
+          # target independently so every sideload APK has the manifest's code.
+          for target in armeabi-v7a:android-arm arm64-v8a:android-arm64 x86_64:android-x64; do
+            abi="${target%%:*}"
+            platform="${target#*:}"
+            flutter build apk --release --target-platform="$platform" --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+            cp build/app/outputs/flutter-apk/app-release.apk "../dist/codeaw-${abi}.apk"
           done
-          flutter build appbundle --release --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+          flutter build appbundle --release --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
           cp build/app/outputs/bundle/release/app-release.aab ../dist/codeaw.aab
+      - name: Verify universal and ABI APK versions match the update manifest
+        working-directory: .
+        run: node scripts/verify-apk-versions.mjs "$APP_VERSION" "$APP_BUILD_NUMBER" dist/codeaw-universal.apk dist/codeaw-armeabi-v7a.apk dist/codeaw-arm64-v8a.apk dist/codeaw-x86_64.apk
       - name: Remove signing keystore
         if: always()
         run: rm -f "$RUNNER_TEMP/codeaw-release.jks"
@@ -124,6 +142,7 @@ jobs:
     env:
       UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      APP_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
     timeout-minutes: 45
     defaults:
       run:
@@ -138,7 +157,7 @@ jobs:
           cache: true
       - run: flutter pub get
       - name: Build iOS without signing
-        run: flutter build ios --release --no-codesign --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+        run: flutter build ios --release --no-codesign --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
       - name: Package unsigned IPA
         run: |
           set -euo pipefail
@@ -162,6 +181,7 @@ jobs:
     env:
       UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      APP_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
     timeout-minutes: 20
     defaults:
       run:
@@ -179,7 +199,7 @@ jobs:
       - name: Test app updater
         run: flutter test test/app_updater_test.dart
       - name: Build web app with local renderer assets
-        run: flutter build web --release --no-web-resources-cdn --build-name="$APP_VERSION" --build-number="$GITHUB_RUN_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+        run: flutter build web --release --no-web-resources-cdn --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
       - name: Archive web app
         run: |
           mkdir -p ../dist
@@ -201,6 +221,8 @@ jobs:
   bridge:
     name: Bridge (${{ matrix.platform }})
     needs: [prepare, web]
+    env:
+      APP_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
     runs-on: ${{ matrix.runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
@@ -251,7 +273,7 @@ jobs:
           APP_VERSION: ${{ needs.prepare.outputs.version }}
           UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           BUILD_TARGET: ${{ matrix.platform }}
-        run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
+        run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$APP_BUILD_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
       - name: Build every package bin
         run: npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
@@ -340,6 +362,7 @@ jobs:
       GH_REPO: ${{ github.repository }}
       UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
       APP_VERSION: ${{ needs.prepare.outputs.version }}
+      APP_BUILD_NUMBER: ${{ needs.prepare.outputs.build_number }}
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
@@ -354,15 +377,15 @@ jobs:
       - name: Generate updater manifests
         run: |
           node --test scripts/create-update-manifest.test.mjs
-          node scripts/create-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
-          node scripts/create-bridge-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$GITHUB_RUN_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
+          node scripts/create-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$APP_BUILD_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
+          node scripts/create-bridge-update-manifest.mjs dist "$GH_REPO" "$UPDATE_CHANNEL" "$APP_VERSION" "$APP_BUILD_NUMBER" "$RELEASE_TAG" "$GITHUB_SHA"
       - name: Generate checksums and release notes
         run: |
           set -euo pipefail
           cp install.sh dist/install.sh
           (cd dist && sha256sum * > SHA256SUMS)
           cat > "$RUNNER_TEMP/nightly-notes.md" <<EOF
-          $UPDATE_CHANNEL build $APP_VERSION+$GITHUB_RUN_NUMBER from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
+          $UPDATE_CHANNEL build $APP_VERSION+$APP_BUILD_NUMBER from commit [$GITHUB_SHA](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA).
 
           The nightly release is updated in place after each successful nightly build. Version tags publish stable releases.
 
