@@ -1,6 +1,6 @@
 # codeaw
 
-在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
+在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / Hermes Agent / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
@@ -9,7 +9,7 @@
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
-Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / dsh --profile acp / agy_acp_server
+Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / dsh --profile acp / agy_acp_server
       ▲              經 Tailscale                     │
       └──────── ntfy 推播（沒有任何裝置連著時）◀──────┘
 ```
@@ -25,6 +25,7 @@ npm i -g @agentclientprotocol/claude-agent-acp    # Claude Code
 npm i -g @agentclientprotocol/codex-acp           # Codex
 npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP）
 # Kimi Code 自帶 `kimi acp`
+# Hermes Agent 使用 `hermes acp`，安裝方式見下方
 # Antigravity 使用官方 ACP server，安裝方式見下方
 ```
 
@@ -97,7 +98,27 @@ codeaw-bridge agents install antigravity-acp
 codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；會中止執行中的回合
 ```
 
-agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式。
+agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式；Hermes Agent 目前不在 ACP registry，請依下方指引安裝。
+
+### Hermes Agent
+
+先依照 Hermes 的[官方安裝指引](https://hermes-agent.nousresearch.com/docs/getting-started/installation)安裝，並確認已啟用 [ACP 支援](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp)。在本機執行 `hermes model` 設定 provider 與模型，再以 `hermes acp --check` 檢查 ACP 環境。
+
+bridge 會在建立設定時偵測 PATH 上的 `hermes`，以 `hermes acp` 啟動 Hermes Agent，沿用 Hermes 本機的設定、認證、記憶與 skills。
+
+如果已經有 `~/.codeaw/config.yaml`，在既有的 `agents` 區塊加入以下項目，再執行 `codeaw-bridge restart`：
+
+```yaml
+agents:
+  hermes:
+    name: Hermes Agent
+    command: hermes
+    args: [acp]
+    env: {}
+    enabled: true
+```
+
+若 `hermes` 不在 bridge 的 PATH 上，將 `command` 改為啟動器的完整路徑；也可改用 `command: hermes-acp` 搭配 `args: []`。
 
 ### DeepSeek Harness
 

@@ -85,6 +85,7 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
   { id: "claude", probe: "claude-agent-acp", agent: { name: "Claude Code", command: "claude-agent-acp", args: [], env: {}, enabled: true } },
   { id: "codex", probe: "codex-acp", agent: { name: "Codex", command: "codex-acp", args: [], env: {}, enabled: true } },
   { id: "kimi", probe: "kimi", agent: { name: "Kimi Code", command: "kimi", args: ["acp"], env: {}, enabled: true } },
+  { id: "hermes", probe: "hermes", agent: { name: "Hermes Agent", command: "hermes", args: ["acp"], env: {}, enabled: true } },
   { id: "gemini", probe: "gemini", agent: { name: "Gemini CLI", command: "gemini", args: ["--experimental-acp"], env: {}, enabled: true } },
   { id: "deepseek", probe: "dsh", agent: { name: "DeepSeek Harness", command: "dsh", args: ["--profile", "acp"], env: {}, enabled: true } },
   {

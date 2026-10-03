@@ -12,5 +12,9 @@ agent's accent color while preserving the original icon geometry.
 - `antigravity.svg`: [`antigravity-acp/icon.svg`](https://github.com/agentclientprotocol/registry/blob/3ee7f11880878d90ec1d5d7a519feac449714363/antigravity-acp/icon.svg)
   from the ACP agent registry, revision `3ee7f11880878d90ec1d5d7a519feac449714363`.
   See `LICENSE-acp-registry`.
+- `hermes.svg`: [`assets/icon-master.svg`](https://github.com/NousResearch/hermes-agent/blob/5c975b9ed8fc2a5d50263c321391fd4559e0b3e2/assets/icon-master.svg)
+  from Hermes Agent, revision `5c975b9ed8fc2a5d50263c321391fd4559e0b3e2`,
+  with the white background removed so the avatar can apply its accent color.
+  See `LICENSE-hermes-agent`.
 
 The brand names and logos belong to their respective owners.

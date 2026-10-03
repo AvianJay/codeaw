@@ -103,6 +103,8 @@ Color agentColor(String agentId) {
       return const Color(0xFF10A37F);
     case 'kimi':
       return const Color(0xFF3B82F6);
+    case 'hermes':
+      return const Color(0xFFC58C32);
     case 'gemini':
       return const Color(0xFF8E75B2);
     case 'deepseek':
@@ -134,6 +136,7 @@ class AgentAvatar extends StatelessWidget {
       'claude' ||
       'codex' ||
       'kimi' ||
+      'hermes' ||
       'gemini' ||
       'deepseek' ||
       'antigravity' => 'assets/agents/$id.svg',
