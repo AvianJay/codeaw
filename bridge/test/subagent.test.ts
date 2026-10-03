@@ -63,4 +63,19 @@ describe("subagent transcripts", () => {
     expect(result[0].update._meta.codeaw.agentStatesSeq).toBe(1);
     expect(result[1].update._meta.codeaw.agentStatesSeq).toBe(2);
   });
+
+  it("preserves launch and lifecycle revisions separately from later cosmetic updates", () => {
+    const entries = [
+      { seq: 1, update: { sessionUpdate: "tool_call", toolCallId: "agent", title: "Task", status: "in_progress" } },
+      { seq: 2, update: { sessionUpdate: "tool_call_update", toolCallId: "agent", status: "completed" } },
+      { seq: 3, update: { sessionUpdate: "tool_call_update", toolCallId: "agent", _meta: { claudeCode: { toolResponse: { status: "async_launched", isAsync: true } } } } },
+      { seq: 4, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Still working" }, _meta: { claudeCode: { parentToolUseId: "agent" } } } },
+      { seq: 5, update: { sessionUpdate: "tool_call_update", toolCallId: "agent", title: "Explore" } },
+    ].map((e) => ({ ...e, kind: "update" as const, t: e.seq, update: e.update as any }));
+    const replay = compactLog(entries) as any[];
+    expect(replay[0].seq).toBe(5);
+    expect(replay[0].update._meta.codeaw.toolStatusSeq).toBe(2);
+    expect(replay[0].update._meta.codeaw.toolLifecycleSeq).toBe(3);
+    expect(replay[0].update._meta.claudeCode.toolResponse.status).toBe("async_launched");
+  });
 });

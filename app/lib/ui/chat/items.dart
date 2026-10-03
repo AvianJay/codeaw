@@ -19,12 +19,13 @@ import 'turn_summary.dart';
 
 /// Builds the widget for one timeline item; rebuilt only when that item changes.
 class TimelineItemView extends StatelessWidget {
-  const TimelineItemView({super.key, required this.item, required this.controller, required this.isLast, this.depth = 0});
+  const TimelineItemView({super.key, required this.item, required this.controller, required this.isLast, this.depth = 0, this.expandSubagent = false});
 
   final TimelineItem item;
   final SessionController controller;
   final bool isLast;
   final int depth;
+  final bool expandSubagent;
 
   @override
   Widget build(BuildContext context) {
@@ -41,6 +42,7 @@ class TimelineItemView extends StatelessWidget {
                 tool: t,
                 timeline: controller.timeline,
                 nested: depth > 0,
+                initiallyExpanded: expandSubagent,
                 report: _ToolDetails(t, showInput: false, showEmpty: false, excludeText: t.subagent?.task),
                 itemBuilder: (child) => TimelineItemView(key: ValueKey(child.key), item: child, controller: controller, isLast: false, depth: depth + 1),
               )

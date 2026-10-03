@@ -9,7 +9,7 @@ const KEEP_LAST = new Set(["plan", "available_commands_update", "current_mode_up
 type Slot =
   | { kind: "entry"; entry: LogEntry }
   | { kind: "message"; seq: number; t: number; first: any; parts: any[] }
-  | { kind: "tool"; seq: number; t: number; state: ToolCallState; agentStatesSeq?: number }
+  | { kind: "tool"; seq: number; t: number; state: ToolCallState; agentStatesSeq?: number; statusSeq?: number; lifecycleSeq?: number }
   | { kind: "info"; seq: number; t: number; update: Record<string, any> };
 
 /**
@@ -78,6 +78,11 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
       }
       slot.seq = Math.max(slot.seq, e.seq);
       if (u.rawInput?.agentsStates && typeof u.rawInput.agentsStates === "object") slot.agentStatesSeq = e.seq;
+      if (typeof u.status === "string") slot.statusSeq = codeawMeta(u).toolStatusSeq ?? e.seq;
+      const response = u._meta?.claudeCode?.toolResponse;
+      if (typeof response?.status === "string" || response?.isAsync === true || typeof u.rawOutput?.status === "string") {
+        slot.lifecycleSeq = codeawMeta(u).toolLifecycleSeq ?? e.seq;
+      }
       slot.state = mergeToolCall(slot.state, u);
       return;
     }
@@ -108,8 +113,12 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
         const update = toolCallToUpdate(slot.state);
         // A later title/status update must not make an old child-state snapshot
         // override a newer report from a different collaboration tool on replay.
-        if (slot.agentStatesSeq !== undefined) {
-          update._meta = { ...update._meta, codeaw: { agentStatesSeq: slot.agentStatesSeq } };
+        if (slot.agentStatesSeq !== undefined || slot.statusSeq !== undefined || slot.lifecycleSeq !== undefined) {
+          update._meta = { ...update._meta, codeaw: {
+            ...(slot.agentStatesSeq !== undefined ? { agentStatesSeq: slot.agentStatesSeq } : {}),
+            ...(slot.statusSeq !== undefined ? { toolStatusSeq: slot.statusSeq } : {}),
+            ...(slot.lifecycleSeq !== undefined ? { toolLifecycleSeq: slot.lifecycleSeq } : {}),
+          } };
         }
         out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
         break;

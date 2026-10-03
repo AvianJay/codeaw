@@ -228,6 +228,20 @@ so later cosmetic updates cannot reorder child status. Tool metadata and parent
 attribution survive full/delta replay. Details depend on the adapter's reports;
 draft native `subagent_spawned` sessions are not negotiated by this bridge.
 
+The chat's subagent browser lists every delegation, including nested agents. On
+phones it opens from the right edge, a leftward swipe across the conversation,
+or the app-bar button. Chat areas at least 1000 logical pixels wide use a
+collapsible 350-pixel sidebar. Users can filter unfinished agents and open an
+agent's activity without scrolling the main conversation.
+
+For Claude, an Agent/Task tool's `completed` status can describe a returned launch
+RPC while its child keeps working. Active descendants and later attributed
+messages therefore override that status. `run_in_background`, `isAsync` and
+`async_launched` identify background launches; structured completion/failure
+reports end them. Full replay retains `toolStatusSeq` and `toolLifecycleSeq` in
+`update._meta.codeaw` so cosmetic updates cannot move those lifecycle bookends.
+The main timeline and subagent browser share the same status calculation.
+
 Image data in logged user messages is replaced by
 `{ "type": "image", "mimeType": "…", "data": "", "uri": "codeaw-blob:<sha256>" }`;
 fetch the bytes from `/api/blobs/<sha256>`.

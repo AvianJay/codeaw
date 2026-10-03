@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/subagent.dart';
 import '../../data/timeline.dart';
+import 'subagent_status.dart';
 
 /// Delegation stays in the conversation, with its transcript folded underneath.
 class SubagentCard extends StatefulWidget {
@@ -12,6 +13,7 @@ class SubagentCard extends StatefulWidget {
     required this.itemBuilder,
     required this.report,
     this.nested = false,
+    this.initiallyExpanded = false,
   });
 
   final ToolItem tool;
@@ -19,6 +21,7 @@ class SubagentCard extends StatefulWidget {
   final Widget Function(TimelineItem) itemBuilder;
   final Widget report;
   final bool nested;
+  final bool initiallyExpanded;
 
   @override
   State<SubagentCard> createState() => _SubagentCardState();
@@ -30,7 +33,7 @@ class _SubagentCardState extends State<SubagentCard> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _open = PageStorage.maybeOf(context)?.readState(context, identifier: widget.tool.key) as bool? ?? _open;
+    _open = PageStorage.maybeOf(context)?.readState(context, identifier: widget.tool.key) as bool? ?? widget.initiallyExpanded;
   }
 
   void _toggle() {
@@ -44,29 +47,10 @@ class _SubagentCardState extends State<SubagentCard> {
     final tool = widget.tool;
     final info = tool.subagent;
     final children = widget.timeline.childrenOf(tool);
-    final status = widget.timeline.statusOfSubagent(tool);
-    final active = status == SubagentStatus.pending || status == SubagentStatus.running;
-    final stale = active && !widget.timeline.running;
-    final color = switch (status) {
-      SubagentStatus.failed => scheme.error,
-      SubagentStatus.completed => scheme.tertiary,
-      SubagentStatus.cancelled || SubagentStatus.disconnected || SubagentStatus.unknown => scheme.onSurfaceVariant,
-      _ => stale ? scheme.onSurfaceVariant : scheme.primary,
-    };
-    final label = stale
-        ? '未回報完成'
-        : switch (status) {
-            SubagentStatus.pending => '等待中',
-            SubagentStatus.running => '執行中',
-            SubagentStatus.completed => '已完成',
-            SubagentStatus.failed => '失敗',
-            SubagentStatus.cancelled => '已停止',
-            SubagentStatus.disconnected => '已中斷',
-            SubagentStatus.unknown => info?.launchOnly == true ? '已啟動' : '狀態未知',
-          };
+    final label = subagentStatusLabel(widget.timeline, tool);
     final tools = children.whereType<ToolItem>().toList();
     final completed = tools.where((t) => t.status == 'completed').length;
-    final latest = children.lastOrNull;
+    final latest = widget.timeline.currentActivityOf(tool);
     final latestText = switch (latest) {
       ToolItem t => t.title ?? t.name,
       MessageItem m => m.text,
@@ -126,33 +110,7 @@ class _SubagentCardState extends State<SubagentCard> {
                               runSpacing: 5,
                               crossAxisAlignment: WrapCrossAlignment.center,
                               children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                                  decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (active && !stale)
-                                        SizedBox(width: 10, height: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: color))
-                                      else
-                                        Icon(
-                                          switch (status) {
-                                            SubagentStatus.completed => Icons.check_rounded,
-                                            SubagentStatus.failed => Icons.error_outline_rounded,
-                                            SubagentStatus.cancelled => Icons.stop_rounded,
-                                            _ => Icons.circle_outlined,
-                                          },
-                                          size: 12,
-                                          color: color,
-                                        ),
-                                      const SizedBox(width: 4),
-                                      Text(
-                                        label,
-                                        style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                                SubagentStatusBadge(timeline: widget.timeline, tool: tool),
                                 if (tools.isNotEmpty)
                                   Text('工具 $completed/${tools.length}', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
                                 if (info?.model case final String model)

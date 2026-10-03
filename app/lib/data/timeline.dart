@@ -8,6 +8,7 @@ abstract class TimelineItem extends ChangeNotifier {
   TimelineItem(this.key);
   final String key;
   String? parentToolCallId;
+  int activityRevision = 0;
   bool _dirty = false;
 
   void markDirty() => _dirty = true;
@@ -55,6 +56,8 @@ class ToolItem extends TimelineItem {
   String terminalOutput = '';
   String? terminalId;
   final meta = <String, dynamic>{};
+  int statusRevision = 0;
+  int lifecycleRevision = 0;
 
   SubagentInfo? get subagent => SubagentInfo.fromTool(name: name, title: title, input: rawInput, output: rawOutput, metadata: meta);
 
@@ -254,8 +257,51 @@ class Timeline extends ChangeNotifier {
 
   bool isSubagent(ToolItem tool) => tool.subagent != null || childrenOf(tool).isNotEmpty;
 
+  List<ToolItem> get subagents => items.whereType<ToolItem>().where(isSubagent).toList();
+
+  ToolItem? parentOf(TimelineItem item) {
+    if (_hierarchyDirty) _rebuildHierarchy();
+    return _parents[item.key];
+  }
+
+  Iterable<TimelineItem> descendantsOf(ToolItem tool) sync* {
+    final pending = [...childrenOf(tool).reversed];
+    while (pending.isNotEmpty) {
+      final item = pending.removeLast();
+      yield item;
+      if (item is ToolItem) pending.addAll(childrenOf(item).reversed);
+    }
+  }
+
+  TimelineItem? latestActivityOf(ToolItem tool) {
+    TimelineItem? latest;
+    for (final item in descendantsOf(tool)) {
+      if (latest == null || item.activityRevision >= latest.activityRevision) latest = item;
+    }
+    return latest;
+  }
+
+  TimelineItem? currentActivityOf(ToolItem tool) {
+    ToolItem? active;
+    for (final item in descendantsOf(tool).whereType<ToolItem>()) {
+      if (item.status != 'pending' && item.status != 'in_progress') continue;
+      if (active == null || item.activityRevision >= active.activityRevision) active = item;
+    }
+    return active ?? latestActivityOf(tool);
+  }
+
   SubagentStatus statusOfSubagent(ToolItem tool) {
     final info = tool.subagent;
+    final descendants = descendantsOf(tool).toList();
+    final lastActivity = descendants.fold(0, (latest, item) => item.activityRevision > latest ? item.activityRevision : latest);
+    final reported = reportedSubagentStatus(tool.meta, tool.rawOutput);
+    if (reported != null && reported != SubagentStatus.pending && reported != SubagentStatus.running && tool.lifecycleRevision >= lastActivity) {
+      return reported;
+    }
+    if (tool.status == 'failed' && tool.statusRevision >= lastActivity) return SubagentStatus.failed;
+    final active = descendants.whereType<ToolItem>().map((t) => subagentStatusOf(t.status));
+    if (active.contains(SubagentStatus.running)) return SubagentStatus.running;
+    if (active.contains(SubagentStatus.pending)) return SubagentStatus.running;
     final ids = info?.threadIds ?? <String>[];
     if (ids.any(_agentStates.containsKey)) {
       final states = [for (final id in ids) subagentStatusOf(_agentStates[id]?.state['status'])];
@@ -264,6 +310,10 @@ class Timeline extends ChangeNotifier {
       }
       return SubagentStatus.completed;
     }
+    if (reported == SubagentStatus.running || reported == SubagentStatus.pending) return reported!;
+    // A child can continue (or be resumed) after the launch RPC has returned.
+    if (lastActivity > tool.statusRevision && tool.status == 'completed') return SubagentStatus.running;
+    if (info?.background == true && tool.status == 'completed') return SubagentStatus.running;
     if (info?.launchOnly == true && tool.status == 'completed') return SubagentStatus.unknown;
     return subagentStatusOf(tool.status);
   }
@@ -433,6 +483,7 @@ class Timeline extends ChangeNotifier {
         final item = _upsert(key, () => MessageItem(key, role, mid));
         if (item.parentToolCallId != parent) _hierarchyDirty = _structureChanged = true;
         item.parentToolCallId = parent;
+        item.activityRevision = revision;
         if (codeaw != null) {
           item.promptId ??= codeaw['promptId'] as String?;
           if (codeaw['queued'] == true) item.queued = true;
@@ -462,7 +513,15 @@ class Timeline extends ChangeNotifier {
         final id = '${u['toolCallId']}';
         final item = _upsert('tool:$id', () => ToolItem('tool:$id', id));
         final oldParent = item.parentToolCallId;
+        final wasSubagent = item.subagent != null;
         item.merge(u);
+        if (wasSubagent != (item.subagent != null)) _snapshotChanged = true;
+        item.activityRevision = revision;
+        final codeaw = objectMap(objectMap(u['_meta'])['codeaw']);
+        if (u['status'] is String) item.statusRevision = (codeaw['toolStatusSeq'] as num?)?.toInt() ?? revision;
+        if (reportedSubagentStatus(u['_meta'], u['rawOutput']) != null) {
+          item.lifecycleRevision = (codeaw['toolLifecycleSeq'] as num?)?.toInt() ?? revision;
+        }
         if (oldParent != item.parentToolCallId) _hierarchyDirty = _structureChanged = true;
         _dirty.add(item);
         final statesRevision = objectMap(objectMap(u['_meta'])['codeaw'])['agentStatesSeq'];

@@ -13,7 +13,7 @@ enum SubagentStatus { pending, running, completed, failed, cancelled, disconnect
 
 SubagentStatus subagentStatusOf(Object? value) => switch (value) {
   'pending' || 'pendingInit' => SubagentStatus.pending,
-  'in_progress' || 'inProgress' || 'running' => SubagentStatus.running,
+  'in_progress' || 'inProgress' || 'running' || 'async_launched' || 'launched' => SubagentStatus.running,
   'completed' => SubagentStatus.completed,
   'failed' || 'errored' => SubagentStatus.failed,
   'cancelled' || 'canceled' || 'interrupted' || 'shutdown' => SubagentStatus.cancelled,
@@ -22,7 +22,15 @@ SubagentStatus subagentStatusOf(Object? value) => switch (value) {
 };
 
 class SubagentInfo {
-  const SubagentInfo({required this.name, this.task, this.role, this.model, this.threadIds = const [], this.launchOnly = false});
+  const SubagentInfo({
+    required this.name,
+    this.task,
+    this.role,
+    this.model,
+    this.threadIds = const [],
+    this.launchOnly = false,
+    this.background = false,
+  });
 
   final String name;
   final String? task;
@@ -31,11 +39,13 @@ class SubagentInfo {
   final List<String> threadIds;
   // Codex completing spawnAgent means the spawn succeeded, not that its child finished.
   final bool launchOnly;
+  final bool background;
 
   static SubagentInfo? fromTool({String? name, String? title, Object? input, Object? output, Object? metadata}) {
     final raw = objectMap(input);
     final meta = objectMap(metadata);
     final claude = objectMap(meta['claudeCode']);
+    final response = objectMap(claude['toolResponse']);
     final air = objectMap(objectMap(meta['jetbrains'])['air']);
     final toolName = nonEmptyString(claude['toolName']) ?? name ?? title ?? '';
     final normalized = toolName.replaceAll('_', '').toLowerCase();
@@ -49,7 +59,7 @@ class SubagentInfo {
         nonEmptyString(raw['subagent_type']) == null) {
       return null;
     }
-    final role = nonEmptyString(raw['subagent_type']) ?? nonEmptyString(raw['agent_type']);
+    final role = nonEmptyString(raw['subagent_type']) ?? nonEmptyString(raw['agent_type']) ?? nonEmptyString(response['subagentType']);
     final path = nonEmptyString(raw['agentPath']);
     final pathName = path?.split('/').where((s) => s.isNotEmpty).lastOrNull;
     final label =
@@ -64,14 +74,32 @@ class SubagentInfo {
       ],
       if (nonEmptyString(raw['agentThreadId']) case final String id) id,
       if (nonEmptyString(objectMap(output)['agent_id']) case final String id) id,
+      if (nonEmptyString(response['agentId']) case final String id) id,
     };
+    final background =
+        raw['run_in_background'] == true ||
+        response['isAsync'] == true ||
+        const ['async_launched', 'launched'].contains(response['status']);
     return SubagentInfo(
       name: label ?? '子代理',
       task: nonEmptyString(raw['prompt']) ?? nonEmptyString(raw['message']),
       role: role,
       model: nonEmptyString(raw['model']),
       threadIds: ids.toList(),
-      launchOnly: spawn || (activity && raw['activityKind'] == 'started'),
+      launchOnly: spawn || background || (activity && raw['activityKind'] == 'started'),
+      background: background,
     );
   }
+}
+
+/// Claude's structured AgentOutput is distinct from completion of the tool RPC.
+SubagentStatus? reportedSubagentStatus(Object? metadata, Object? output) {
+  final claude = objectMap(objectMap(metadata)['claudeCode']);
+  final response = objectMap(claude['toolResponse']);
+  final raw = objectMap(output);
+  final claudeOutput = const ['Agent', 'Task'].contains(claude['toolName']) || raw.containsKey('agentId') || raw.containsKey('isAsync');
+  final state = response['status'] ?? (claudeOutput ? raw['status'] : null);
+  final status = subagentStatusOf(state);
+  if (status != SubagentStatus.unknown) return status;
+  return response['isAsync'] == true ? SubagentStatus.running : null;
 }

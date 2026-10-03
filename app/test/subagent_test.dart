@@ -1,12 +1,16 @@
 import 'dart:io';
 
+import 'package:codeaw/app_state.dart';
 import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
+import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/subagent.dart';
 import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/items.dart';
+import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/subagent_card.dart';
+import 'package:codeaw/ui/chat/subagent_panel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -44,6 +48,13 @@ Map<String, dynamic> message(String text, {String? parent, String mid = 'same'})
 };
 
 ToolItem tool(Timeline t, String id) => t.items.whereType<ToolItem>().firstWhere((item) => item.toolCallId == id);
+
+// Start the drawer ticker, then advance it. pumpAndSettle cannot be used while
+// the conversation contains live progress indicators.
+Future<void> animateDrawer(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+}
 
 SessionController controller() {
   final client = BridgeClient(HostConfig(name: 'test', urls: ['ws://localhost:1'], token: 'test', deviceId: 'test', deviceName: 'test'));
@@ -100,6 +111,63 @@ void demo(Timeline t) {
   });
 }
 
+class _PanelClient extends BridgeClient {
+  _PanelClient(super.host) {
+    status = ConnStatus.online;
+    agents = [AgentInfo(id: 'claude', name: 'Claude Code', status: 'ready')];
+  }
+
+  @override
+  Future<dynamic> request(String method, [Map<String, dynamic>? params]) async => {};
+}
+
+class _PanelHarness {
+  _PanelHarness() {
+    final host = HostConfig(name: 'test', urls: ['ws://localhost:1'], token: 'fixture', deviceId: 'fixture', deviceName: 'fixture');
+    final client = _PanelClient(host);
+    state = AppState(HostStore(), openSession: (_) {})
+      ..host = host
+      ..client = client
+      ..loaded = true;
+    state.hub = SessionHub(client);
+    c = state.hub!.adopt('claude:panel', '/projects/codeaw', {});
+    demo(c.timeline);
+    update(c.timeline, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'agent', 'status': 'completed'});
+    update(c.timeline, {
+      ...delegation('nested', parent: 'agent', status: 'completed'),
+      'rawInput': {'description': '檢查歷史重播', 'prompt': '確認子代理活動能正確重播。', 'subagent_type': 'Review'},
+      '_meta': {
+        'claudeCode': {
+          'parentToolUseId': 'agent',
+          'toolName': 'Agent',
+          'toolResponse': {'status': 'completed'},
+        },
+      },
+    });
+  }
+
+  late final AppState state;
+  late final SessionController c;
+
+  Widget app({Brightness brightness = Brightness.light, double scale = 1}) => AppScope(
+    state: state,
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorSchemeSeed: const Color(0xFF0F9D8A),
+        brightness: brightness,
+        fontFamily: 'Roboto',
+        fontFamilyFallback: const ['NotoSansTC'],
+      ),
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(scale)),
+        child: child!,
+      ),
+      home: const ChatPage(sessionId: 'claude:panel'),
+    ),
+  );
+}
+
 void main() {
   test('identifies delegation from adapter fields without classifying ordinary tasks', () {
     expect(SubagentInfo.fromTool(name: 'Task', input: {'description': 'Audit'})?.name, 'Audit');
@@ -122,6 +190,7 @@ void main() {
     );
     expect(SubagentInfo.fromTool(title: 'Write subagent docs', input: {'command': 'cat Task.md'}), isNull);
     expect(SubagentInfo.fromTool(name: 'TaskOutput', input: {'task_id': 'x'}), isNull);
+    expect(reportedSubagentStatus(null, {'agent_id': 'codex-child', 'status': 'completed'}), isNull);
   });
 
   test('groups out-of-order children, preserves metadata on updates and notifies ancestors', () {
@@ -192,6 +261,93 @@ void main() {
     expect(t.rootItems, containsAll([tool(t, 'a'), tool(t, 'b'), tool(t, 'self')]));
   });
 
+  test('Claude launch completion cannot hide continuing child activity', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, delegation('agent', status: 'completed'), seq: 2);
+    update(t, {
+      'sessionUpdate': 'tool_call',
+      'toolCallId': 'read',
+      'status': 'in_progress',
+      '_meta': {
+        'claudeCode': {'parentToolUseId': 'agent'},
+      },
+    }, seq: 3);
+    expect(t.statusOfSubagent(tool(t, 'agent')), SubagentStatus.running);
+    update(t, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'read', 'status': 'completed'}, seq: 4);
+    expect(t.statusOfSubagent(tool(t, 'agent')), SubagentStatus.running);
+    update(t, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'agent', 'status': 'completed'}, seq: 5);
+    expect(t.statusOfSubagent(tool(t, 'agent')), SubagentStatus.completed);
+    update(t, message('Resumed work', parent: 'agent'), seq: 6);
+    expect(t.statusOfSubagent(tool(t, 'agent')), SubagentStatus.running);
+  });
+
+  test('Claude async launch and authoritative completion survive stale child tools and resumes', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, {
+      ...delegation('agent', status: 'completed'),
+      'rawInput': {'subagent_type': 'Explore', 'run_in_background': true},
+    }, seq: 2);
+    final agent = tool(t, 'agent');
+    expect(agent.subagent!.launchOnly, isTrue);
+    expect(t.statusOfSubagent(agent), SubagentStatus.running);
+    update(t, {
+      'sessionUpdate': 'tool_call_update',
+      'toolCallId': 'agent',
+      '_meta': {
+        'claudeCode': {
+          'toolResponse': {'isAsync': true, 'status': 'async_launched'},
+        },
+      },
+    }, seq: 3);
+    update(t, {
+      'sessionUpdate': 'tool_call',
+      'toolCallId': 'read',
+      'status': 'in_progress',
+      '_meta': {
+        'claudeCode': {'parentToolUseId': 'agent'},
+      },
+    }, seq: 4);
+    update(t, {
+      'sessionUpdate': 'tool_call_update',
+      'toolCallId': 'agent',
+      '_meta': {
+        'claudeCode': {
+          'toolResponse': {'status': 'completed'},
+        },
+      },
+    }, seq: 5);
+    expect(t.statusOfSubagent(agent), SubagentStatus.completed);
+    update(t, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'read', 'status': 'in_progress'}, seq: 6);
+    expect(t.statusOfSubagent(agent), SubagentStatus.running);
+    update(t, {
+      'sessionUpdate': 'tool_call_update',
+      'toolCallId': 'agent',
+      '_meta': {
+        'claudeCode': {
+          'toolResponse': {'status': 'failed'},
+        },
+      },
+    }, seq: 7);
+    expect(t.statusOfSubagent(agent), SubagentStatus.failed);
+  });
+
+  test('folded cosmetic updates do not change completion order on replay', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, {
+      ...delegation('agent', status: 'completed'),
+      '_meta': {
+        'claudeCode': {'toolName': 'Agent'},
+        'codeaw': {'toolStatusSeq': 2},
+      },
+    }, seq: 20);
+    update(t, message('Still working', parent: 'agent'), seq: 8);
+    expect(t.statusOfSubagent(tool(t, 'agent')), SubagentStatus.running);
+    expect(t.latestActivityOf(tool(t, 'agent')), t.childrenOf(tool(t, 'agent')).single);
+  });
+
   test('Codex status follows later reports and stays correct for compacted sequence order', () {
     final t = Timeline();
     addTearDown(t.dispose);
@@ -252,7 +408,15 @@ void main() {
       },
     }, seq: 50);
     expect(t.statusOfSubagent(agent), SubagentStatus.completed);
-    update(t, {'sessionUpdate': 'tool_call', 'toolCallId': 'multi', 'title': 'spawnAgent', 'status': 'completed', 'rawInput': {'receiverThreadIds': ['child', 'unknown-child']}}, seq: 51);
+    update(t, {
+      'sessionUpdate': 'tool_call',
+      'toolCallId': 'multi',
+      'title': 'spawnAgent',
+      'status': 'completed',
+      'rawInput': {
+        'receiverThreadIds': ['child', 'unknown-child'],
+      },
+    }, seq: 51);
     expect(t.statusOfSubagent(tool(t, 'multi')), SubagentStatus.unknown);
   });
 
@@ -301,6 +465,84 @@ void main() {
     });
   }
 
+  testWidgets('phone swipe opens all agents, shows nested entries and opens their activity', (tester) async {
+    tester.view.physicalSize = const Size(430, 940);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final h = _PanelHarness();
+    addTearDown(h.state.dispose);
+    await tester.pumpWidget(h.app());
+    await tester.pump();
+    expect(find.byType(SubagentPanel), findsNothing);
+    await tester.dragFrom(const Offset(370, 260), const Offset(-200, 0));
+    await animateDrawer(tester);
+    expect(find.text('所有子代理'), findsOneWidget);
+    expect(find.text('共 2 個 · 1 個未結束'), findsOneWidget);
+    final panel = find.byType(SubagentPanel);
+    expect(tester.getRect(panel).right, lessThanOrEqualTo(430));
+    expect(find.descendant(of: panel, matching: find.byIcon(Icons.subdirectory_arrow_right_rounded)), findsOneWidget);
+    expect(find.descendant(of: panel, matching: find.text('flutter test')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('subagent-row:agent')));
+    await tester.pump();
+    expect(find.text('返回所有子代理'), findsOneWidget);
+    expect(find.descendant(of: panel, matching: find.text('活動紀錄 · 4')), findsOneWidget);
+    await tester.tap(find.text('返回所有子代理'));
+    await tester.pump();
+    await tester.tap(find.text('未結束'));
+    await tester.pump();
+    expect(find.descendant(of: panel, matching: find.text('檢查歷史重播')), findsNothing);
+    await tester.tap(find.byTooltip('關閉子代理面板'));
+    await animateDrawer(tester);
+    expect(find.byType(SubagentPanel), findsNothing);
+    await tester.tap(find.byTooltip('所有子代理'));
+    await animateDrawer(tester);
+    expect(find.byType(SubagentPanel), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('desktop sidebar toggles and updates when a child continues after launch completed', (tester) async {
+    tester.view.physicalSize = const Size(1440, 940);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final h = _PanelHarness();
+    addTearDown(h.state.dispose);
+    await tester.pumpWidget(h.app(brightness: Brightness.dark));
+    await tester.pump();
+    expect(find.byType(SubagentPanel), findsOneWidget);
+    final panel = find.byType(SubagentPanel);
+    expect(tester.getRect(panel).left, greaterThan(1000));
+    expect(find.descendant(of: panel, matching: find.text('執行中')), findsOneWidget);
+    await tester.tap(find.byTooltip('關閉子代理面板'));
+    await tester.pump();
+    expect(find.byType(SubagentPanel), findsNothing);
+    await tester.tap(find.byTooltip('所有子代理'));
+    await tester.pump();
+    expect(find.byType(SubagentPanel), findsOneWidget);
+    update(h.c.timeline, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'test', 'status': 'completed'});
+    update(h.c.timeline, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'agent', 'status': 'completed'});
+    await tester.pump();
+    expect(find.text('共 2 個 · 0 個未結束'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('phone panel fits large text and keeps terminal and git in the menu', (tester) async {
+    tester.view.physicalSize = const Size(320, 940);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final h = _PanelHarness();
+    addTearDown(h.state.dispose);
+    await tester.pumpWidget(h.app(scale: 1.6));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await tester.tap(find.byTooltip('所有子代理'));
+    await animateDrawer(tester);
+    expect(find.byType(SubagentPanel), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('renders subagent phone preview', (tester) async {
     tester.view.physicalSize = const Size(430, 940);
     tester.view.devicePixelRatio = 1;
@@ -328,5 +570,37 @@ void main() {
     await tester.pump(const Duration(milliseconds: 200));
     await expectLater(find.byType(MaterialApp), matchesGoldenFile('screenshots/subagent_phone.png'));
     await tester.pumpWidget(const SizedBox());
+  }, skip: Platform.environment['CODEAW_SCREENSHOTS'] != '1');
+
+  testWidgets('previews phone drawer and desktop sidebar', (tester) async {
+    final sdkFonts = '${Platform.environment['FLUTTER_ROOT'] ?? 'D:/flutter'}/bin/cache/artifacts/material_fonts';
+    for (final entry in {
+      'Roboto': '$sdkFonts/roboto-regular.ttf',
+      'MaterialIcons': '$sdkFonts/materialicons-regular.otf',
+      'NotoSansTC': 'C:/Windows/Fonts/NotoSansTC-VF.ttf',
+    }.entries) {
+      if (File(entry.value).existsSync()) {
+        await (FontLoader(entry.key)..addFont(Future.value(ByteData.sublistView(File(entry.value).readAsBytesSync())))).load();
+      }
+    }
+    addTearDown(tester.view.reset);
+    for (final size in [const Size(430, 940), const Size(1440, 940)]) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      final h = _PanelHarness();
+      await tester.pumpWidget(h.app(brightness: size.width < 1000 ? Brightness.light : Brightness.dark));
+      await tester.pump();
+      if (size.width < 1000) {
+        await tester.tap(find.byTooltip('所有子代理'));
+        await animateDrawer(tester);
+      }
+      expect(tester.takeException(), isNull);
+      await expectLater(
+        find.byType(MaterialApp),
+        matchesGoldenFile('screenshots/subagent_${size.width < 1000 ? 'drawer' : 'sidebar'}.png'),
+      );
+      await tester.pumpWidget(const SizedBox());
+      h.state.dispose();
+    }
   }, skip: Platform.environment['CODEAW_SCREENSHOTS'] != '1');
 }
