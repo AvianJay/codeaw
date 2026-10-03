@@ -6,6 +6,7 @@ import { WebSocket } from "ws";
 import * as acp from "@agentclientprotocol/sdk";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
 import { ConfigSchema, type LoadedConfig } from "../src/config.js";
+import type { AgentConfig } from "../src/config.js";
 import { startBridge, type Bridge } from "../src/bridge.js";
 import { setLogSilent } from "../src/util/log.js";
 import { SessionStore } from "../src/session/store.js";
@@ -28,6 +29,7 @@ export interface TestBridgeOptions {
   /** Keep the temp home after stop() (to restart a bridge on the same agent state). */
   keepHome?: boolean;
   webRoot?: string;
+  desktopSync?: AgentConfig["desktopSync"];
 }
 
 export interface TestBridge {
@@ -51,6 +53,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
         args: ["--import", "tsx", FAKE_AGENT],
         cwd: BRIDGE_DIR,
         env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0" },
+        ...(opts.desktopSync !== undefined ? { desktopSync: opts.desktopSync } : {}),
       },
     },
     notifications: opts.ntfy ? { ntfy: opts.ntfy } : {},

@@ -6,6 +6,7 @@
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
 - **斷線不中斷**：手機斷線或 App 被關掉時，agent 照樣工作，權限請求會等你回來。重新連上後只補傳漏掉的部分；同一個對話可以同時開在多台裝置上。
 - **接續電腦上既有的對話**：你在終端機開過的 Claude Code／Codex session 都會出現在 App 的清單裡。
+- **Windows Codex 桌面同步**：載入桌面 app 持有的 Codex 對話時，bridge 會附加到桌面 owner，雙向同步訊息、工具進度與回合狀態；手機也能插話、停止、批准操作及回覆一般問題。
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
@@ -157,6 +158,30 @@ agents:
 ```
 
 macOS 將 `command` 改成 `agy_acp_server.par`；Linux 另將 `args` 改成 `["--uid="]`。未加入 PATH 時，`command` 可填入執行檔的完整路徑。
+
+### Windows Codex 桌面同步
+
+Windows 上的 `codex` agent 預設啟用桌面同步。先在 ChatGPT desktop app 的 Codex 頁面開啟對話，再從 codeaw 載入同一個 session。bridge 透過桌面 IPC 訂閱該對話，將手機的操作交給原 owner；不會為這條對話再啟動一個 ACP runtime。App 標題列會顯示「桌面同步」。
+
+支援雙向訊息、圖片、串流回覆、命令與檔案變更、桌面發起的回合、插話、手機排隊、停止、工具批准，以及一般問題／MCP 表單回覆。手機斷線時桌面工作繼續；桌面 IPC 斷線後 bridge 會重新尋找 owner 並補齊歷史。發送結果不明的訊息不會自動重送。選擇「停止桌面同步」只解除訂閱並取消尚未發送的手機排隊訊息，桌面正在執行的工作會繼續。
+
+沒有桌面 owner 的對話與從 codeaw 新建的對話，仍使用原有 ACP 模式。已經附加過桌面的 session 會記住這個連接方式：owner 不可用時會提示重新連接，不會悄悄改成另一個 runtime。模型／模式設定、刪除對話、特殊選擇器、密碼問題及 URL 授權流程，請在桌面操作。
+
+桌面 IPC 是內部介面，桌面更新可能需要同步更新 bridge。bridge 會從已安裝 app 的程式包讀取 IPC 方法版本表，不讀取桌面認證檔。可以在 agent 設定中關閉桌面同步，或指定其他 IPC／程式包位置：
+
+```yaml
+agents:
+  codex:
+    name: Codex
+    command: codex-acp
+    args: []
+    env: {}
+    enabled: true
+    desktopSync: false
+    # 或 desktopSync: { pipe: '<IPC pipe>', archivePath: '<app.asar>' }
+```
+
+關閉此功能後，已標記為桌面同步的對話需要重新啟用才能開啟。設定變更在重新啟動 bridge 後生效。此版針對 Windows 本機 Codex；Claude Code 仍沿用原有的 ACP 接續方式。
 
 ### 系統匣與背景運行
 

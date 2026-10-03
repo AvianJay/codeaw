@@ -8,6 +8,8 @@ import * as acp from "@agentclientprotocol/sdk";
 import type { AgentConfig } from "../config.js";
 import { logger, type Logger } from "../util/log.js";
 import { VERSION } from "../version.js";
+import type { AgentBackend } from "./backend.js";
+import type { DesktopState } from "./codex-desktop-state.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -28,6 +30,9 @@ export interface AgentHandlers {
   onPermission(agentId: string, params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse>;
   onElicitation(agentId: string, params: acp.CreateElicitationRequest, signal: AbortSignal): Promise<acp.CreateElicitationResponse>;
   onExit(agentId: string, generation: number, detail: string): void;
+  onHistoryReset?(agentId: string, sessionId: string, updates: acp.SessionUpdate[]): void;
+  onSessionState?(agentId: string, sessionId: string, state: DesktopState): void;
+  onSessionError?(agentId: string, sessionId: string, message: string): void;
 }
 
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
@@ -48,7 +53,7 @@ export function bridgeClientCapabilities(): acp.ClientCapabilities {
  * Started lazily, restarted on demand after a crash; `generation` tells callers
  * whether a session they activated earlier still lives in the current process.
  */
-export class AgentProcess {
+export class AgentProcess implements AgentBackend {
   readonly id: string;
   readonly config: AgentConfig;
   generation = 0;

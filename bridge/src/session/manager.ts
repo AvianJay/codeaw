@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentHandlers } from "../backend/agent-process.js";
-import type { AgentProcess } from "../backend/agent-process.js";
+import type { AgentBackend } from "../backend/backend.js";
+import type { DesktopState } from "../backend/codex-desktop-state.js";
 import type { AgentRegistry } from "../backend/registry.js";
 import type { PushNotifier, PushKind } from "../notify/ntfy.js";
 import { logger } from "../util/log.js";
@@ -59,12 +60,14 @@ interface PendingRequest {
   resolve: (value: any) => void;
   dispatched: Map<string, AbortController>;
   title?: string;
+  resolvedOnDesktop?: boolean;
 }
 
 class BridgeSession {
   entries?: LogEntry[];
   readonly subscribers = new Set<ClientHandle>();
   turn?: Turn;
+  desktop?: DesktopState;
   queue: QueuedPrompt[] = [];
   readonly pending = new Map<string, PendingRequest>();
   /** Agent process generation in which this session is live; 0 = not live. */
@@ -74,7 +77,7 @@ class BridgeSession {
   midRun?: { type: string; mid: string; parent?: string };
   lastActivity = Date.now();
   stale = false;
-  emitted?: { state: TurnState; queued: number };
+  emitted?: { state: TurnState; queued: number; desktopConnected?: boolean; nativeTurnId?: string };
   metaTimer?: NodeJS.Timeout;
 
   constructor(public meta: SessionMeta) {}
@@ -85,6 +88,7 @@ class BridgeSession {
 
   get state(): TurnState {
     if (this.pending.size > 0) return "requires_action";
+    if (this.desktop?.connected && this.desktop.state !== "idle") return this.desktop.state;
     return this.turn ? "running" : "idle";
   }
 }
@@ -140,6 +144,7 @@ export class SessionManager implements AgentHandlers {
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
   private sweepTimer?: NodeJS.Timeout;
+  private shuttingDown = false;
   notifier?: PushNotifier;
 
   constructor(
@@ -154,6 +159,7 @@ export class SessionManager implements AgentHandlers {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     for (const s of this.sessions.values()) this.saveMeta(s, true);
     this.store.closeAll();
@@ -225,6 +231,7 @@ export class SessionManager implements AgentHandlers {
   // ───────────────────────────── agent → bridge ─────────────────────────────
 
   onUpdate(agentId: string, params: acp.SessionNotification): void {
+    if (this.shuttingDown) return;
     const id = extId(agentId, params.sessionId);
     const s = this.sessions.get(id) ?? this.fromDisk(id);
     if (!s) {
@@ -236,6 +243,52 @@ export class SessionManager implements AgentHandlers {
     }
     if (s.suppressUpdates) return;
     this.ingest(s, params.update);
+  }
+
+  /** Desktop snapshots are authoritative; an edited history gets a new replay epoch. */
+  onHistoryReset(agentId: string, backendId: string, updates: acp.SessionUpdate[]): void {
+    if (this.shuttingDown) return;
+    const s = this.sessions.get(extId(agentId, backendId)) ?? this.fromDisk(extId(agentId, backendId));
+    if (!s) return;
+    this.store.truncate(s.id);
+    s.entries = [];
+    s.meta.lastSeq = 0;
+    s.meta.epoch = newEpoch();
+    s.meta.connection = "desktop";
+    s.meta.configOptions = [];
+    s.meta.modes = null;
+    s.midRun = undefined;
+    s.emitted = undefined;
+    for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "full", epoch: s.meta.epoch, lastSeq: 0 });
+    for (const update of updates) this.ingest(s, update);
+    for (const pending of s.pending.values()) {
+      if (pending.kind === "permission") this.appendEvent(s, { type: "permission_request", requestId: pending.id, toolCall: pending.params.toolCall, options: pending.params.options });
+      else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
+    }
+    for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
+    this.saveMeta(s, true);
+  }
+
+  onSessionState(agentId: string, backendId: string, state: DesktopState): void {
+    if (this.shuttingDown) return;
+    const s = this.sessions.get(extId(agentId, backendId)) ?? this.fromDisk(extId(agentId, backendId));
+    if (!s) return;
+    const previous = s.desktop;
+    s.desktop = state;
+    s.meta.connection = "desktop";
+    if (state.title !== undefined) s.meta.title = state.title;
+    if (state.cwd) s.meta.cwd = state.cwd;
+    const completed = previous?.turnId && previous.startedAt !== undefined && state.state === "idle" && state.connected
+      ? { promptId: previous.turnId, startedAt: previous.startedAt, endedAt: Date.now() } : undefined;
+    this.emitState(s, completed ? state.stopReason : undefined, completed);
+    this.saveMeta(s);
+    if (state.connected && state.state === "idle" && !s.turn) setImmediate(() => this.startNext(s));
+  }
+
+  onSessionError(agentId: string, backendId: string, message: string): void {
+    if (this.shuttingDown) return;
+    const s = this.sessions.get(extId(agentId, backendId));
+    if (s) this.appendEvent(s, { type: "error", message });
   }
 
   private ingest(s: BridgeSession, raw: acp.SessionUpdate): void {
@@ -304,6 +357,7 @@ export class SessionManager implements AgentHandlers {
 
   onExit(agentId: string, generation: number, detail: string): void {
     for (const s of this.sessions.values()) {
+      if (s.meta.connection === "desktop") continue;
       if (s.meta.agentId !== agentId || s.backendGen !== generation) continue;
       s.backendGen = 0;
       for (const pr of [...s.pending.values()]) this.settle(s, pr, pr.cancelValue, undefined);
@@ -346,8 +400,12 @@ export class SessionManager implements AgentHandlers {
       this.appendEvent(s, spec.event(pr.id));
       this.emitState(s);
       for (const c of s.subscribers) this.dispatch(s, pr, c);
-      if (spec.signal.aborted) this.settle(s, pr, pr.cancelValue, undefined);
-      else spec.signal.addEventListener("abort", () => this.settle(s, pr, pr.cancelValue, undefined), { once: true });
+      const cancelled = () => {
+        pr.resolvedOnDesktop = spec.signal.reason === "desktop-resolved";
+        this.settle(s, pr, pr.cancelValue, undefined);
+      };
+      if (spec.signal.aborted) cancelled();
+      else spec.signal.addEventListener("abort", cancelled, { once: true });
       this.push(s, "permission", spec.title, () => !pr.settled);
     });
   }
@@ -378,7 +436,7 @@ export class SessionManager implements AgentHandlers {
     if (pr.kind === "permission") {
       const outcome = answer?.outcome ?? { outcome: "cancelled" };
       const option = (pr.params.options as acp.PermissionOption[] | undefined)?.find((o) => o.optionId === outcome.optionId);
-      this.appendEvent(s, { type: "permission_resolved", requestId: pr.id, outcome, optionName: option?.name, by: by?.deviceName });
+      this.appendEvent(s, { type: "permission_resolved", requestId: pr.id, outcome, optionName: pr.resolvedOnDesktop ? "已在桌面處理" : option?.name, by: pr.resolvedOnDesktop ? "桌面" : by?.deviceName });
       pr.resolve({ outcome });
     } else {
       const action = typeof answer?.action === "string" ? answer.action : "cancel";
@@ -421,11 +479,14 @@ export class SessionManager implements AgentHandlers {
   private emitState(s: BridgeSession, stopReason?: string, completedTurn?: CompletedTurn): void {
     const state = s.state;
     const queued = s.queue.length;
-    if (!stopReason && s.emitted && s.emitted.state === state && s.emitted.queued === queued) return;
-    s.emitted = { state, queued };
+    const desktopConnected = s.desktop?.connected;
+    const nativeTurnId = s.desktop?.turnId;
+    if (!stopReason && s.emitted && s.emitted.state === state && s.emitted.queued === queued && s.emitted.desktopConnected === desktopConnected && s.emitted.nativeTurnId === nativeTurnId) return;
+    s.emitted = { state, queued, desktopConnected, nativeTurnId };
     this.appendEvent(s, {
       type: "state", state, queued,
-      ...(s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
+      ...(s.desktop?.connected && s.desktop.turnId ? { turnStartedAt: s.desktop.startedAt, turnPromptId: s.desktop.turnId } : s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
+      ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: desktopConnected === true } : {}),
       ...(completedTurn ? { completedTurn } : {}),
       ...(stopReason && state === "idle" ? { stopReason } : {}),
     });
@@ -442,6 +503,7 @@ export class SessionManager implements AgentHandlers {
       title: s.meta.title,
       updatedAt: s.meta.updatedAt,
       lastSeq: s.meta.lastSeq,
+      ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: s.desktop?.connected === true } : {}),
     };
     for (const c of this.clients) void c.notify("_codeaw/activity", params);
   }
@@ -514,6 +576,7 @@ export class SessionManager implements AgentHandlers {
   /** Copies setup state (config options, modes) from a new/load/resume response into the session. */
   private applySetup(s: BridgeSession, resp: any): void {
     if (!resp) return;
+    if (resp._meta?.codeaw?.connection === "desktop") s.meta.connection = "desktop";
     if (Array.isArray(resp.configOptions) && !sameJson(resp.configOptions, s.meta.configOptions)) {
       this.ingest(s, { sessionUpdate: "config_option_update", configOptions: resp.configOptions } as any);
     }
@@ -536,7 +599,8 @@ export class SessionManager implements AgentHandlers {
           epoch: s.meta.epoch,
           state: s.state,
           queued: s.queue.length,
-          ...(s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
+          ...(s.desktop?.connected && s.desktop.turnId ? { turnStartedAt: s.desktop.startedAt, turnPromptId: s.desktop.turnId } : s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
+          ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: s.desktop?.connected === true } : {}),
           title: s.meta.title,
           cwd: s.meta.cwd,
         },
@@ -544,15 +608,16 @@ export class SessionManager implements AgentHandlers {
     };
   }
 
-  private requireAgent(agentId: string): AgentProcess {
+  private requireAgent(agentId: string): AgentBackend {
     return this.registry.get(agentId);
   }
 
   /** Makes sure the agent process holds this session live, resuming it after restarts. */
-  private async ensureActive(s: BridgeSession): Promise<AgentProcess> {
+  private async ensureActive(s: BridgeSession): Promise<AgentBackend> {
     const agent = this.requireAgent(s.meta.agentId);
+    if (s.meta.connection === "desktop" && !agent.sessionConnection) throw acp.RequestError.invalidRequest(undefined, "Enable Codex desktop synchronization to reopen this desktop-linked conversation");
     await agent.ensureStarted();
-    if (s.backendGen === agent.generation) return agent;
+    if (s.meta.connection === "desktop" ? agent.sessionConnected?.(s.meta.backendId) : s.backendGen === agent.generation) return agent;
     if (!s.activating) {
       s.activating = this.activate(s, agent).finally(() => {
         s.activating = undefined;
@@ -562,9 +627,9 @@ export class SessionManager implements AgentHandlers {
     return agent;
   }
 
-  private async activate(s: BridgeSession, agent: AgentProcess): Promise<void> {
+  private async activate(s: BridgeSession, agent: AgentBackend): Promise<void> {
     const caps = agent.capabilities;
-    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [] };
+    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     const lastMode = modeOf(s.meta);
     let resp: any;
     if (caps?.sessionCapabilities?.resume) {
@@ -614,7 +679,7 @@ export class SessionManager implements AgentHandlers {
     s.entries = [];
     s.midRun = undefined;
     const caps = agent.capabilities;
-    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: [] };
+    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
     if (caps?.loadSession) resp = await agent.request("session/load", base);
     else if (caps?.sessionCapabilities?.resume) resp = await agent.request("session/resume", base);
@@ -630,7 +695,10 @@ export class SessionManager implements AgentHandlers {
   /** Finds a session in memory, on disk, or imports it from the agent's own history. */
   private async sessionForAttach(id: string, cwd?: string): Promise<BridgeSession> {
     const s = this.sessions.get(id) ?? this.fromDisk(id);
-    if (s && !s.stale) return s;
+    if (s && !s.stale) {
+      if (s.meta.connection === "desktop" || (s.meta.origin === "native" && s.backendGen === 0)) await this.ensureActive(s);
+      return s;
+    }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;
     let p = this.importing.get(id);
     if (!p) {
@@ -645,7 +713,7 @@ export class SessionManager implements AgentHandlers {
 
   private async resetLog(s: BridgeSession): Promise<void> {
     const agent = this.requireAgent(s.meta.agentId);
-    if (s.backendGen === agent.generation && agent.capabilities?.sessionCapabilities?.close) {
+    if ((s.meta.connection === "desktop" || s.backendGen === agent.generation) && agent.capabilities?.sessionCapabilities?.close) {
       try {
         await agent.request("session/close", { sessionId: s.meta.backendId });
       } catch {
@@ -799,6 +867,7 @@ export class SessionManager implements AgentHandlers {
             queued: s?.queue.length ?? 0,
             lastSeq: meta?.lastSeq ?? 0,
             known: !!meta,
+            ...(meta?.connection === "desktop" ? { connection: "desktop", desktopConnected: s?.desktop?.connected === true } : {}),
           },
         },
       } as acp.SessionInfo;
@@ -814,12 +883,13 @@ export class SessionManager implements AgentHandlers {
   async prompt(c: ClientHandle, params: acp.PromptRequest): Promise<acp.PromptResponse> {
     const s = this.requireLoaded(params.sessionId);
     if (!s.subscribers.has(c)) await this.attach(c, s);
-    const agent = this.requireAgent(s.meta.agentId);
+    const agent = await this.ensureActive(s);
     const delivery: string = codeawMeta(params as any).delivery ?? "auto";
     const promptId = "p_" + crypto.randomBytes(6).toString("hex");
     const blocks = params.prompt;
 
-    if (s.turn && delivery !== "queue" && agent.supportsSteering && s.backendGen === agent.generation) {
+    const busy = s.turn !== undefined || (s.desktop?.connected && s.desktop.state !== "idle");
+    if (busy && delivery !== "queue" && agent.supportsSteering && (s.meta.connection === "desktop" || s.backendGen === agent.generation)) {
       try {
         const r = await agent.request<any>("_session/steering", {
           sessionId: s.meta.backendId,
@@ -827,21 +897,22 @@ export class SessionManager implements AgentHandlers {
           _meta: { steering: { idleBehavior: "promptRequired" } },
         });
         if (r?.outcome === "injected") {
-          this.logUserMessage(s, blocks, promptId, { steered: true });
+          if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId, { steered: true });
           return s.turn ? s.turn.done : { stopReason: "end_turn" };
         }
       } catch (err) {
+        if (s.meta.connection === "desktop") throw err;
         log.warn(`steering failed for ${s.id}, queueing instead: ${errorMessage(err)}`);
       }
     }
-    if (s.turn) {
-      this.logUserMessage(s, blocks, promptId, { queued: true });
+    if (busy) {
+      if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId, { queued: true });
       return new Promise<acp.PromptResponse>((resolve, reject) => {
         s.queue.push({ promptId, blocks, resolve, reject });
         this.emitState(s);
       });
     }
-    this.logUserMessage(s, blocks, promptId);
+    if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId);
     return this.runTurn(s, promptId, blocks);
   }
 
@@ -866,6 +937,7 @@ export class SessionManager implements AgentHandlers {
       }
       const completedTurn = s.turn && { promptId: s.turn.promptId, startedAt: s.turn.startedAt, endedAt: Date.now() };
       s.turn = undefined;
+      if (this.shuttingDown) { rejectDone(toRequestError(error ?? new Error("Bridge stopped"))); return; }
       if (result) {
         this.emitState(s, result.stopReason, completedTurn);
         this.push(s, "turn_end", undefined, () => !s.turn);
@@ -883,7 +955,7 @@ export class SessionManager implements AgentHandlers {
   }
 
   private startNext(s: BridgeSession): void {
-    if (s.turn) return;
+    if (s.turn || (s.desktop?.connected && s.desktop.state !== "idle") || (s.meta.connection === "desktop" && !s.desktop?.connected)) return;
     const next = s.queue.shift();
     if (!next) return;
     this.appendEvent(s, { type: "dequeued", promptId: next.promptId });
@@ -899,13 +971,19 @@ export class SessionManager implements AgentHandlers {
       q.resolve({ stopReason: "cancelled" });
     }
     this.emitState(s);
-    if (s.turn && this.registry.has(s.meta.agentId)) {
+    if ((s.turn || (s.desktop?.connected && s.desktop.state !== "idle")) && this.registry.has(s.meta.agentId)) {
       const agent = this.requireAgent(s.meta.agentId);
-      if (s.backendGen === agent.generation) await agent.notify("session/cancel", { sessionId: s.meta.backendId });
+      if (s.meta.connection === "desktop" || s.backendGen === agent.generation) {
+        try { await agent.notify("session/cancel", { sessionId: s.meta.backendId }); }
+        catch (error) {
+          if (s.meta.connection !== "desktop") throw error;
+          this.appendEvent(s, { type: "error", message: errorMessage(error) });
+        }
+      }
     }
   }
 
-  private async applyConfigOption(s: BridgeSession, agent: AgentProcess, configId: string, value: unknown): Promise<any> {
+  private async applyConfigOption(s: BridgeSession, agent: AgentBackend, configId: string, value: unknown): Promise<any> {
     const r = await agent.request<any>("session/set_config_option", {
       sessionId: s.meta.backendId,
       configId,
@@ -934,7 +1012,13 @@ export class SessionManager implements AgentHandlers {
 
   async closeSession(c: ClientHandle, params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
     const s = this.requireLoaded(params.sessionId);
-    await this.cancel(c, { sessionId: s.id });
+    if (s.meta.connection !== "desktop") await this.cancel(c, { sessionId: s.id });
+    else {
+      for (const queued of s.queue.splice(0)) {
+        this.appendEvent(s, { type: "dequeued", promptId: queued.promptId, cancelled: true });
+        queued.resolve({ stopReason: "cancelled" });
+      }
+    }
     await this.releaseBackend(s);
     return {};
   }
@@ -942,7 +1026,7 @@ export class SessionManager implements AgentHandlers {
   private async releaseBackend(s: BridgeSession): Promise<void> {
     if (!this.registry.has(s.meta.agentId)) return;
     const agent = this.requireAgent(s.meta.agentId);
-    if (s.backendGen !== agent.generation || !agent.capabilities?.sessionCapabilities?.close) return;
+    if ((s.meta.connection !== "desktop" && s.backendGen !== agent.generation) || !agent.capabilities?.sessionCapabilities?.close) return;
     try {
       await agent.request("session/close", { sessionId: s.meta.backendId });
     } catch (err) {
@@ -955,6 +1039,7 @@ export class SessionManager implements AgentHandlers {
     const id = params.sessionId;
     const { agentId, backendId } = parseExtId(id);
     const s = this.sessions.get(id) ?? this.fromDisk(id);
+    if (s?.meta.connection === "desktop") throw acp.RequestError.invalidRequest(undefined, "Delete this desktop-linked conversation in Codex desktop");
     if (s) {
       await this.cancel(c, { sessionId: id });
       await this.releaseBackend(s);

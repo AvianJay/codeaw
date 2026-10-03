@@ -10,7 +10,7 @@ export interface CompletedTurn {
 
 /** Bridge-synthesized events, sent to clients as `_codeaw/event` (see docs/protocol.md). */
 export type CodeawEvent =
-  | { type: "state"; state: TurnState; stopReason?: string; queued: number; turnStartedAt?: number; turnPromptId?: string; completedTurn?: CompletedTurn }
+  | { type: "state"; state: TurnState; stopReason?: string; queued: number; turnStartedAt?: number; turnPromptId?: string; completedTurn?: CompletedTurn; connection?: "desktop" | "acp"; desktopConnected?: boolean }
   | { type: "permission_request"; requestId: string; toolCall: acp.ToolCallUpdate; options: acp.PermissionOption[] }
   | { type: "permission_resolved"; requestId: string; outcome: acp.RequestPermissionOutcome; optionName?: string; by?: string }
   | { type: "elicitation_request"; requestId: string; request: acp.CreateElicitationRequest }
@@ -45,6 +45,8 @@ export interface SessionMeta {
   updatedAt: string;
   /** `bridge` = created through codeaw; `native` = imported from the agent's own history. */
   origin: "bridge" | "native";
+  /** Persist desktop affinity so reconnecting never silently creates a second runtime. */
+  connection?: "desktop" | "acp";
   /** Changes whenever the log is rebuilt; clients with another epoch need a full replay. */
   epoch: string;
   lastSeq: number;

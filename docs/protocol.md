@@ -117,6 +117,28 @@ in a terminal), it imports it first through the agent's own `session/load`.
 
 `session/resume` attaches without any replay and returns the same response.
 
+For a desktop-owned Codex conversation on Windows, load/resume subscribes to the
+existing desktop owner over private IPC. It does not resume the same thread in
+another app-server process. The external session id is unchanged. The response
+adds `_meta.codeaw.connection: "desktop"` and `desktopConnected: boolean`.
+These fields are also included in state events and activity notifications.
+
+The desktop's snapshot and revisioned patches are authoritative. A historical
+edit or newly loaded older history can trigger a new epoch and a live full
+replay. Such a replay ends with `_codeaw/replay` `{mode: "complete", epoch,
+lastSeq}`; clients clear their replay flag and advance the cursor at this
+boundary without waiting for a load response. Duplicate/replayed text is not
+appended twice.
+
+Desktop turns can start outside codeaw, so state events may refer to native
+turn ids. Desktop-origin messages are echoed from the desktop stream rather
+than synthesized locally. Closing a linked session unfollows it and cancels
+unsent codeaw queue entries; it does not interrupt the desktop turn. Explicit
+`session/cancel` interrupts the currently observed native turn. Desktop affinity
+is persisted so an unavailable owner fails closed instead of silently falling
+back to an independent runtime. Desktop settings and deletion are not exposed
+through this first integration.
+
 ### `session/list`
 
 Params: standard (`cwd`, `cursor`) plus optional `_meta.codeaw.agentId` filter.

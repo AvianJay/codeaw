@@ -32,7 +32,7 @@ class _ComposerState extends State<Composer> {
   int _pasteGeneration = 0;
 
   SessionController get c => widget.controller;
-  bool get _supportsImages => c.agent?.image ?? true;
+  bool get _supportsImages => c.desktopSync || (c.agent?.image ?? true);
 
   @override
   void initState() {
@@ -199,6 +199,7 @@ class _ComposerState extends State<Composer> {
     final suggestions = _suggestions;
     final canSend =
         c.client.isOnline &&
+        (!c.desktopSync || c.desktopConnected) &&
         _readingImages == 0 &&
         (_text.text.trim().isNotEmpty || _images.isNotEmpty);
     final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;

@@ -104,7 +104,7 @@ class _ChatPageState extends State<ChatPage> {
                         style: const TextStyle(fontSize: 16),
                       ),
                       Text(
-                        '$agentName · ${folderName(c.cwd)}',
+                        '$agentName · ${folderName(c.cwd)}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(fontSize: 12, color: scheme.outline),
@@ -115,6 +115,12 @@ class _ChatPageState extends State<ChatPage> {
               ],
             ),
             actions: [
+              if (c.desktopSync && !c.desktopConnected)
+                IconButton(
+                  tooltip: '重新連接桌面',
+                  icon: const Icon(Icons.sync_rounded),
+                  onPressed: c.loading ? null : () => c.attach(),
+                ),
               IconButton(
                 tooltip: '終端機',
                 icon: const Icon(Icons.terminal_rounded),
@@ -150,8 +156,8 @@ class _ChatPageState extends State<ChatPage> {
                     case 'close':
                       if (await c.closeOnAgent() && context.mounted) {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('已釋放電腦上的 agent 資源，再傳訊息會自動恢復'),
+                          SnackBar(
+                            content: Text(c.desktopSync ? '已停止桌面同步，桌面工作會繼續執行' : '已釋放電腦上的 agent 資源，再傳訊息會自動恢復'),
                           ),
                         );
                       }
@@ -165,9 +171,9 @@ class _ChatPageState extends State<ChatPage> {
                       );
                   }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'reimport', child: Text('從電腦重新載入歷史')),
-                  PopupMenuItem(value: 'close', child: Text('釋放 agent 資源')),
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'reimport', child: Text('從電腦重新載入歷史')),
+                  PopupMenuItem(value: 'close', child: Text(c.desktopSync ? '停止桌面同步' : '釋放 agent 資源')),
                   PopupMenuItem(value: 'copy', child: Text('複製 session id')),
                 ],
               ),

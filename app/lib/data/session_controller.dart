@@ -46,6 +46,8 @@ class SessionController extends ChangeNotifier {
   String? epoch;
   bool loading = false;
   bool attached = false;
+  bool desktopSync = false;
+  bool desktopConnected = false;
   String? error;
   final pending = <String, PendingRequest>{};
 
@@ -66,6 +68,7 @@ class SessionController extends ChangeNotifier {
   void _onClientChange() {
     if (client.status != ConnStatus.online && attached) {
       attached = false;
+      desktopConnected = false;
       // The bridge re-sends still-open requests after we re-attach.
       for (final p in pending.values) {
         p.token.cancel();
@@ -92,6 +95,8 @@ class SessionController extends ChangeNotifier {
         },
       }) as Map<String, dynamic>;
       final m = (resp['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
+      desktopSync = m['connection'] == 'desktop';
+      desktopConnected = m['desktopConnected'] == true;
       _replayingFull = false;
       lastSeq = (m['lastSeq'] as num?)?.toInt() ?? lastSeq;
       epoch = m['epoch'] as String? ?? epoch;
@@ -126,7 +131,13 @@ class SessionController extends ChangeNotifier {
     if (msg.method == '_codeaw/replay') {
       if (msg.params['mode'] == 'full') {
         timeline.clear();
+        lastSeq = 0;
         _replayingFull = true;
+      } else if (msg.params['mode'] == 'complete') {
+        lastSeq = (msg.params['lastSeq'] as num?)?.toInt() ?? lastSeq;
+        _replayingFull = false;
+        timeline.flush();
+        _notify();
       }
       epoch = msg.params['epoch'] as String? ?? epoch;
       return;
@@ -135,6 +146,13 @@ class SessionController extends ChangeNotifier {
     if (!_replayingFull && seq != null) {
       if (seq <= lastSeq) return; // already seen (overlapping replay)
       lastSeq = seq;
+    }
+    if (msg.method == '_codeaw/event') {
+      final event = msg.params['event'] as Map?;
+      if (event?['type'] == 'state' && event?['connection'] == 'desktop') {
+        desktopSync = true;
+        desktopConnected = event?['desktopConnected'] == true;
+      }
     }
     timeline.apply(msg.method, msg.params);
     _scheduleFlush();
@@ -224,6 +242,11 @@ class SessionController extends ChangeNotifier {
   Future<bool> closeOnAgent() async {
     try {
       await client.request('session/close', {'sessionId': sessionId});
+      if (desktopSync) {
+        attached = false;
+        desktopConnected = false;
+        _notify();
+      }
       return true;
     } on RpcError catch (e) {
       _toast(e.detail);

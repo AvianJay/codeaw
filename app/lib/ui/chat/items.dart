@@ -431,7 +431,7 @@ class PermissionCard extends StatelessWidget {
     final (IconData icon, Color color, String label) = !p.resolved
         ? (Icons.pending_actions_rounded, Colors.orange, live != null ? '等待你的批准' : '等待批准')
         : outcome == 'cancelled'
-            ? (Icons.block_rounded, scheme.outline, '已取消')
+            ? (Icons.block_rounded, scheme.outline, p.optionName ?? '已取消')
             : (p.optionName ?? '').toLowerCase().contains('reject') || (p.optionName ?? '').contains('拒') || (p.optionName ?? '').startsWith('No')
                 ? (Icons.do_not_disturb_on_outlined, scheme.error, p.optionName ?? '已拒絕')
                 : (Icons.verified_user_outlined, Colors.green.shade600, p.optionName ?? '已允許');

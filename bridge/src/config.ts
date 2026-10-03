@@ -14,6 +14,12 @@ const AgentConfigSchema = z.object({
   /** Working directory of the agent process itself (sessions carry their own cwd). */
   cwd: z.string().optional(),
   enabled: z.boolean().default(true),
+  /** Windows Codex: attach to a desktop owner before resuming through ACP. */
+  desktopSync: z.union([z.boolean(), z.object({
+    pipe: z.string().optional(),
+    archivePath: z.string().optional(),
+    timeoutMs: z.number().int().min(100).max(60000).optional(),
+  })]).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 
