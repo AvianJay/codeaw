@@ -224,9 +224,13 @@ describe("sessions", () => {
     expect(c.events(s.sessionId, "dequeued")).toHaveLength(1);
     expect(c.text(s.sessionId)).toContain("queued");
 
+    const statesBeforeCancel = c.events(s.sessionId, "state").length;
+    const textBeforeCancel = c.text(s.sessionId).length;
     const long = c.request("session/prompt", promptText(s.sessionId, "slow 200"));
     const dropped = c.request("session/prompt", promptText(s.sessionId, "echo never"));
-    await c.waitFor(() => c.events(s.sessionId, "state").some((e) => e.event.queued === 1));
+    // Wait for this turn to reach the fake agent and queue its follow-up. A
+    // previous turn's queued event can otherwise cancel before prompt starts.
+    await c.waitFor(() => c.text(s.sessionId).length > textBeforeCancel && c.events(s.sessionId, "state").slice(statesBeforeCancel).some((e) => e.event.queued === 1));
     await c.notify("session/cancel", { sessionId: s.sessionId });
     expect((await long).stopReason).toBe("cancelled");
     expect((await dropped).stopReason).toBe("cancelled");

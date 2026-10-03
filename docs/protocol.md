@@ -158,6 +158,8 @@ Every session has an append-only log. Each entry has a per-session `seq`
    Message chunks (`user_message_chunk`, `agent_message_chunk`,
    `agent_thought_chunk`) get `update._meta.codeaw.mid`: a message id that
    groups chunks of one message (the agent's `messageId` when present).
+   Message identity is scoped by the parent tool-call id as well as type and mid;
+   two subagents may reuse the same message id.
 
 2. Bridge events, sent as `_codeaw/event`:
 
@@ -188,6 +190,21 @@ full-width character, roughly one per four other characters) and divides by tota
 turn duration, including tool execution and permission waits. Context usage is not
 an output token count. Before any text arrives, the speed is shown as `— TPS`.
 Replays preserve it, allowing clients to distinguish current activity from old turns.
+
+Subagent activity uses ordinary ACP tool calls and attributed message chunks.
+The bridge advertises `_meta["subagent-transcript"]: true` to receive Claude's
+child text/thoughts. The app groups `_meta.claudeCode.parentToolUseId` (or
+`_meta.parentToolCallId`) under the delegating Agent/Task card, including nested
+delegation. Missing parents remain visible in the main timeline. Child text is
+excluded from the main turn's response copy and estimated TPS.
+
+Codex `spawnAgent` and subagent-activity tool reports get delegation cards too.
+`rawInput.agentsStates` reports supply child status and results; spawn completion
+alone is shown as started, not task completion. During compaction, tool updates
+retain `_meta.codeaw.agentStatesSeq`, the seq of their last child-state snapshot,
+so later cosmetic updates cannot reorder child status. Tool metadata and parent
+attribution survive full/delta replay. Details depend on the adapter's reports;
+draft native `subagent_spawned` sessions are not negotiated by this bridge.
 
 Image data in logged user messages is replaced by
 `{ "type": "image", "mimeType": "…", "data": "", "uri": "codeaw-blob:<sha256>" }`;

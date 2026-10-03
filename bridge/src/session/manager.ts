@@ -7,6 +7,7 @@ import type { PushNotifier, PushKind } from "../notify/ntfy.js";
 import { logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import { compactLog } from "./compact.js";
+import { parentToolCallId } from "./subagent.js";
 import { newEpoch, type SessionStore } from "./store.js";
 import {
   codeawMeta,
@@ -70,7 +71,7 @@ class BridgeSession {
   backendGen = 0;
   suppressUpdates = false;
   activating?: Promise<void>;
-  midRun?: { type: string; mid: string };
+  midRun?: { type: string; mid: string; parent?: string };
   lastActivity = Date.now();
   stale = false;
   emitted?: { state: TurnState; queued: number };
@@ -257,11 +258,12 @@ export class SessionManager implements AgentHandlers {
     if (isChunk(update)) {
       update = this.externalizeImages(update);
       const type = update.sessionUpdate as string;
+      const parent = parentToolCallId(update);
       let mid: string;
       if (typeof update.messageId === "string" && update.messageId) mid = update.messageId;
-      else if (s.midRun?.type === type) mid = s.midRun.mid;
+      else if (s.midRun?.type === type && s.midRun.parent === parent) mid = s.midRun.mid;
       else mid = `m${s.meta.lastSeq + 1}`;
-      s.midRun = { type, mid };
+      s.midRun = { type, mid, parent };
       update = withCodeawMeta(update, { mid });
     } else if (!SNAPSHOT_UPDATES.has(update.sessionUpdate)) {
       s.midRun = undefined;

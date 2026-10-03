@@ -220,7 +220,7 @@ class _TimelineList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = controller.timeline.items;
+    final items = controller.timeline.rootItems;
     final running = controller.running;
     if (items.isEmpty && !running) {
       return Center(

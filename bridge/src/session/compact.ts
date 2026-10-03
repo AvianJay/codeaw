@@ -1,5 +1,6 @@
 import type { LogEntry, UpdateEntry } from "./types.js";
 import { codeawMeta, isChunk } from "./types.js";
+import { parentToolCallId } from "./subagent.js";
 import { emptyToolCall, mergeToolCall, toolCallToUpdate, type ToolCallState } from "./toolcall.js";
 
 /** Snapshot-type updates: only the latest one matters. */
@@ -8,7 +9,7 @@ const KEEP_LAST = new Set(["plan", "available_commands_update", "current_mode_up
 type Slot =
   | { kind: "entry"; entry: LogEntry }
   | { kind: "message"; seq: number; t: number; first: any; parts: any[] }
-  | { kind: "tool"; seq: number; t: number; state: ToolCallState }
+  | { kind: "tool"; seq: number; t: number; state: ToolCallState; agentStatesSeq?: number }
   | { kind: "info"; seq: number; t: number; update: Record<string, any> };
 
 /**
@@ -52,7 +53,7 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
     const u = e.update as any;
     if (isChunk(e.update)) {
       const mid = codeawMeta(u).mid ?? `seq${e.seq}`;
-      const key = `${u.sessionUpdate}:${mid}`;
+      const key = JSON.stringify([u.sessionUpdate, parentToolCallId(u), mid]);
       let slot = messages.get(key);
       if (!slot) {
         slot = { kind: "message", seq: e.seq, t: e.t, first: u, parts: [] };
@@ -76,6 +77,7 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
         slots.push(slot);
       }
       slot.seq = Math.max(slot.seq, e.seq);
+      if (u.rawInput?.agentsStates && typeof u.rawInput.agentsStates === "object") slot.agentStatesSeq = e.seq;
       slot.state = mergeToolCall(slot.state, u);
       return;
     }
@@ -102,9 +104,16 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
           out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
         }
         break;
-      case "tool":
-        out.push({ seq: slot.seq, t: slot.t, kind: "update", update: toolCallToUpdate(slot.state) } as UpdateEntry);
+      case "tool": {
+        const update = toolCallToUpdate(slot.state);
+        // A later title/status update must not make an old child-state snapshot
+        // override a newer report from a different collaboration tool on replay.
+        if (slot.agentStatesSeq !== undefined) {
+          update._meta = { ...update._meta, codeaw: { agentStatesSeq: slot.agentStatesSeq } };
+        }
+        out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
         break;
+      }
       case "info":
         out.push({ seq: slot.seq, t: slot.t, kind: "update", update: slot.update } as UpdateEntry);
         break;

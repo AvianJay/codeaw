@@ -160,6 +160,21 @@ const app = acp
           await send({ sessionUpdate: "tool_call_update", toolCallId: "e1", status: "completed", content: [{ type: "content", content: { type: "text", text: "Edited 1 line" } }] });
           break;
         }
+        case "subagents": {
+          const childMeta = { claudeCode: { parentToolUseId: "delegate" } };
+          await send({ sessionUpdate: "tool_call", toolCallId: "delegate", title: "Review the patch", kind: "other", status: "in_progress", rawInput: { description: "Review the patch", prompt: "Check correctness and tests", subagent_type: "Explore" }, _meta: { claudeCode: { toolName: "Agent" } } });
+          // Explicit IDs are allowed to repeat in distinct subagent transcripts.
+          await send({ sessionUpdate: "agent_message_chunk", messageId: "shared", content: { type: "text", text: "Main answer" } });
+          await send({ sessionUpdate: "agent_message_chunk", messageId: "shared", content: { type: "text", text: "Child answer" }, _meta: childMeta });
+          await send({ sessionUpdate: "tool_call", toolCallId: "child-read", title: "Read main.dart", kind: "read", status: "in_progress", _meta: childMeta });
+          await send({ sessionUpdate: "tool_call_update", toolCallId: "child-read", status: "completed" });
+          // Older adapters omit messageId: changing the owner must split the run.
+          await send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Root only" } });
+          await send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Child only" }, _meta: childMeta });
+          await send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: " continued" }, _meta: childMeta });
+          await send({ sessionUpdate: "tool_call_update", toolCallId: "delegate", status: "completed", rawOutput: "Review complete" });
+          break;
+        }
         case "perm": {
           await send({ sessionUpdate: "tool_call", toolCallId: "p1", title: "rm -rf build", kind: "delete", status: "pending" });
           const answer = await ctx.client.request("session/request_permission", {

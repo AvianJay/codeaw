@@ -39,7 +39,7 @@ export function bridgeClientCapabilities(): acp.ClientCapabilities {
     elicitation: { form: {} },
     session: { configOptions: { boolean: {} }, notices: {} },
     // Claude only reports structured shell output (terminal_info/output/exit) when this is set.
-    _meta: { terminal_output: true },
+    _meta: { terminal_output: true, "subagent-transcript": true },
   };
 }
 

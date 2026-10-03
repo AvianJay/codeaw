@@ -14,15 +14,17 @@ import '../common/code_view.dart';
 import '../common/diff_view.dart';
 import '../common/markdown.dart';
 import 'elicitation_sheet.dart';
+import 'subagent_card.dart';
 import 'turn_summary.dart';
 
 /// Builds the widget for one timeline item; rebuilt only when that item changes.
 class TimelineItemView extends StatelessWidget {
-  const TimelineItemView({super.key, required this.item, required this.controller, required this.isLast});
+  const TimelineItemView({super.key, required this.item, required this.controller, required this.isLast, this.depth = 0});
 
   final TimelineItem item;
   final SessionController controller;
   final bool isLast;
+  final int depth;
 
   @override
   Widget build(BuildContext context) {
@@ -34,7 +36,15 @@ class TimelineItemView extends StatelessWidget {
             : m.role == MessageRole.thought
                 ? ThoughtView(m)
                 : AgentMessageView(m, streaming: isLast && controller.running, client: controller.client, basePath: controller.cwd),
-        ToolItem t => ToolCallCard(t, controller: controller),
+        ToolItem t => controller.timeline.isSubagent(t)
+            ? SubagentCard(
+                tool: t,
+                timeline: controller.timeline,
+                nested: depth > 0,
+                report: _ToolDetails(t, showInput: false, showEmpty: false, excludeText: t.subagent?.task),
+                itemBuilder: (child) => TimelineItemView(key: ValueKey(child.key), item: child, controller: controller, isLast: false, depth: depth + 1),
+              )
+            : ToolCallCard(t, controller: controller),
         PermissionItem p => PermissionCard(p, controller: controller),
         ElicitationItem e => ElicitationCard(e, controller: controller),
         NoticeItem n => _Note(icon: Icons.info_outline_rounded, text: n.description == null ? n.title : '${n.title}\n${n.description}'),
@@ -319,15 +329,18 @@ class _ToolCallCardState extends State<ToolCallCard> {
 }
 
 class _ToolDetails extends StatelessWidget {
-  const _ToolDetails(this.t);
+  const _ToolDetails(this.t, {this.showInput = true, this.showEmpty = true, this.excludeText});
   final ToolItem t;
+  final bool showInput;
+  final bool showEmpty;
+  final String? excludeText;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final children = <Widget>[];
     final input = t.rawInput;
-    if (input is Map && input['command'] != null) {
+    if (showInput && input is Map && input['command'] != null) {
       final cmd = input['command'] is List ? (input['command'] as List).join(' ') : '${input['command']}';
       children.add(CodeBlock(code: '\$ $cmd', language: 'bash', wrap: true));
     }
@@ -350,7 +363,7 @@ class _ToolDetails extends StatelessWidget {
             children.add(BlockImage(block));
           } else {
             final text = blockText(block).trim();
-            if (text.isEmpty || (t.terminalOutput.isNotEmpty && text == t.terminalOutput.trim())) continue;
+            if (text.isEmpty || text == excludeText || (t.terminalOutput.isNotEmpty && text == t.terminalOutput.trim())) continue;
             children.add(_TextResult(text));
           }
         case 'terminal':
@@ -365,7 +378,7 @@ class _ToolDetails extends StatelessWidget {
         children.add(_TextResult(out.trim()));
       } else if (out is Map && out['formatted_output'] is String && t.terminalOutput.isEmpty) {
         children.add(CodeBlock(code: (out['formatted_output'] as String).trimRight(), maxHeight: 320, highlight: false));
-      } else if (input != null && input is! String && !(input is Map && (input['command'] != null || input.isEmpty))) {
+      } else if (showInput && input != null && input is! String && !(input is Map && (input['command'] != null || input.isEmpty))) {
         children.add(CodeBlock(code: const JsonEncoder.withIndent('  ').convert(input), language: 'json', maxHeight: 240));
       }
     }
@@ -381,6 +394,7 @@ class _ToolDetails extends StatelessWidget {
           ),
       ]));
     }
+    if (children.isEmpty && !showEmpty) return const SizedBox.shrink();
     if (children.isEmpty) children.add(Text('（沒有輸出）', style: TextStyle(fontSize: 12, color: scheme.outline)));
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),

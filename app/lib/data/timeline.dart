@@ -1,10 +1,13 @@
 import 'package:flutter/foundation.dart';
 
+import 'subagent.dart';
+
 /// Base of everything shown in a session's conversation. Items are mutable and notify
 /// their own listeners, so a streaming chunk only rebuilds the bubble it belongs to.
 abstract class TimelineItem extends ChangeNotifier {
   TimelineItem(this.key);
   final String key;
+  String? parentToolCallId;
   bool _dirty = false;
 
   void markDirty() => _dirty = true;
@@ -53,6 +56,8 @@ class ToolItem extends TimelineItem {
   String? terminalId;
   final meta = <String, dynamic>{};
 
+  SubagentInfo? get subagent => SubagentInfo.fromTool(name: name, title: title, input: rawInput, output: rawOutput, metadata: meta);
+
   void merge(Map<String, dynamic> u) {
     for (final key in const ['title', 'kind', 'status', 'name', 'rawInput', 'rawOutput']) {
       final v = u[key];
@@ -82,6 +87,7 @@ class ToolItem extends TimelineItem {
     final l = u['locations'];
     if (l is List) locations = l.whereType<Map<String, dynamic>>().toList();
     final m = u['_meta'];
+    parentToolCallId = subagentParentId(m) ?? parentToolCallId;
     if (m is Map) {
       m.forEach((key, value) {
         if (key == 'terminal_output' || key == 'terminal_output_delta') {
@@ -205,6 +211,12 @@ class Timeline extends ChangeNotifier {
   final items = <TimelineItem>[];
   final _byKey = <String, TimelineItem>{};
   final _dirty = <TimelineItem>{};
+  List<TimelineItem> _rootItems = [];
+  final _children = <String, List<TimelineItem>>{};
+  final _parents = <String, ToolItem>{};
+  final _agentStates = <String, ({int revision, Map state})>{};
+  int _revision = 0;
+  bool _hierarchyDirty = false;
   bool _structureChanged = false;
   bool _snapshotChanged = false;
   int _anon = 0;
@@ -228,6 +240,81 @@ class Timeline extends ChangeNotifier {
   ToolItem? get activeTool => _activeTools.keys.lastOrNull;
   TurnActivity get activity => activeTool == null ? _activity : TurnActivity.tool;
 
+  /// Preserve the flat log for replay while presenting attributed child activity
+  /// under its delegating tool. Missing parents stay visible at the root.
+  List<TimelineItem> get rootItems {
+    if (_hierarchyDirty) _rebuildHierarchy();
+    return _rootItems;
+  }
+
+  List<TimelineItem> childrenOf(ToolItem tool) {
+    if (_hierarchyDirty) _rebuildHierarchy();
+    return _children[tool.toolCallId] ?? const [];
+  }
+
+  bool isSubagent(ToolItem tool) => tool.subagent != null || childrenOf(tool).isNotEmpty;
+
+  SubagentStatus statusOfSubagent(ToolItem tool) {
+    final info = tool.subagent;
+    final ids = info?.threadIds ?? <String>[];
+    if (ids.any(_agentStates.containsKey)) {
+      final states = [for (final id in ids) subagentStatusOf(_agentStates[id]?.state['status'])];
+      for (final status in [SubagentStatus.running, SubagentStatus.pending, SubagentStatus.failed, SubagentStatus.cancelled, SubagentStatus.disconnected, SubagentStatus.unknown]) {
+        if (states.contains(status)) return status;
+      }
+      return SubagentStatus.completed;
+    }
+    if (info?.launchOnly == true && tool.status == 'completed') return SubagentStatus.unknown;
+    return subagentStatusOf(tool.status);
+  }
+
+  String? resultOfSubagent(ToolItem tool) {
+    final messages = [for (final id in tool.subagent?.threadIds ?? <String>[])
+      if (nonEmptyString(_agentStates[id]?.state['message']) case final String message) message];
+    return messages.isEmpty ? null : messages.join('\n\n');
+  }
+
+  void _rebuildHierarchy() {
+    _hierarchyDirty = false;
+    _parents.clear();
+    _children.clear();
+    _rootItems = [];
+    for (final item in items) {
+      final candidate = item.parentToolCallId == null ? null : _byKey['tool:${item.parentToolCallId}'];
+      ToolItem? parent = candidate is ToolItem ? candidate : null;
+      TimelineItem? ancestor = parent;
+      final seen = {item.key};
+      while (ancestor != null) {
+        if (!seen.add(ancestor.key)) { parent = null; break; }
+        ancestor = ancestor.parentToolCallId == null ? null : _byKey['tool:${ancestor.parentToolCallId}'];
+      }
+      if (parent == null) {
+        _rootItems.add(item);
+      } else {
+        _parents[item.key] = parent;
+        (_children[parent.toolCallId] ??= []).add(item);
+      }
+    }
+  }
+
+  void _recordAgentStates(Map<String, dynamic> update, int revision) {
+    final states = objectMap(objectMap(update['rawInput'])['agentsStates']);
+    if (states.isEmpty) return;
+    var changed = false;
+    for (final entry in states.entries) {
+      if (entry.key is! String || entry.value is! Map) continue;
+      final previous = _agentStates[entry.key];
+      if (previous != null && previous.revision > revision) continue;
+      _agentStates[entry.key as String] = (revision: revision, state: entry.value as Map);
+      changed = true;
+    }
+    if (changed) {
+      for (final item in items.whereType<ToolItem>()) {
+        if (item.subagent?.threadIds.any(states.containsKey) == true) _touch(item);
+      }
+    }
+  }
+
   /// The bridge's start time survives replay, permission waits and queued prompts.
   /// Older bridges fall back to the time the running state was first observed.
   void setTurnState(String value, {num? startedAt, DateTime? observedAt, String? promptId}) {
@@ -237,7 +324,7 @@ class Timeline extends ChangeNotifier {
           ? DateTime.fromMillisecondsSinceEpoch(startedAt.toInt(), isUtc: true)
           : turnStartedAt ?? observedAt ?? DateTime.now();
       if (currentTurn == null || currentTurn!.startedAt != turnStartedAt) {
-        final prompts = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user);
+        final prompts = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.parentToolCallId == null);
         final prompt = promptId == null
             ? prompts.where((m) => !m.steered && (!m.queued || m.dequeued == 'started')).lastOrNull
             : prompts.where((m) => m.promptId == promptId).lastOrNull;
@@ -269,6 +356,12 @@ class Timeline extends ChangeNotifier {
     items.clear();
     _byKey.clear();
     _dirty.clear();
+    _rootItems = [];
+    _children.clear();
+    _parents.clear();
+    _agentStates.clear();
+    _revision = 0;
+    _hierarchyDirty = false;
     plan = null;
     commands = const [];
     modeId = null;
@@ -286,12 +379,14 @@ class Timeline extends ChangeNotifier {
     final item = make();
     _byKey[key] = item;
     items.add(item);
+    _hierarchyDirty = true;
     _structureChanged = true;
     return item;
   }
 
   void _add(TimelineItem item) {
     items.add(item);
+    _hierarchyDirty = true;
     _structureChanged = true;
   }
 
@@ -306,7 +401,9 @@ class Timeline extends ChangeNotifier {
     final at = timestamp == null ? DateTime.now() : DateTime.fromMillisecondsSinceEpoch(timestamp, isUtc: true);
     if (method == 'session/update') {
       final u = params['update'];
-      if (u is Map<String, dynamic>) _applyUpdate(u, at);
+      final seq = (((params['_meta'] as Map?)?['codeaw'] as Map?)?['seq'] as num?)?.toInt();
+      if (seq != null && seq > _revision) _revision = seq;
+      if (u is Map<String, dynamic>) _applyUpdate(u, at, seq ?? ++_revision);
       return true;
     }
     if (method == '_codeaw/event') {
@@ -317,7 +414,7 @@ class Timeline extends ChangeNotifier {
     return false;
   }
 
-  void _applyUpdate(Map<String, dynamic> u, DateTime at) {
+  void _applyUpdate(Map<String, dynamic> u, DateTime at, int revision) {
     final type = u['sessionUpdate'];
     switch (type) {
       case 'user_message_chunk' || 'agent_message_chunk' || 'agent_thought_chunk':
@@ -331,7 +428,11 @@ class Timeline extends ChangeNotifier {
         if (role != MessageRole.user) {
           _recordActivity(role == MessageRole.thought ? TurnActivity.thinking : TurnActivity.responding, at);
         }
-        final item = _upsert('$type:$mid', () => MessageItem('$type:$mid', role, mid));
+        final parent = subagentParentId(u['_meta']);
+        final key = parent == null ? '$type:$mid' : '$type:subagent:${parent.length}:$parent:$mid';
+        final item = _upsert(key, () => MessageItem(key, role, mid));
+        if (item.parentToolCallId != parent) _hierarchyDirty = _structureChanged = true;
+        item.parentToolCallId = parent;
         if (codeaw != null) {
           item.promptId ??= codeaw['promptId'] as String?;
           if (codeaw['queued'] == true) item.queued = true;
@@ -347,7 +448,7 @@ class Timeline extends ChangeNotifier {
           }
           final turn = currentTurn;
           if (turn != null) {
-            if (role != MessageRole.user) {
+            if (role != MessageRole.user && parent == null) {
               if (!turn.messages.contains(item)) turn.messages.add(item);
               if (content['type'] == 'text') turn.recordText(content['text'] as String? ?? '');
             } else if (item.steered && !turn.steeredPrompts.contains(item)) {
@@ -360,8 +461,12 @@ class Timeline extends ChangeNotifier {
         final before = (activeTool, activeTool?.title, activeTool?.kind, activity);
         final id = '${u['toolCallId']}';
         final item = _upsert('tool:$id', () => ToolItem('tool:$id', id));
+        final oldParent = item.parentToolCallId;
         item.merge(u);
+        if (oldParent != item.parentToolCallId) _hierarchyDirty = _structureChanged = true;
         _dirty.add(item);
+        final statesRevision = objectMap(objectMap(u['_meta'])['codeaw'])['agentStatesSeq'];
+        _recordAgentStates(u, statesRevision is num ? statesRevision.toInt() : revision);
         if (turnStartedAt == null || !at.isBefore(turnStartedAt!)) {
           if (item.status == 'pending' || item.status == 'in_progress') {
             _activeTools.putIfAbsent(item, () => at);
@@ -401,7 +506,7 @@ class Timeline extends ChangeNotifier {
         var turn = currentTurn;
         if (e['state'] == 'idle' && completed != null && turn == null) {
           final promptId = completed['promptId'] as String?;
-          final prompt = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.promptId == promptId).lastOrNull;
+          final prompt = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.parentToolCallId == null && m.promptId == promptId).lastOrNull;
           turn = TurnSummaryItem(
             'turn:$promptId',
             startedAt: DateTime.fromMillisecondsSinceEpoch((completed['startedAt'] as num).toInt(), isUtc: true),
@@ -460,6 +565,18 @@ class Timeline extends ChangeNotifier {
 
   /// Notifies item and list listeners for everything applied since the last flush.
   void flush() {
+    if (_hierarchyDirty) {
+      _rebuildHierarchy();
+      _structureChanged = true;
+    }
+    // A collapsed parent still reflects the latest child status and activity.
+    for (final item in _dirty.toList()) {
+      var parent = _parents[item.key];
+      while (parent != null) {
+        _touch(parent);
+        parent = _parents[parent.key];
+      }
+    }
     for (final item in _dirty) {
       item.flush();
     }

@@ -3,6 +3,7 @@
  * Used to prove that a compacted replay reduces to the same timeline as the raw log.
  */
 import { emptyToolCall, mergeToolCall, type ToolCallState } from "../src/session/toolcall.js";
+import { parentToolCallId } from "../src/session/subagent.js";
 
 export interface Timeline {
   items: any[];
@@ -35,7 +36,8 @@ export function reduce(messages: { method: string; params: any }[]): Timeline {
         case "agent_message_chunk":
         case "agent_thought_chunk": {
           const mid = u._meta?.codeaw?.mid;
-          const item = upsert(`${u.sessionUpdate}:${mid}`, () => ({ kind: u.sessionUpdate, mid, parts: [] as any[] }));
+          const parent = parentToolCallId(u);
+          const item = upsert(JSON.stringify([u.sessionUpdate, parent, mid]), () => ({ kind: u.sessionUpdate, mid, ...(parent ? { parent } : {}), parts: [] as any[] }));
           const last = item.parts[item.parts.length - 1];
           if (u.content?.type === "text" && last?.type === "text") last.text += u.content.text;
           else item.parts.push({ ...u.content });
