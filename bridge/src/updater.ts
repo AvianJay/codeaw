@@ -227,8 +227,14 @@ export async function verifiedBridgeInstaller(file: string, status: BridgeUpdate
   const directory = (checks.installation ?? bridgeInstallation)();
   if (!directory || status.state !== "ready" || status.kind !== "installer" || !status.file || !status.release) throw new Error("No verified bridge installer is ready");
   const serviceInstalled = checks.serviceInstalled ?? ((config: string) => {
-    const service = spawnSync("sc.exe", ["query", serviceName(config)], { windowsHide: true, stdio: "ignore", timeout: 5000 });
-    if (service.error || (service.status !== 0 && service.status !== 1060)) throw new Error("Cannot verify Windows service status before updating.");
+    const service = spawnSync("sc.exe", ["query", serviceName(config)], {
+      windowsHide: true, stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", timeout: 5000, maxBuffer: 64 * 1024,
+    });
+    // Windows Bun builds truncate 1060 (ERROR_SERVICE_DOES_NOT_EXIST) to 36.
+    // Require sc.exe's numeric diagnostic too; exit 36 alone is not proof of absence.
+    const missing = service.status === 1060 || (service.status === (1060 & 0xff)
+      && /^\[SC\][^\r\n]*\b1060:/m.test(service.stdout ?? ""));
+    if (service.error || (service.status !== 0 && !missing)) throw new Error("Cannot verify Windows service status before updating.");
     return service.status === 0;
   });
   for (const config of new Set([file, defaultConfigFile()])) {
