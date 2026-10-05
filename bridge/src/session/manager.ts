@@ -752,6 +752,8 @@ export class SessionManager implements AgentHandlers {
     return s;
   }
 
+  uploadCwd(id: unknown): string { return this.requireLoaded(id).meta.cwd; }
+
   // ───────────────────────────── client → bridge ─────────────────────────────
 
   async newSession(c: ClientHandle, params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {

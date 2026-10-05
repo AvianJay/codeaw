@@ -288,6 +288,11 @@ class _SessionsPageState extends State<SessionsPage> {
                       ),
                     ),
                     IconButton(
+                      tooltip: '用量與額度',
+                      icon: const Icon(Icons.donut_large_rounded),
+                      onPressed: () => _navigate('/usage'),
+                    ),
+                    IconButton(
                       tooltip: '設定',
                       icon: const Icon(Icons.settings_outlined),
                       onPressed: () => _navigate('/settings'),
@@ -328,6 +333,11 @@ class _SessionsPageState extends State<SessionsPage> {
               ],
             ),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.donut_large_rounded),
+                tooltip: '用量與額度',
+                onPressed: () => context.push('/usage'),
+              ),
               IconButton(
                 icon: const Icon(Icons.terminal_rounded),
                 tooltip: '終端機',
@@ -419,7 +429,7 @@ class _SessionTile extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 4, vertical: 2),
       child: ListTile(
         selected: selected,
-        selectedTileColor: scheme.primaryContainer.withValues(alpha: .6),
+        selectedTileColor: scheme.primary.withValues(alpha: .09),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding: EdgeInsets.symmetric(horizontal: compact ? 10 : 12),
         leading: AgentAvatar(

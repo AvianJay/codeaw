@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
@@ -18,7 +20,12 @@ class SessionMessage {
   String get sessionId => params['sessionId'] as String? ?? '';
 }
 
-typedef ServerRequestHandler = Future<Object?> Function(String method, Map<String, dynamic> params, CancelToken token);
+typedef ServerRequestHandler =
+    Future<Object?> Function(
+      String method,
+      Map<String, dynamic> params,
+      CancelToken token,
+    );
 
 /// Keeps one WebSocket to the bridge alive: connects, initializes, reconnects with backoff,
 /// and exposes typed helpers. Session state lives in [SessionController]s.
@@ -35,9 +42,13 @@ class BridgeClient extends ChangeNotifier {
   // Synchronous on purpose: a replayed entry must reach its SessionController before the
   // `session/load` response does, or the response's lastSeq would mark it as a duplicate.
   final _messages = StreamController<SessionMessage>.broadcast(sync: true);
-  final _activity = StreamController<Map<String, dynamic>>.broadcast(sync: true);
+  final _activity = StreamController<Map<String, dynamic>>.broadcast(
+    sync: true,
+  );
   final _connected = StreamController<void>.broadcast();
-  final _terminalEvents = StreamController<Map<String, dynamic>>.broadcast(sync: true);
+  final _terminalEvents = StreamController<Map<String, dynamic>>.broadcast(
+    sync: true,
+  );
 
   /// Updates/events/replays for sessions.
   Stream<SessionMessage> get messages => _messages.stream;
@@ -83,7 +94,17 @@ class BridgeClient extends ChangeNotifier {
         _attempt = 0;
         if (_disposed) break;
       }
-      final delay = Duration(milliseconds: [500, 1000, 2000, 4000, 8000, 15000, 30000][_attempt.clamp(0, 6)]);
+      final delay = Duration(
+        milliseconds: [
+          500,
+          1000,
+          2000,
+          4000,
+          8000,
+          15000,
+          30000,
+        ][_attempt.clamp(0, 6)],
+      );
       _attempt++;
       _wake = Completer<void>();
       await Future.any([Future<void>.delayed(delay), _wake!.future]);
@@ -99,7 +120,11 @@ class BridgeClient extends ChangeNotifier {
         final ws = connectBridgeSocket(url, host.token);
         _ws = ws;
         final done = Completer<void>();
-        final peer = JsonRpcPeer(send: ws.sink.add, onRequest: _handleRequest, onNotification: _handleNotification);
+        final peer = JsonRpcPeer(
+          send: ws.sink.add,
+          onRequest: _handleRequest,
+          onNotification: _handleNotification,
+        );
         ws.stream.listen(
           (data) {
             if (data is String) peer.handle(data);
@@ -119,38 +144,53 @@ class BridgeClient extends ChangeNotifier {
           await ws.sink.close();
           return null;
         }
-        final init = await peer.request('initialize', {
-          'protocolVersion': 1,
-          'clientCapabilities': {
-            'elicitation': {'form': {}},
-            'session': {
-              'configOptions': {'boolean': {}},
-            },
-          },
-          'clientInfo': {'name': 'codeaw-app', 'title': 'codeaw', 'version': '0.1.0'},
-        }).timeout(const Duration(seconds: 10)) as Map<String, dynamic>;
+        final init =
+            await peer
+                    .request('initialize', {
+                      'protocolVersion': 1,
+                      'clientCapabilities': {
+                        'elicitation': {'form': {}},
+                        'session': {
+                          'configOptions': {'boolean': {}},
+                        },
+                      },
+                      'clientInfo': {
+                        'name': 'codeaw-app',
+                        'title': 'codeaw',
+                        'version': '0.1.0',
+                      },
+                    })
+                    .timeout(const Duration(seconds: 10))
+                as Map<String, dynamic>;
         if (_disposed) {
           peer.close();
           await ws.sink.close();
           return null;
         }
         final meta = (init['_meta'] as Map?)?['codeaw'] as Map?;
-        agents = ((meta?['agents'] as List?) ?? const []).whereType<Map<String, dynamic>>().map(AgentInfo.fromJson).toList();
+        agents = ((meta?['agents'] as List?) ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .map(AgentInfo.fromJson)
+            .toList();
         bridgeHost = meta?['host'] as String?;
         activeUrl = url;
         lastError = null;
-        if (host.urls.first != url) host = host.withUrls([url, ...host.urls.where((u) => u != url)]);
+        if (host.urls.first != url) {
+          host = host.withUrls([url, ...host.urls.where((u) => u != url)]);
+        }
         _setStatus(ConnStatus.online);
         peer.notify('_codeaw/client/state', {'foreground': _foreground});
         _connected.add(null);
-        return (closed: done.future.then<void>((_) {
-          peer.close();
-          if (identical(_peer, peer)) {
-            _peer = null;
-            _ws = null;
-            _setStatus(ConnStatus.offline);
-          }
-        }));
+        return (
+          closed: done.future.then<void>((_) {
+            peer.close();
+            if (identical(_peer, peer)) {
+              _peer = null;
+              _ws = null;
+              _setStatus(ConnStatus.offline);
+            }
+          }),
+        );
       } catch (e) {
         if (_disposed) return null;
         errors.add(e is RpcError ? e.detail : '連線失敗（${e.runtimeType}）');
@@ -167,7 +207,11 @@ class BridgeClient extends ChangeNotifier {
     return null;
   }
 
-  Future<Object?> _handleRequest(String method, Map<String, dynamic> params, CancelToken token) async {
+  Future<Object?> _handleRequest(
+    String method,
+    Map<String, dynamic> params,
+    CancelToken token,
+  ) async {
     final handler = onServerRequest;
     if (handler == null) throw RpcError(-32601, 'Method not found: $method');
     return handler(method, params, token);
@@ -205,7 +249,10 @@ class BridgeClient extends ChangeNotifier {
 
   void setForeground(bool value, {String? activeSessionId}) {
     _foreground = value;
-    notify('_codeaw/client/state', {'foreground': value, 'activeSessionId': ?activeSessionId});
+    notify('_codeaw/client/state', {
+      'foreground': value,
+      'activeSessionId': ?activeSessionId,
+    });
     if (value && status == ConnStatus.offline) reconnectNow();
   }
 
@@ -221,9 +268,38 @@ class BridgeClient extends ChangeNotifier {
   }
 
   /// Authenticated URL for bridge-hosted bytes (blobs, raw files).
-  Uri httpUri(String path, [Map<String, String>? query]) => host.httpUri(activeUrl ?? host.urls.first, path, {...?query, if (kIsWeb) 'token': host.token});
+  Uri httpUri(String path, [Map<String, String>? query]) => host.httpUri(
+    activeUrl ?? host.urls.first,
+    path,
+    {...?query, if (kIsWeb) 'token': host.token},
+  );
 
-  Map<String, String> get authHeaders => {'Authorization': 'Bearer ${host.token}'};
+  Map<String, String> get authHeaders => {
+    'Authorization': 'Bearer ${host.token}',
+  };
+
+  Future<Map<String, dynamic>> uploadFile(
+    String sessionId,
+    String name,
+    Uint8List bytes,
+  ) async {
+    if (bytes.length > 20 * 1024 * 1024) {
+      throw const FormatException('檔案上限為 20 MiB');
+    }
+    final response = await http
+        .post(
+          httpUri('/api/uploads', {'sessionId': sessionId, 'name': name}),
+          headers: {...authHeaders, 'Content-Type': 'application/octet-stream'},
+          body: bytes,
+        )
+        .timeout(const Duration(minutes: 2));
+    final result =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    if (response.statusCode != 201) {
+      throw FormatException('${result['error'] ?? '檔案上傳失敗'}');
+    }
+    return Map<String, dynamic>.from(result['block'] as Map);
+  }
 
   @override
   void dispose() {

@@ -33,7 +33,7 @@ enum IosInstaller {
   altStore('AltStore'),
   sideStore('SideStore'),
   liveContainer('LiveContainer'),
-  lcSign('LCSign（下載 IPA 匯入）'),
+  lcSign('LCSign'),
   browser('瀏覽器下載');
 
   const IosInstaller(this.label);
@@ -49,7 +49,8 @@ enum IosInstaller {
       host: 'install',
       queryParameters: {'url': download.toString()},
     ),
-    lcSign || browser => download,
+    lcSign => Uri(scheme: 'loadcontroller', host: 'import', queryParameters: {'url': download.toString()}),
+    browser => download,
   };
 }
 

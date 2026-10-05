@@ -35,13 +35,17 @@ export class PathGuard {
   constructor(
     private readonly workspaces: () => string[],
     private readonly sessionCwds: () => string[],
+    private readonly allowAllPaths: () => boolean = () => false,
   ) {}
 
-  roots(): { path: string; source: "config" | "session" }[] {
+  get allowsAllPaths(): boolean { return this.allowAllPaths(); }
+
+  roots(): { path: string; source: "config" | "session" | "filesystem" }[] {
     const seen = new Set<string>();
-    const out: { path: string; source: "config" | "session" }[] = [];
-    const add = (p: string, source: "config" | "session") => {
+    const out: { path: string; source: "config" | "session" | "filesystem" }[] = [];
+    const add = (p: string, source: "config" | "session" | "filesystem") => {
       const real = realPath(p);
+      try { if (!fs.statSync(real).isDirectory()) return; } catch { return; }
       const key = process.platform === "win32" ? real.toLowerCase() : real;
       if (seen.has(key)) return;
       seen.add(key);
@@ -49,6 +53,11 @@ export class PathGuard {
     };
     for (const w of this.workspaces()) add(w, "config");
     for (const c of this.sessionCwds()) add(c, "session");
+    if (this.allowAllPaths()) {
+      if (process.platform === "win32") {
+        for (let letter = 65; letter <= 90; letter++) add(`${String.fromCharCode(letter)}:\\`, "filesystem");
+      } else add("/", "filesystem");
+    }
     return out;
   }
 
@@ -56,10 +65,16 @@ export class PathGuard {
     if (typeof p !== "string" || !p) throw acp.RequestError.invalidParams(undefined, "path is required");
     if (!path.isAbsolute(p)) throw acp.RequestError.invalidParams(undefined, "path must be absolute");
     const real = realPath(p);
-    if (!this.roots().some((r) => isInside(r.path, real))) {
+    if (!this.allowAllPaths() && !this.roots().some((r) => isInside(r.path, real))) {
       throw acp.RequestError.invalidParams(undefined, "Path is outside the allowed workspaces");
     }
     return real;
+  }
+
+  directory(p: unknown): string {
+    const dir = this.resolve(p);
+    try { if (fs.statSync(dir).isDirectory()) return dir; } catch { /* Explain before starting an agent. */ }
+    throw acp.RequestError.invalidParams(undefined, `Working directory does not exist or is not a directory on this bridge: ${dir}`);
   }
 }
 
@@ -69,6 +84,23 @@ export interface DirEntry {
   type: "file" | "dir" | "link";
   size: number;
   mtime: string;
+}
+
+/** Create exactly one child in a validated existing directory; never overwrite. */
+export function createDirectory(guard: PathGuard, parentPath: unknown, name: unknown) {
+  const parent = guard.directory(parentPath);
+  if (typeof name !== "string" || !name || name !== name.trim() || name.length > 200 ||
+      /[\\/<>:"|?*\x00-\x1f]/.test(name) || name === "." || name === ".." || /[. ]$/.test(name) ||
+      /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)) {
+    throw acp.RequestError.invalidParams(undefined, "資料夾名稱不可含路徑、特殊字元或 Windows 保留名稱");
+  }
+  const target = path.join(parent, name);
+  try { fs.mkdirSync(target, { recursive: false }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw acp.RequestError.invalidParams(undefined, "同名檔案或資料夾已存在，請換一個名稱");
+    throw acp.RequestError.invalidParams(undefined, "無法建立資料夾，請檢查電腦上的寫入權限");
+  }
+  return { path: guard.directory(target), name };
 }
 
 export function listDir(guard: PathGuard, p: unknown): { path: string; parent?: string; entries: DirEntry[] } {

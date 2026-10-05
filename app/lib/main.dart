@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import 'app_state.dart';
 import 'data/host.dart';
 import 'ui/chat/chat_page.dart';
+import 'ui/common/app_theme.dart';
 import 'ui/files/file_view_page.dart';
 import 'ui/files/files_page.dart';
 import 'ui/files/git_page.dart';
@@ -15,6 +16,7 @@ import 'ui/pair/pair_page.dart';
 import 'ui/settings/settings_page.dart';
 import 'ui/settings/update_page.dart';
 import 'ui/terminal/terminal_page.dart';
+import 'ui/usage/cpa_usage_page.dart';
 import 'ui/workspace/workspace_shell.dart';
 import 'util/browser_location.dart';
 
@@ -95,6 +97,7 @@ GoRouter createAppRouter(
           ),
         ),
         GoRoute(path: '/settings', builder: (_, _) => const SettingsPage()),
+        GoRoute(path: '/usage', builder: (_, _) => const CpaUsagePage()),
         GoRoute(
           path: '/terminal',
           builder: (_, s) => TerminalPage(
@@ -160,24 +163,7 @@ class _CodeawAppState extends State<CodeawApp> {
     super.dispose();
   }
 
-  ThemeData _theme(Brightness b) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xFF0F9D8A),
-      brightness: b,
-    );
-    return ThemeData(
-      colorScheme: scheme,
-      useMaterial3: true,
-      visualDensity: VisualDensity.standard,
-      appBarTheme: AppBarTheme(
-        backgroundColor: scheme.surface,
-        scrolledUnderElevation: 1,
-      ),
-      snackBarTheme: const SnackBarThemeData(
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
+  ThemeData _theme(Brightness b) => codeawTheme(b);
 
   @override
   Widget build(BuildContext context) {
@@ -200,6 +186,7 @@ class _CodeawAppState extends State<CodeawApp> {
             debugShowCheckedModeBanner: false,
             theme: _theme(Brightness.light),
             darkTheme: _theme(Brightness.dark),
+            themeMode: widget.state.themeMode,
             routerConfig: widget.router,
           );
         },

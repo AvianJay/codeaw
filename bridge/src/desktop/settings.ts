@@ -7,6 +7,7 @@ import { writeFileAtomic } from "../util/paths.js";
 const SettingsSchema = z.object({
   port: z.number().int().min(0).max(65535),
   workspaces: z.array(z.string().trim().min(1)).max(100),
+  allowAllPaths: z.boolean().optional(),
   idleSessionCloseMinutes: z.number().int().min(1).max(10080),
   idleAgentStopMinutes: z.number().int().min(1).max(10080),
   agents: z.record(z.string(), z.boolean()),
@@ -15,6 +16,7 @@ const SettingsSchema = z.object({
 /** Return only editable, non-secret fields. Agent env and notification tokens stay in the config. */
 export function desktopSettings(loaded: LoadedConfig) {
   return { file: loaded.file, port: loaded.config.listen.port, workspaces: loaded.config.workspaces,
+    allowAllPaths: loaded.config.filesystem.allowAllPaths,
     idleSessionCloseMinutes: loaded.config.idleSessionCloseMinutes,
     idleAgentStopMinutes: loaded.config.idleAgentStopMinutes,
     agents: Object.entries(loaded.config.agents).map(([id, agent]) => ({ id, name: agent.name, enabled: agent.enabled })) };
@@ -34,6 +36,7 @@ export function saveDesktopSettings(file: string, input: unknown): { loaded: Loa
   }
   doc.setIn(["listen", "port"], settings.port);
   doc.set("workspaces", [...new Set(settings.workspaces)]);
+  if (settings.allowAllPaths !== undefined) doc.setIn(["filesystem", "allowAllPaths"], settings.allowAllPaths);
   doc.set("idleSessionCloseMinutes", settings.idleSessionCloseMinutes);
   doc.set("idleAgentStopMinutes", settings.idleAgentStopMinutes);
   for (const [id, enabled] of Object.entries(settings.agents)) doc.setIn(["agents", id, "enabled"], enabled);

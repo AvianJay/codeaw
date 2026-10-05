@@ -80,11 +80,20 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 | `listen.hosts: auto` | 只綁這台電腦的 Tailscale IP 與 127.0.0.1，**不會**對區網開放 |
 | `listen.port` | 預設 7860 |
 | `workspaces` | 手機可以瀏覽、也可以在這些資料夾開新對話（已有 session 的資料夾一律允許） |
+| `filesystem.allowAllPaths` | 預設 `false`；在電腦上選擇允許瀏覽所有磁碟／資料夾後，手機可從 C:、D: 等磁碟開新對話 |
 | `agents.<id>.env` | 額外環境變數，例如給某個 agent 指定不同的 `ANTHROPIC_BASE_URL` |
 | `notifications.ntfy` | 推播設定，見下方 |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
+
+若需瀏覽工作區以外的資料夾，在 Windows 系統匣「設定…」勾選「允許已配對裝置瀏覽所有磁碟與資料夾」，或在 YAML 加入 `filesystem: { allowAllPaths: true }` 後重新載入 bridge。此設定只能從電腦端啟用。**所有已配對裝置都能瀏覽、讀取這個 Windows 帳號可存取的檔案，並在任意資料夾啟動 agent／終端機**，包括私人資料；建議只配對可信任的裝置。不需此功能時取消勾選。資料夾限制不是 agent 或 shell 的安全沙箱，其權限仍由作業系統及 agent 設定決定。不存在的工作目錄會在啟動 agent 前直接回報錯誤。
+
+在新對話的「瀏覽…」選好父目錄後，按右上角的「新增資料夾」圖示，輸入名稱並建立。App 會進入新目錄，按「選這裡」即可用它開新對話；專案檔案頁也有相同按鈕。建立只限目前允許存取的目錄，不會覆蓋同名檔案，也不會自動開啟所有磁碟權限。
+
+聊天輸入列的「附加檔案或圖片」可選擇 iOS「檔案」等原生檔案選擇器。一般檔案以已配對裝置的認證上傳至電腦的 `<session cwd>/.codeaw-uploads/`，每個檔案上限 20 MiB，使用唯一名稱避免覆蓋，送出訊息時提供 agent 可讀取的本機路徑。檔案保留在電腦供後續回合使用；不用時可自行清除該目錄。上傳或送出失敗會顯示錯誤，送出失敗保留草稿及附件供重試。相簿／拍照／剪貼簿圖片仍使用圖片內容傳送。
+
+手機橫向會維持精簡聊天版面；鍵盤只在輸入欄取得焦點時開啟，可點輸入欄外、拖曳聊天列表，或按「收起鍵盤」。切換對話與開啟選擇器會解除舊輸入欄焦點。Windows 互動終端機會將手機的 LF 換行轉為 PowerShell 的 Enter（CR），避免只出現 `>>` 而未執行。
 
 ### ACP agent 安裝器
 
@@ -169,7 +178,9 @@ Windows 上的 `codex` agent 預設啟用桌面同步。先在 ChatGPT desktop a
 
 支援雙向訊息、圖片、串流回覆、命令與檔案變更、桌面發起的回合、插話、手機排隊、停止、工具批准，以及一般問題／MCP 表單回覆。手機斷線時桌面工作繼續；桌面 IPC 斷線後 bridge 會重新尋找 owner 並補齊歷史。發送結果不明的訊息不會自動重送。選擇「停止桌面同步」只解除訂閱並取消尚未發送的手機排隊訊息，桌面正在執行的工作會繼續。
 
-沒有桌面 owner 的對話與從 codeaw 新建的對話，仍使用原有 ACP 模式。已經附加過桌面的 session 會記住這個連接方式：owner 不可用時會提示重新連接，不會悄悄改成另一個 runtime。模型／模式設定、刪除對話、特殊選擇器、密碼問題及 URL 授權流程，請在桌面操作。
+沒有桌面 owner 的對話與從 codeaw 新建的對話，仍使用原有 ACP 模式。已經附加過桌面的 session 會記住這個連接方式：owner 不可用時會提示重新連接，不會悄悄改成另一個 runtime。手機可修改模型、推理強度、權限模式與 Default／Plan 協作模式；變更交由桌面 owner 套用並確認，作用於下一回合，進行中的回合保持原設定。模型清單讀取本機 Codex catalog metadata，也可輸入自訂模型 ID；實際可用性依帳號及桌面版本。刪除對話、特殊選擇器、密碼問題及 URL 授權流程，請在桌面操作。
+
+回合進行中一般「送出」會直接插入目前回合，長按「送出」則排到下一回合。bridge 會提供桌面新版 IPC 所需的訊息還原上下文並檢查接受結果；插入未獲確認會回報錯誤，避免誤稱成功。切換下一回合的模型設定不會中斷插話所在的回合。
 
 桌面 IPC 是內部介面，桌面更新可能需要同步更新 bridge。bridge 會從已安裝 app 的程式包讀取 IPC 方法版本表，不讀取桌面認證檔。可以在 agent 設定中關閉桌面同步，或指定其他 IPC／程式包位置：
 
@@ -274,6 +285,8 @@ Windows 服務在沒有登入桌面時也能運行。登入後執行 `codeaw-bri
 
 Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly 下載 `codeaw-ios-unsigned.ipa`，以自己的簽署／側載工具重新簽署後安裝。Unsigned IPA 沒有 Apple 簽章或 provisioning profile，無法直接點開安裝，也不是 App Store／TestFlight 發行包。
 
+App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://import?url=<percent-encoded HTTPS IPA URL>`，直接讓 LCSign 下載並匯入 IPA，無須先在 Safari 下載再手動分享。此格式已由 [LCSign 官方安裝包](https://www.sign.lc/install) 的 URL scheme 與繁體中文說明確認。匯入後仍需在 LCSign 的「專案／檔案」頁面用原本的憑證與 bundle identifier 簽名並安裝，以保留資料；scheme 不會自動簽名。若未安裝 LCSign 或無法開啟，App 會提供瀏覽器下載備援。
+
 1. 安裝 Tailscale App，並登入同一個 tailnet。
 2. 安裝 codeaw App：[nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 的 `codeaw-arm64-v8a.apk` 或 `codeaw-universal.apk`（或用 `cd app && flutter build apk --release --target-platform=android-arm64` 自己建置）。
 3. 在電腦上執行 `codeaw-bridge pair`，用 App 的「掃描 QR code」掃終端機上的 QR。也可以手動輸入網址與配對碼；配對碼 5 分鐘內有效，只能用一次。
@@ -285,6 +298,16 @@ Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly
 - 輸入框上方的 chip 可以切換模式、模型與推理強度。Claude 的「Manual」模式會在每個危險操作前詢問；`dontAsk` 會直接拒絕沒有預先允許的工具。
 - 右上角可以瀏覽專案檔案，或查看 git 變更與 diff。
 - 「從電腦重新載入歷史」：如果你在終端機上又繼續聊了同一個 session，用這個重新同步。
+
+### CLI Proxy API 用量
+
+從首頁的用量圖示或「設定 → CPA 用量」開啟「用量與額度」，按「連接 CPA」填入 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的網址與 **Management Key**。這是 CPA 管理金鑰，不是模型呼叫用的 API key。網址可填伺服器根目錄（例如 `http://127.0.0.1:8317`）、`management.html`、反向代理前綴，或明確的 `/v0/management`、`/v8/management`；根目錄預設使用仍受支援的 v0 API。設定與金鑰保存在目前裝置的加密儲存，Web 則使用瀏覽器的加密儲存機制。
+
+由**已配對的 Windows bridge**連到 CPA，因此 `127.0.0.1` 指的是電腦，不是 iPhone；CPA 不必為手機額外開放 CORS。若 CPA 在其他電腦，需允許 bridge 存取其管理 API，依 [CPA 管理 API 文件](https://help.router-for.me/management/api) 設定遠端管理權限，並使用 HTTPS 或可信任的私有網路。Management Key 會經配對連線送到 bridge，再作為認證送到你指定的 CPA；bridge 不將金鑰寫入設定或日誌。
+
+帳號以精簡列表顯示 Codex、Claude、Grok、Antigravity 等類型、方案、剩餘百分比與本地時間的重置倒數。Codex／Claude 可顯示 5 小時、每週及服務商提供的其他視窗；Grok 顯示其每週 credits／每月額度，Antigravity 顯示模型群組。可搜尋、依類型篩選、下拉或逐帳號重新整理。剩餘重置次數只顯示 Codex 回傳的實際可用 reset credits，不以週內時間估算；重置時間已到也需重新整理確認額度。API key 帳號或其他服務商未提供配額時會顯示未知／不支援，不會假設 100%。
+
+用量查詢只讀取管理端帳號清單及固定的服務商用量／方案介面，不下載認證檔、不回傳服務商 token、不呼叫模型，也不兌換 reset credits。金鑰可在「CPA 連線設定」移除。App 另提供「設定 → 外觀」的跟隨系統／淺色／深色選擇。
 
 ### 推播（App 沒開時）
 

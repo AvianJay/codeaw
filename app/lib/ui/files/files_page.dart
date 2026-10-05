@@ -5,6 +5,7 @@ import '../../acp/jsonrpc.dart';
 import '../../app_state.dart';
 import '../../data/models.dart';
 import '../common/widgets.dart';
+import '../common/create_folder.dart';
 import 'file_view_page.dart';
 
 /// Directory listing on the PC (limited by the bridge to workspaces and session folders).
@@ -89,6 +90,14 @@ class _FilesPageState extends State<FilesPage> {
             ],
           ),
           actions: [
+            IconButton(
+              tooltip: '新增資料夾',
+              icon: const Icon(Icons.create_new_folder_outlined),
+              onPressed: _loading ? null : () async {
+                final path = await showCreateFolder(context, _path);
+                if (path != null && mounted) await _load(path);
+              },
+            ),
             IconButton(
               tooltip: '終端機',
               icon: const Icon(Icons.terminal_rounded),
