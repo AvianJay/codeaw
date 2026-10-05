@@ -97,10 +97,16 @@ persisted feature switches. The scroll-to-bottom widget is tested while new
 messages arrive without disturbing the reading position.
 
 `bridge/scripts/live-activity-real-e2e.ts` exercises real Codex, `gpt-6-luna` /
-`low`, against an isolated updated bridge. It verifies the command, project,
-turn timestamps, completion and reconnect for an unattached watcher. Optional
-`--desktop-session codex:<id>` must identify an idle dedicated chat that is open
-in Codex desktop. The installed bridge and primary work chat are not changed.
+`low`, against an isolated updated bridge by default. `--installed` instead
+tests the already-running installed bridge through a temporary paired device,
+which is revoked afterward; it does not restart the bridge. The test verifies
+the command, project, turn timestamps, completion and reconnect for an
+unattached watcher. Optional `--desktop-session codex:<id>` must identify an
+idle dedicated chat that is open in Codex desktop. The primary work chat is
+not changed. If ACP's bundled CLI does not list the requested model, set
+`agents.codex.env.CODEX_PATH` to a compatible installed Codex executable and
+reload the bridge before testing; setting it only in the test process does not
+affect an already-running bridge.
 Real APNs delivery has not been tested without a phone's token and matching
 Apple credentials; a transport fixture is not a substitute for that test.
 

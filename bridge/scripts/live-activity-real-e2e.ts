@@ -1,5 +1,6 @@
-/** Real Codex only, on an isolated localhost bridge. Never restarts the user's
- * installed bridge. --desktop-session must be a dedicated, idle test chat. */
+/** Real Codex only. Defaults to an isolated localhost bridge; --installed tests
+ * the already-running bridge without restarting it. --desktop-session must be
+ * a dedicated, idle test chat. Pairing credentials never reach the report. */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,25 +11,50 @@ import * as acp from "@agentclientprotocol/sdk";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
 import WebSocket from "ws";
 import { loadConfig } from "../src/config.js";
-import { startBridge } from "../src/bridge.js";
+import { startBridge, type Bridge } from "../src/bridge.js";
+import { requestControl } from "../src/desktop/control.js";
 import { CodexDesktopIpc } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopTurns } from "../src/backend/codex-desktop-state.js";
 
-const { values } = parseArgs({ options: { config: { type: "string" }, cwd: { type: "string" }, report: { type: "string" }, "desktop-session": { type: "string" } } });
+const { values } = parseArgs({ options: { config: { type: "string" }, cwd: { type: "string" }, report: { type: "string" }, installed: { type: "boolean", default: false }, "desktop-session": { type: "string" } } });
 if (!values.cwd) throw new Error("--cwd is required");
 const original = loadConfig(values.config);
 assert.ok(original.config.agents.codex, "Real Codex configuration required");
-const home = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-real-activity-"));
-const config = { ...original.config, agents: { codex: original.config.agents.codex }, notifications: {}, workspaces: [values.cwd] };
-const bridge = await startBridge({ ...original, config, home, file: path.join(home, "config.yaml"), dataDir: path.join(home, "data") }, { hosts: ["127.0.0.1"], port: 0 });
-const url = `ws://127.0.0.1:${bridge.port()}/acp`;
-const token = randomUUID() + randomUUID();
-const device = bridge.devices.addDeviceWithToken("Live Activity real regression", token);
+let bridge: Bridge | undefined;
+let token: string;
+let deviceId: string;
+let port: number;
+let installedBuild: number | undefined;
+if (values.installed) {
+  const status = await requestControl(original.file, { command: "status" });
+  assert.equal(status.state, "running", "Installed bridge must already be running");
+  port = status.port;
+  installedBuild = status.buildNumber;
+  const pairing = await requestControl(original.file, { command: "pair" });
+  const response = await fetch(`http://127.0.0.1:${port}/api/pair`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code: pairing.code, deviceName: "Live Activity real regression" }),
+  });
+  assert.equal(response.status, 200, "Temporary test-device pairing failed");
+  const paired = await response.json() as { token: string; deviceId: string };
+  token = paired.token; deviceId = paired.deviceId;
+} else {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-real-activity-"));
+  const config = { ...original.config, agents: { codex: original.config.agents.codex }, notifications: {}, workspaces: [values.cwd] };
+  bridge = await startBridge({ ...original, config, home, file: path.join(home, "config.yaml"), dataDir: path.join(home, "data") }, { hosts: ["127.0.0.1"], port: 0 });
+  token = randomUUID() + randomUUID();
+  deviceId = bridge.devices.addDeviceWithToken("Live Activity real regression", token).id;
+  port = bridge.port();
+}
+const url = `ws://127.0.0.1:${port}/acp`;
 const connections: acp.ClientConnection[] = [];
+const testSessions = new Set<string>();
+let senderForCleanup: Awaited<ReturnType<typeof connect>> | undefined;
 const checks: object[] = [];
 const ipc = new CodexDesktopIpc();
 let desktopSnapshot: any;
 let owner: string | undefined;
+let currentPhase: string | undefined;
 
 async function connect() {
   const received: { method: string; params: any }[] = [];
@@ -45,7 +71,10 @@ async function connect() {
     });
   const conn = app.connect(createWebSocketStream(url, { WebSocket: WebSocket as any, headers: { Authorization: `Bearer ${token}` } }));
   connections.push(conn);
-  const request = (method: string, params: unknown = {}) => conn.agent.request<any>(method, params as never);
+  const request = async (method: string, params: unknown = {}) => {
+    try { return await conn.agent.request<any>(method, params as never); }
+    catch (error) { throw new Error(`${method}: ${error instanceof Error ? error.message : String(error)}`); }
+  };
   await request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
   return { conn, received, request };
 }
@@ -55,13 +84,16 @@ async function waitFor(pred: () => boolean, timeout = 90000) {
 }
 try {
   const sender = await connect();
+  senderForCleanup = sender;
   let watcher = await connect();
   const phases = ["acp", ...(values["desktop-session"] ? ["desktop"] : [])];
   for (const phase of phases) {
+    currentPhase = phase;
     let id: string;
     if (phase === "acp") {
       const session = await sender.request("session/new", { cwd: values.cwd, mcpServers: [], _meta: { codeaw: { agentId: "codex" } } });
       id = session.sessionId;
+      testSessions.add(id);
     } else {
       id = values["desktop-session"]!;
       const nativeId = id.replace(/^codex:/, "");
@@ -123,16 +155,22 @@ try {
       thinkingUpdates: thoughts.length, thinkingExcerpts: thoughts.map((s) => s.work.summary), reconnectedWithoutChatAttachment: true, answer };
     checks.push(check); console.log(JSON.stringify(check));
     await sender.request("session/close", { sessionId: id });
+    testSessions.delete(id);
   }
 } catch (error) {
-  checks.push({ status: "failed", error: error instanceof Error ? error.message : String(error) });
+  checks.push({ phase: currentPhase, status: "failed", error: error instanceof Error ? error.message : String(error) });
   throw error;
 } finally {
-  if (values.report) fs.writeFileSync(values.report, JSON.stringify({ at: new Date().toISOString(), checks, realCodex: true, isolatedBridge: true, installedBridgeChanged: false }, null, 2));
+  if (values.report) fs.writeFileSync(values.report, JSON.stringify({ at: new Date().toISOString(), checks, realCodex: true, isolatedBridge: !values.installed, testedInstalledBridge: values.installed, installedBuild, bridgeRestartedByTest: false }, null, 2));
   if (owner) await ipc.broadcast("thread-stream-following-changed", { hostId: "local", conversationId: values["desktop-session"]!.replace(/^codex:/, ""), following: false }, [owner]).catch(() => {});
   ipc.close();
+  for (const sessionId of testSessions) await senderForCleanup?.request("session/close", { sessionId }).catch(() => {});
   for (const conn of connections) conn.close();
-  bridge.devices.revoke(device.id);
-  await bridge.stop();
+  if (bridge) {
+    bridge.devices.revoke(deviceId);
+    await bridge.stop();
+  } else {
+    await requestControl(original.file, { command: "revoke", id: deviceId });
+  }
   // Keep the unique test home for evidence; it contains no persistent pairing after revocation.
 }
