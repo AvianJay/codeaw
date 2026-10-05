@@ -16,6 +16,7 @@ import 'elicitation_sheet.dart';
 import 'items.dart';
 import 'subagent_panel.dart';
 import 'working_indicator.dart';
+import 'scroll_to_latest.dart';
 
 const _chatContentWidth = 960.0;
 
@@ -65,6 +66,7 @@ class _ChatPageState extends State<ChatPage> {
       }
     });
     state.client?.setForeground(true, activeSessionId: widget.sessionId);
+    state.liveActivity.follow(widget.sessionId);
   }
 
   @override
@@ -275,10 +277,13 @@ class _TimelineList extends StatelessWidget {
     }
     final extra = running ? 1 : 0;
     // Newest at the bottom: a reversed list keeps the view pinned to the end while streaming.
-    return ContentScrollFrame(
-      maxWidth: _chatContentWidth,
-      padding: const EdgeInsets.only(top: 8, bottom: 8),
-      builder: (context, padding) => ListView.builder(
+    return ScrollToLatest(
+      key: ValueKey(controller.sessionId),
+      builder: (context, scrollController) => ContentScrollFrame(
+        maxWidth: _chatContentWidth,
+        padding: const EdgeInsets.only(top: 8, bottom: 8),
+        builder: (context, padding) => ListView.builder(
+        controller: scrollController,
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         reverse: true,
         padding: padding,
@@ -300,6 +305,7 @@ class _TimelineList extends StatelessWidget {
             isLast: i == items.length - 1 || (i == items.length - 2 && items.last is! MessageItem),
           );
         },
+        ),
       ),
     );
   }

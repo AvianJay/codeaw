@@ -319,6 +319,8 @@ App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://impor
 
 ### 推播（App 沒開時）
 
+iOS 16.2+ 另提供「設定 → 即時動態」：鎖定畫面與 Dynamic Island 可顯示專案、執行時間、目前指令及精簡工作摘要，點擊回到該聊天。計時由 iOS 持續顯示；App 暫停後若要繼續更新指令、批准與完成狀態，需要另外設定 Apple APNs 並以具備推播權限的簽名安裝。沒有 APNs 時，兩分鐘後會標示「狀態待同步」。安裝時必須保留 Widget extension；[詳細設定、限制與測試](docs/live-activities.md)。聊天往上捲動時也會出現「捲到最底」按鈕。
+
 `codeaw-bridge init` 會產生一個隨機的 ntfy topic。在手機安裝 [ntfy](https://ntfy.sh)，然後在 App 的「設定 → 推播通知」點「在 ntfy App 訂閱」。之後當**沒有任何裝置連著**、而 agent 需要批准或已經做完時，就會收到推播，點一下會直接打開那個對話。
 
 推播內容預設只有「Claude Code 需要你的批准／已完成」，不會帶出對話內容（ntfy.sh 是公開的中繼伺服器）。要顯示 session 標題，請設定 `includeDetails: true`，或在 tailnet 內自架 ntfy。

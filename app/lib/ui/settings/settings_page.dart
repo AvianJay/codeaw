@@ -9,6 +9,7 @@ import '../../app_state.dart';
 import '../../data/bridge_client.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'live_activity_settings.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -179,6 +180,10 @@ class _SettingsPageState extends State<SettingsPage> {
                           onPressed: () => _restartAgent(a.id),
                         ),
                       ),
+                    if (state.liveActivity.supported) ...[
+                      const _Section('即時動態'),
+                      LiveActivitySettings(controller: state.liveActivity),
+                    ],
                     const _Section('推播通知（App 沒開時）'),
                     if (_ntfy == null)
                       const ListTile(title: Text('讀取中…'))

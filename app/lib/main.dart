@@ -137,7 +137,9 @@ class _CodeawAppState extends State<CodeawApp> {
   void _onLifecycle(AppLifecycleState s) {
     final foreground = s == AppLifecycleState.resumed;
     widget.state.notifier.foreground = foreground;
+    widget.state.liveActivity.foreground = foreground;
     widget.state.client?.setForeground(foreground);
+    if (foreground) unawaited(widget.state.liveActivity.refresh());
   }
 
   void _onLink(Uri uri) {

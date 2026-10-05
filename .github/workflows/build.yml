@@ -158,6 +158,8 @@ jobs:
       - run: flutter pub get
       - name: Build iOS without signing
         run: flutter build ios --release --no-codesign --build-name="$APP_VERSION" --build-number="$APP_BUILD_NUMBER" --dart-define="CODEAW_UPDATE_CHANNEL=$UPDATE_CHANNEL" --dart-define="CODEAW_UPDATE_REPOSITORY=$GITHUB_REPOSITORY"
+      - name: Verify embedded Live Activity extension
+        run: python3 ../scripts/verify-ios-live-activity.py build/ios/iphoneos/Runner.app
       - name: Package unsigned IPA
         run: |
           set -euo pipefail

@@ -7,6 +7,7 @@ import 'data/bridge_client.dart';
 import 'data/cpa_usage.dart';
 import 'data/host.dart';
 import 'data/notifications.dart';
+import 'data/live_activity.dart';
 import 'data/session_controller.dart';
 import 'data/sessions_model.dart';
 import 'data/terminal_controller.dart';
@@ -24,6 +25,7 @@ class AppState extends ChangeNotifier {
 
   final HostStore store;
   final LocalNotifier notifier;
+  final LiveActivityController liveActivity = LiveActivityController();
   final AppUpdater updater;
   final BridgeClient Function(HostConfig) _createClient;
   List<HostConfig> _hosts = const [];
@@ -51,6 +53,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     await notifier.init();
+    await liveActivity.initialize();
     final library = await store.load();
     final appearance = await store.loadAppearance();
     themeMode =
@@ -108,6 +111,7 @@ class AppState extends ChangeNotifier {
     client = c;
     hub = SessionHub(c);
     sessions = SessionsModel(c);
+    liveActivity.bind(c);
     terminals = TerminalHub(c);
     final usage = CpaController(
       request: (method, params) async {
@@ -147,6 +151,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _unbind() {
+    liveActivity.unbind();
     notifier.unwatch();
     _cpaReconnect?.cancel();
     _cpaReconnect = null;
@@ -166,6 +171,7 @@ class AppState extends ChangeNotifier {
   void dispose() {
     _unbind();
     notifier.dispose();
+    liveActivity.dispose();
     updater.dispose();
     super.dispose();
   }

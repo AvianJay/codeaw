@@ -430,7 +430,7 @@ releases use Bun's built-in PTY support.
 
 | direction | method | params |
 |---|---|---|
-| bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?}` — sent to **all** connections, attached or not |
+| bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?, turnPromptId?, turnStartedAt?, completedTurn?, work?}` — sent to **all** connections, attached or not |
 | bridge → client | `_codeaw/replay` | see `session/load` |
 | bridge → client | `_codeaw/event` | see event log |
 | bridge → client | `_codeaw/terminal/event` | see interactive terminals |
@@ -438,6 +438,42 @@ releases use Bun's built-in PTY support.
 | client → bridge | `_codeaw/session/detach` | `{sessionId}` — stop pushing this session's updates/requests to this connection |
 
 ## Push notifications
+
+### Live Activity extensions
+
+`work` is `{project, phase, summary, updatedAt}`. `phase` is `thinking`,
+`command`, `tool`, `responding`, `attention`, `completed`, `cancelled`, `error`
+or `disconnected` (keeps the turn identity while its desktop owner is offline;
+it is not treated as completion).
+`summary` is a bounded plain-text excerpt (180 Unicode code points) of a command
+or a summary/progress message already supplied by the agent. `project` is the
+working-directory name. Work changes are coalesced for 500 ms for socket clients.
+Turn/completion timestamps are Unix milliseconds and retain their existing
+protocol meanings. Old native turns and nested subagent text do not replace
+the current parent-turn activity.
+
+Authenticated requests:
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `_codeaw/activity/list` | `{}` | `{activities: [...]}` current work/turn snapshots without attaching to chat replay |
+| `_codeaw/live_activity/info` | `{}` | `{enabled, ready, environment?, includeDetails?, error?}` no key or token |
+| `_codeaw/live_activity/register` | `{activityId, sessionId, turnId, pushToken, includeDetails?}` | `{registered, ...info}`; binds to the authenticated device, accepts only its current/completed turn |
+| `_codeaw/live_activity/unregister` | `{activityId}` | `{}`; can remove only the requesting device's registration |
+
+The bridge's optional `notifications.liveActivity` configuration holds APNs
+team/key/bundle/environment values and a **PC-local** private-key path. It sends
+HTTP/2 ActivityKit updates with the app bundle's `.push-type.liveactivity` topic.
+Content state fields are `{project, agent, state, phase, summary, startedAt,
+endedAt?, updatedAt}`, with Unix **milliseconds** for its three time fields.
+Only APNs `timestamp`, `stale-date` and `dismissal-date` are Unix seconds.
+Details require consent in both PC config and phone settings. Push updates are
+coalesced for 15 seconds, use 120-second stale dates and 60-second heartbeats;
+end events retain the final display for 60 seconds. Registrations survive socket
+disconnects but are in memory and must be renewed after bridge restart.
+See [iOS Live Activities](live-activities.md) for signing/device prerequisites.
+
+### ntfy
 
 When an event needs attention (permission/elicitation request, turn finished,
 error) and **no client is connected at all**, the bridge waits
