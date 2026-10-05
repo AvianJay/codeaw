@@ -11,8 +11,12 @@ export function desktopEnvironment(env: NodeJS.ProcessEnv = process.env, platfor
 }
 
 export function resolveCommand(command: string, env = desktopEnvironment()): string | undefined {
-  const candidates = /[\\/]/.test(command) ? [command] : (env.PATH ?? "").split(path.delimiter).flatMap((directory) =>
-    process.platform === "win32" ? [path.join(directory, command), ...(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";")
+  // Copying process.env makes a plain object: Windows' Path/PATHEXT lookups
+  // must remain case-insensitive after config environment variables are merged.
+  const value = (name: string) => env[name] ?? (process.platform === "win32"
+    ? env[Object.keys(env).find((key) => key.toUpperCase() === name) ?? ""] : undefined);
+  const candidates = /[\\/]/.test(command) ? [command] : (value("PATH") ?? "").split(path.delimiter).flatMap((directory) =>
+    process.platform === "win32" ? [path.join(directory, command), ...(value("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";")
       .map((extension) => path.join(directory, command + extension))] : [path.join(directory, command)]);
   return candidates.find((candidate) => {
     try { fs.accessSync(candidate, process.platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK); return fs.statSync(candidate).isFile(); }

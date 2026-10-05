@@ -18,7 +18,7 @@ by the full regression suite.
 | Uploaded image enlargement | ACP BlockImage had no onTap, unlike Markdown images | Shared full-screen preview; own-image tap, double-tap zoom, drag, reset and close tests; authenticated blob source uses the same image provider |
 
 Local checks after integration with the macOS changes: bridge `npm test`
-(106 passed, 7 platform tests skipped on Windows), `npm run typecheck`, Flutter
+(108 passed, 7 platform tests skipped on Windows), `npm run typecheck`, Flutter
 `flutter test` (149 passed, 11 optional tests skipped), `flutter analyze` with
 no issues, and release Web build. Unit/widget checks use test fixtures.
 
@@ -45,6 +45,13 @@ part, erasing the caption. Distinct replay part indexes now retain text/images,
 and the latest steering/queue flags also survive compaction.
 Header screenshots covered 320/390 px portrait and 844 px landscape. CPA quota
 values in these browser checks came from the local management fixture.
+
+Installed-build tests also caught a regression from the merged macOS work:
+the new ACP command check read `PATH` from a copied Windows environment whose
+key was `Path`, rejecting an installed npm command shim. Command discovery now
+keeps Windows environment key lookups case-insensitive; tests cover the copied
+environment and an explicit PATH override. The final packaged bridge is tested
+again with real Codex, independently of the fake-agent checks.
 
 CPA API behavior was checked against [CLIProxyAPI management documentation](https://help.router-for.me/management/api)
 and [the official management UI](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/tree/ee79a794526a30c03748a8864a9ac6589a31833b).
