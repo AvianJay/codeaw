@@ -84,4 +84,6 @@ flutter {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // NotificationCompat.ProgressStyle and promoted (Live Update) notifications.
+    implementation("androidx.core:core:1.17.0")
 }

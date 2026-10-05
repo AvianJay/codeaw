@@ -26,6 +26,15 @@ $env:CODEAW_SCREENSHOTS = '1'
 flutter test --update-goldens test/adaptive_layout_test.dart
 ```
 
+Background progress (Settings → 背景進度, off by default) mirrors one running conversation into the system's live progress UI after the app leaves the foreground: the conversation on screen, or else the only running one. It is followed until its turn and queued prompts finish, or the app returns. `lib/data/live_activity.dart` arms the content over the `codeaw/live_activity` channel while the app is visible, because neither platform lets an app start these from the background:
+
+- Android (`LiveUpdates.kt`) starts a `dataSync` foreground service when the activity stops. The service keeps the bridge connection alive and shows a `ProgressStyle` notification with one segment per plan entry; Android 16 promotes it to a Live Update with a status bar chip. Older versions show it as an ongoing notification.
+- iOS 16.2+ (`LiveActivityChannel.swift` and the `CodeawLiveActivity` widget extension) requests a Live Activity for the Lock Screen and Dynamic Island as the scene resigns active. Updates continue while iOS lets the app run in the background (about 30 seconds). After that the activity is marked stale, and its elapsed timer keeps running until the app is opened.
+
+```sh
+flutter test test/live_activity_test.dart
+```
+
 ```sh
 flutter pub get
 flutter build web --release --no-web-resources-cdn
