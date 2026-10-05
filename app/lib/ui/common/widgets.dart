@@ -15,6 +15,18 @@ String timeAgo(DateTime? t) {
   return '${l.year}/${l.month}/${l.day}';
 }
 
+IconData fileIcon(String name) {
+  final n = name.toLowerCase();
+  if (RegExp(r'\.(png|jpe?g|gif|webp|bmp|svg|ico)$').hasMatch(n)) {
+    return Icons.image_outlined;
+  }
+  if (RegExp(r'\.(md|txt|rst)$').hasMatch(n)) return Icons.article_outlined;
+  if (RegExp(r'\.(json|ya?ml|toml|ini|xml|lock)$').hasMatch(n)) {
+    return Icons.data_object_rounded;
+  }
+  return Icons.insert_drive_file_outlined;
+}
+
 String compactTokens(num n) {
   if (n >= 1000000) return '${(n / 1000000).toStringAsFixed(1)}M';
   if (n >= 1000) return '${(n / 1000).toStringAsFixed(n >= 10000 ? 0 : 1)}k';

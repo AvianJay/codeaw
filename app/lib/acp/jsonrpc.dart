@@ -9,6 +9,7 @@ class RpcError implements Exception {
   final String message;
   final Object? data;
 
+  static const methodNotFound = -32601;
   static const connectionClosed = -32099;
   static const requestCancelled = -32800;
 

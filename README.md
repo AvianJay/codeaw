@@ -3,7 +3,7 @@
 在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / Hermes Agent / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
-- 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、瀏覽專案檔案、看 git diff。
+- 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、用 `@` 提及專案檔案、瀏覽專案檔案、看 git diff。
 - **斷線不中斷**：手機斷線或 App 被關掉時，agent 照樣工作，權限請求會等你回來。重新連上後只補傳漏掉的部分；同一個對話可以同時開在多台裝置上。
 - **接續電腦上既有的對話**：你在終端機開過的 Claude Code／Codex session 都會出現在 App 的清單裡。
 - **Windows Codex 桌面同步**：載入桌面 app 持有的 Codex 對話時，bridge 會附加到桌面 owner，雙向同步訊息、工具進度與回合狀態；手機也能插話、停止、批准操作及回覆一般問題。

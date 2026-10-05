@@ -224,7 +224,7 @@ void main() {
       await tester.tap(_input);
       await tester.pumpAndSettle();
       expect(clipboard.reads, 0);
-      await tester.tap(find.byTooltip('附加圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();
@@ -318,7 +318,7 @@ void main() {
         isFalse,
       );
       expect(clipboard.reads, 0);
-      expect(find.byTooltip('附加圖片'), findsNothing);
+      expect(find.byTooltip('附加'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
@@ -370,7 +370,7 @@ void main() {
           PlatformException(code: 'denied', message: 'private native details'),
         );
       await _show(tester, clipboard);
-      await tester.tap(find.byTooltip('附加圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();

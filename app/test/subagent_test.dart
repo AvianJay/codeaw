@@ -122,7 +122,7 @@ class _PanelClient extends BridgeClient {
 }
 
 class _PanelHarness {
-  _PanelHarness() {
+  _PanelHarness({bool delegated = true}) {
     final host = HostConfig(name: 'test', urls: ['ws://localhost:1'], token: 'fixture', deviceId: 'fixture', deviceName: 'fixture');
     final client = _PanelClient(host);
     state = AppState(HostStore(), openSession: (_) {})
@@ -131,6 +131,7 @@ class _PanelHarness {
       ..loaded = true;
     state.hub = SessionHub(client);
     c = state.hub!.adopt('claude:panel', '/projects/codeaw', {});
+    if (!delegated) return;
     demo(c.timeline);
     update(c.timeline, {'sessionUpdate': 'tool_call_update', 'toolCallId': 'agent', 'status': 'completed'});
     update(c.timeline, {
@@ -500,6 +501,33 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+
+  for (final size in [const Size(430, 940), const Size(1440, 940)]) {
+    testWidgets('subagent controls appear once work is delegated (${size.width.toInt()} wide)', (tester) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final h = _PanelHarness(delegated: false);
+      addTearDown(h.state.dispose);
+      update(h.c.timeline, message('一般回覆，沒有委派'));
+      await tester.pumpWidget(h.app());
+      await tester.pump();
+      expect(find.byTooltip('所有子代理'), findsNothing);
+      await tester.dragFrom(Offset(size.width - 60, 260), const Offset(-200, 0));
+      await animateDrawer(tester);
+      expect(find.byType(SubagentPanel), findsNothing);
+      demo(h.c.timeline);
+      await tester.pump();
+      expect(find.byTooltip('所有子代理'), findsOneWidget);
+      if (size.width < 1000) {
+        await tester.tap(find.byTooltip('所有子代理'));
+        await animateDrawer(tester);
+      }
+      expect(find.byType(SubagentPanel), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
 
   testWidgets('desktop sidebar toggles and updates when a child continues after launch completed', (tester) async {
     tester.view.physicalSize = const Size(1440, 940);

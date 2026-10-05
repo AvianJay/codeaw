@@ -153,7 +153,7 @@ class _FilesPageState extends State<FilesPage> {
                                   leading: Icon(
                                     e['type'] == 'dir'
                                         ? Icons.folder_rounded
-                                        : _fileIcon('${e['name']}'),
+                                        : fileIcon('${e['name']}'),
                                     color: e['type'] == 'dir'
                                         ? scheme.primary
                                         : scheme.outline,
@@ -225,17 +225,5 @@ class _FilesPageState extends State<FilesPage> {
         ),
       ),
     );
-  }
-
-  IconData _fileIcon(String name) {
-    final n = name.toLowerCase();
-    if (RegExp(r'\.(png|jpe?g|gif|webp|bmp|svg|ico)$').hasMatch(n)) {
-      return Icons.image_outlined;
-    }
-    if (RegExp(r'\.(md|txt|rst)$').hasMatch(n)) return Icons.article_outlined;
-    if (RegExp(r'\.(json|ya?ml|toml|ini|xml|lock)$').hasMatch(n)) {
-      return Icons.data_object_rounded;
-    }
-    return Icons.insert_drive_file_outlined;
   }
 }

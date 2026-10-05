@@ -50,6 +50,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
             : switch (timeline.activity) {
                 TurnActivity.thinking => '思考中…',
                 TurnActivity.responding => '回覆中…',
+                TurnActivity.tool when tool?.mcp != null => '使用 MCP 工具中…',
                 TurnActivity.tool => switch (tool?.kind) {
                   'read' => '讀取檔案中…',
                   'edit' => '修改檔案中…',
@@ -62,7 +63,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
               };
         final startedAt = timeline.turnStartedAt;
         final elapsed = startedAt == null ? Duration.zero : widget.now().difference(startedAt);
-        final detail = !waiting && tool?.title?.trim().isNotEmpty == true ? tool!.title : null;
+        final detail = !waiting && tool?.title?.trim().isNotEmpty == true ? tool!.displayTitle : null;
         return Padding(
           padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
           child: Container(

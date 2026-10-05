@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'subagent.dart';
+import 'tool_display.dart';
 
 /// Base of everything shown in a session's conversation. Items are mutable and notify
 /// their own listeners, so a streaming chunk only rebuilds the bubble it belongs to.
@@ -39,6 +40,21 @@ class MessageItem extends TimelineItem {
   String? dequeued;
 
   String get text => parts.where((p) => p['type'] == 'text').map((p) => p['text'] as String? ?? '').join();
+
+  /// A prompt's text with its file mentions written back as `@name`, for copying and reuse.
+  String get promptText => parts
+      .map((p) => switch (p['type']) {
+            'text' => p['text'] as String? ?? '',
+            'resource_link' => '@${p['name'] ?? p['uri'] ?? ''}',
+            _ => '',
+          })
+      .join();
+
+  /// `@name` → link target for each file mention in a prompt.
+  Map<String, String> get mentions => {
+        for (final p in parts)
+          if (p['type'] == 'resource_link' && p['name'] is String && p['uri'] is String) p['name'] as String: p['uri'] as String,
+      };
 }
 
 /// Folded state of one tool call. Merge rules mirror bridge/src/session/toolcall.ts.
@@ -60,6 +76,11 @@ class ToolItem extends TimelineItem {
   int lifecycleRevision = 0;
 
   SubagentInfo? get subagent => SubagentInfo.fromTool(name: name, title: title, input: rawInput, output: rawOutput, metadata: meta);
+  McpToolRef? get mcp => mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: meta);
+  String get displayTitle => toolTitle(title: title, name: name, rawInput: rawInput, metadata: meta);
+
+  /// The adapter could only name the tool, so its arguments describe the call.
+  bool get bareTitle => mcp != null || (name != null && (title == null || title == name));
 
   void merge(Map<String, dynamic> u) {
     for (final key in const ['title', 'kind', 'status', 'name', 'rawInput', 'rawOutput']) {
@@ -131,6 +152,7 @@ class PermissionItem extends TimelineItem {
   String? by;
   bool get resolved => outcome != null;
   String get title => (toolCall?['title'] as String?) ?? '工具';
+  String get displayTitle => toolTitle(title: toolCall?['title'] as String?, name: toolCall?['name'] as String?, rawInput: toolCall?['rawInput'], metadata: toolCall?['_meta']);
 }
 
 class ElicitationItem extends TimelineItem {
@@ -174,8 +196,8 @@ class TurnSummaryItem extends TimelineItem {
   String get responseText => messages.where((m) => m.role == MessageRole.agent).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
   String get thoughtText => messages.where((m) => m.role == MessageRole.thought).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
   String get transcript => [
-        if (prompt != null && prompt!.text.isNotEmpty) '你：\n${prompt!.text}',
-        for (final p in steeredPrompts) if (p.text.isNotEmpty) '你（插入回合）：\n${p.text}',
+        if (prompt != null && prompt!.promptText.isNotEmpty) '你：\n${prompt!.promptText}',
+        for (final p in steeredPrompts) if (p.promptText.isNotEmpty) '你（插入回合）：\n${p.promptText}',
         if (responseText.isNotEmpty) 'Agent：\n$responseText',
       ].join('\n\n');
 

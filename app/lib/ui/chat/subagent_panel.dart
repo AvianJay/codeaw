@@ -165,7 +165,7 @@ class _AgentRow extends StatelessWidget {
     final done = tools.where((t) => t.status == 'completed').length;
     final latest = timeline.currentActivityOf(tool);
     final activity = switch (latest) {
-      ToolItem t => t.title,
+      ToolItem t => t.displayTitle,
       MessageItem m => m.text,
       _ => info?.task,
     };

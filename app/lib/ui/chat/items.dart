@@ -8,11 +8,14 @@ import '../../app_state.dart';
 import '../../data/bridge_client.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
+import '../../data/subagent.dart';
 import '../../data/timeline.dart';
+import '../../data/tool_display.dart';
 import '../../util/diff.dart';
 import '../common/code_view.dart';
 import '../common/diff_view.dart';
 import '../common/markdown.dart';
+import '../common/markdown_image.dart';
 import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
 import 'turn_summary.dart';
@@ -54,7 +57,7 @@ class TimelineItemView extends StatelessWidget {
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
         TurnSummaryItem t => TurnSummaryView(
             turn: t,
-            onReusePrompt: controller.running || t.prompt?.text.isNotEmpty != true ? null : () => controller.reusePrompt(t.prompt!),
+            onReusePrompt: controller.running || t.prompt?.promptText.isNotEmpty != true ? null : () => controller.reusePrompt(t.prompt!),
           ),
         _ => const SizedBox.shrink(),
       },
@@ -120,9 +123,7 @@ class UserMessageView extends StatelessWidget {
                 bottomRight: Radius.circular(4),
               ),
             ),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              for (final p in m.parts) _UserPart(p),
-            ]),
+            child: _UserParts(m.parts),
           ),
           if (badges.isNotEmpty)
             Padding(
@@ -135,25 +136,97 @@ class UserMessageView extends StatelessWidget {
   }
 }
 
-class _UserPart extends StatelessWidget {
-  const _UserPart(this.part);
-  final Map<String, dynamic> part;
+/// Text and file mentions flow as one paragraph; images and other blocks stand alone.
+class _UserParts extends StatelessWidget {
+  const _UserParts(this.parts);
+  final List<Map<String, dynamic>> parts;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    switch (part['type']) {
-      case 'text':
-        return SelectableText(part['text'] as String? ?? '', style: TextStyle(color: scheme.onPrimaryContainer, height: 1.35));
-      case 'image':
-        return Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: BlockImage(part, maxHeight: 220));
-      default:
-        final label = blockText(part);
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Chip(avatar: const Icon(Icons.attach_file_rounded, size: 16), label: Text(label.isEmpty ? '${part['type']}' : folderName(label), maxLines: 1)),
-        );
+    final children = <Widget>[];
+    var spans = <InlineSpan>[];
+    void paragraph() {
+      if (spans.isEmpty) return;
+      children.add(Text.rich(TextSpan(children: spans), style: TextStyle(color: scheme.onPrimaryContainer, height: 1.35)));
+      spans = [];
     }
+
+    for (final part in parts) {
+      switch (part['type']) {
+        case 'text':
+          spans.add(TextSpan(text: part['text'] as String? ?? ''));
+        case 'resource_link':
+          spans.add(WidgetSpan(alignment: PlaceholderAlignment.middle, child: MentionChip(part)));
+        case 'image':
+          paragraph();
+          children.add(Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: BlockImage(part, maxHeight: 220)));
+        default:
+          paragraph();
+          children.add(Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: MentionChip(part)));
+      }
+    }
+    paragraph();
+    return SelectionArea(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: children));
+  }
+}
+
+/// A file or folder named in a prompt (`resource_link`, or embedded `resource`); opens on the bridge.
+class MentionChip extends StatelessWidget {
+  const MentionChip(this.block, {super.key});
+  final Map<String, dynamic> block;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final resource = block['resource'] is Map ? block['resource'] as Map : block;
+    final uri = resource['uri'] as String? ?? '';
+    final name = block['name'] as String? ?? '';
+    final directory = name.endsWith('/');
+    final label = name.isNotEmpty ? folderName(name) : (uri.isNotEmpty ? folderName(Uri.decodeFull(uri)) : '${block['type']}');
+    String? path;
+    try {
+      path = uri.isEmpty ? null : markdownImagePath(uri);
+    } on FormatException {
+      path = null;
+    } on ArgumentError {
+      path = null;
+    } on UnsupportedError {
+      path = null;
+    }
+    final target = path;
+    return Tooltip(
+      message: name.isNotEmpty ? name : uri,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 1, vertical: 1),
+        child: Material(
+          color: scheme.onPrimaryContainer.withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(6),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: target == null
+                ? null
+                : () => context.push(Uri(path: directory ? '/files' : '/file', queryParameters: {'path': target}).toString()),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(directory ? Icons.folder_outlined : Icons.description_outlined, size: 14, color: scheme.onPrimaryContainer),
+                const SizedBox(width: 4),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220),
+                  child: Text(
+                    directory ? '$label/' : label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: scheme.onPrimaryContainer, height: 1.2),
+                  ),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -294,6 +367,8 @@ class _ToolCallCardState extends State<ToolCallCard> {
       _ => const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
     };
     final exit = t.exitCode;
+    final mcp = t.mcp;
+    final summary = open || !t.bareTitle ? null : argumentSummary(mcp?.arguments ?? objectMap(t.rawInput));
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       child: Material(
@@ -306,15 +381,25 @@ class _ToolCallCardState extends State<ToolCallCard> {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Row(children: [
-                Icon(toolIcon(t.kind), size: 18, color: scheme.primary),
+                Icon(mcp != null ? Icons.extension_outlined : toolIcon(t.kind), size: 18, color: scheme.primary),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(
-                    (t.title?.isNotEmpty ?? false) ? t.title! : (t.name ?? '工具'),
-                    maxLines: open ? 4 : 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
-                  ),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text.rich(
+                      TextSpan(children: [
+                        if (mcp != null) WidgetSpan(alignment: PlaceholderAlignment.middle, child: _McpServerTag(mcp)),
+                        TextSpan(text: mcp?.tool ?? t.displayTitle),
+                      ]),
+                      maxLines: open ? 4 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
+                    ),
+                    if (summary != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(summary, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                      ),
+                  ]),
                 ),
                 if (exit != null && exit != 0)
                   Padding(padding: const EdgeInsets.only(right: 6), child: Text('exit $exit', style: TextStyle(fontSize: 11, color: scheme.error))),
@@ -325,6 +410,32 @@ class _ToolCallCardState extends State<ToolCallCard> {
           ),
           if (open) _ToolDetails(t),
         ]),
+      ),
+    );
+  }
+}
+
+/// The MCP server in front of its tool name.
+class _McpServerTag extends StatelessWidget {
+  const _McpServerTag(this.mcp);
+  final McpToolRef mcp;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: 'MCP 伺服器：${mcp.server}',
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 160),
+        margin: const EdgeInsets.only(right: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        decoration: BoxDecoration(color: scheme.secondaryContainer, borderRadius: BorderRadius.circular(6)),
+        child: Text(
+          mcp.serverLabel,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: scheme.onSecondaryContainer),
+        ),
       ),
     );
   }
@@ -342,6 +453,11 @@ class _ToolDetails extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final children = <Widget>[];
     final input = t.rawInput;
+    final arguments = showInput && t.bareTitle ? (t.mcp?.arguments ?? objectMap(input)) : const {};
+    if (arguments.isNotEmpty) {
+      children.add(CodeBlock(code: const JsonEncoder.withIndent('  ').convert(arguments), language: 'json', maxHeight: 200));
+    }
+    final inputOnly = children.length;
     if (showInput && input is Map && input['command'] != null) {
       final cmd = input['command'] is List ? (input['command'] as List).join(' ') : '${input['command']}';
       children.add(CodeBlock(code: '\$ $cmd', language: 'bash', wrap: true));
@@ -375,12 +491,14 @@ class _ToolDetails extends StatelessWidget {
       }
     }
     final out = t.rawOutput;
-    if (children.isEmpty || (t.content == null && t.terminalOutput.isEmpty)) {
+    if (children.length == inputOnly || (t.content == null && t.terminalOutput.isEmpty)) {
       if (out is String && out.trim().isNotEmpty) {
         children.add(_TextResult(out.trim()));
       } else if (out is Map && out['formatted_output'] is String && t.terminalOutput.isEmpty) {
         children.add(CodeBlock(code: (out['formatted_output'] as String).trimRight(), maxHeight: 320, highlight: false));
-      } else if (showInput && input != null && input is! String && !(input is Map && (input['command'] != null || input.isEmpty))) {
+      } else if (out is Map && (out['result'] is Map || out['error'] != null)) {
+        children.addAll(_mcpOutput(out, scheme));
+      } else if (showInput && arguments.isEmpty && input != null && input is! String && !(input is Map && (input['command'] != null || input.isEmpty))) {
         children.add(CodeBlock(code: const JsonEncoder.withIndent('  ').convert(input), language: 'json', maxHeight: 240));
       }
     }
@@ -404,6 +522,28 @@ class _ToolDetails extends StatelessWidget {
         for (final c in children) Padding(padding: const EdgeInsets.only(top: 6), child: c),
       ]),
     );
+  }
+
+  /// An MCP `CallToolResult`, which codex-acp reports only as `rawOutput`.
+  List<Widget> _mcpOutput(Map<dynamic, dynamic> out, ColorScheme scheme) {
+    final widgets = <Widget>[];
+    final error = out['error'];
+    if (error != null) {
+      widgets.add(SelectableText(error is Map ? '${error['message'] ?? jsonEncode(error)}' : '$error', style: TextStyle(fontSize: 13, color: scheme.error)));
+    }
+    final result = objectMap(out['result']);
+    for (final block in (result['content'] as List? ?? const []).whereType<Map<String, dynamic>>()) {
+      final text = blockText(block).trim();
+      if (block['type'] == 'image') {
+        widgets.add(BlockImage(block));
+      } else if (text.isNotEmpty) {
+        widgets.add(_TextResult(text));
+      }
+    }
+    if (widgets.isEmpty && result['structuredContent'] != null) {
+      widgets.add(CodeBlock(code: const JsonEncoder.withIndent('  ').convert(result['structuredContent']), language: 'json', maxHeight: 320));
+    }
+    return widgets;
   }
 }
 
@@ -450,7 +590,7 @@ class PermissionCard extends StatelessWidget {
           Row(children: [
             Icon(icon, size: 18, color: color),
             const SizedBox(width: 8),
-            Expanded(child: Text(p.title, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w500))),
+            Expanded(child: Text(p.displayTitle, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w500))),
           ]),
           const SizedBox(height: 4),
           Text('$label${p.by != null ? '（${p.by}）' : ''}', style: TextStyle(fontSize: 12, color: color)),

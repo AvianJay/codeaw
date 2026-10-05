@@ -137,6 +137,94 @@ export function readFile(guard: PathGuard, p: unknown, maxBytes: unknown) {
   }
 }
 
+const SEARCH_LIMIT = 50;
+const SEARCH_MAX_LIMIT = 200;
+const SEARCH_MAX_FILES = 50_000;
+const SEARCH_MAX_DIRS = 5_000;
+const SEARCH_WALK_MS = 2_000;
+const SEARCH_CACHE_MS = 10_000;
+// Generated or vendored trees that a walk outside git should not descend into.
+const SEARCH_SKIP_DIRS = new Set([".git", ".hg", ".svn", "node_modules", ".dart_tool", ".gradle", ".next", ".venv", "venv", "__pycache__", "build", "dist", "target", "Pods"]);
+const projectFileCache = new Map<string, { at: number; files: string[] }>();
+
+/** Paths relative to `cwd` (with `/`): git's tracked and unignored files, else a bounded walk. */
+async function projectFiles(cwd: string): Promise<string[]> {
+  const cached = projectFileCache.get(cwd);
+  if (cached && Date.now() - cached.at < SEARCH_CACHE_MS) return cached.files;
+  let files: string[];
+  try {
+    files = (await git(cwd, ["ls-files", "--cached", "--others", "--exclude-standard", "-z"])).split("\0").filter(Boolean).slice(0, SEARCH_MAX_FILES);
+  } catch {
+    // Not a repository (or no git): walk breadth-first without blocking other sessions for long.
+    files = [];
+    const pending = [""];
+    const deadline = Date.now() + SEARCH_WALK_MS;
+    for (let visited = 0; pending.length && files.length < SEARCH_MAX_FILES && visited < SEARCH_MAX_DIRS && Date.now() < deadline; visited++) {
+      const rel = pending.shift()!;
+      const dirents = await fs.promises.readdir(path.join(cwd, rel), { withFileTypes: true }).catch(() => [] as fs.Dirent[]);
+      for (const d of dirents) {
+        const child = rel ? `${rel}/${d.name}` : d.name;
+        if (d.isDirectory()) {
+          if (!SEARCH_SKIP_DIRS.has(d.name)) pending.push(child);
+        } else if (files.length < SEARCH_MAX_FILES) {
+          files.push(child);
+        }
+      }
+    }
+  }
+  if (projectFileCache.size >= 16) projectFileCache.delete(projectFileCache.keys().next().value!);
+  projectFileCache.set(cwd, { at: Date.now(), files });
+  return files;
+}
+
+/** Higher is better; undefined when `query` does not match `rel` at all. */
+function searchScore(rel: string, query: string): number | undefined {
+  const lower = rel.toLowerCase();
+  if (!query) return -rel.split("/").length;
+  const base = lower.slice(lower.lastIndexOf("/") + 1);
+  if (base.startsWith(query)) return 1000 - base.length;
+  if (base.includes(query)) return 800 - base.indexOf(query);
+  if (lower.includes(query)) return 600 - lower.indexOf(query) / 100;
+  // Subsequence match, preferring characters that start a path segment or word.
+  let next = 0;
+  let last = -1;
+  let score = 300;
+  for (let i = 0; i < lower.length && next < query.length; i++) {
+    if (lower[i] !== query[next]) continue;
+    if (i === 0 || "/._- ".includes(lower[i - 1])) score += 10;
+    if (last >= 0) score -= Math.min(i - last - 1, 10);
+    last = i;
+    next++;
+  }
+  return next === query.length ? score : undefined;
+}
+
+/** Files and folders under `cwd` for `@` mentions, best matches first. */
+export async function searchFiles(guard: PathGuard, cwdParam: unknown, queryParam: unknown, limitParam: unknown) {
+  const cwd = guard.resolve(cwdParam);
+  if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw acp.RequestError.invalidParams(undefined, "Not a directory");
+  const query = (typeof queryParam === "string" ? queryParam : "").trim().replace(/\\/g, "/").toLowerCase();
+  const limit = typeof limitParam === "number" && limitParam > 0 ? Math.min(Math.floor(limitParam), SEARCH_MAX_LIMIT) : SEARCH_LIMIT;
+  const files = await projectFiles(cwd);
+  const dirs = new Set<string>();
+  for (const file of files) {
+    for (let i = file.indexOf("/"); i > 0; i = file.indexOf("/", i + 1)) dirs.add(file.slice(0, i));
+  }
+  const ranked: { rel: string; type: "file" | "dir"; score: number }[] = [];
+  for (const [list, type] of [[dirs, "dir"], [files, "file"]] as const) {
+    for (const rel of list) {
+      const score = searchScore(rel, query);
+      if (score !== undefined) ranked.push({ rel, type, score });
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score || (a.type === b.type ? 0 : a.type === "dir" ? -1 : 1) || a.rel.length - b.rel.length || a.rel.localeCompare(b.rel));
+  return {
+    cwd,
+    files: ranked.slice(0, limit).map((r) => ({ path: path.join(cwd, r.rel), relative: r.rel, type: r.type })),
+    truncated: ranked.length > limit,
+  };
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync("git", ["-c", "core.quotepath=off", ...args], {
     cwd,

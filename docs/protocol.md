@@ -257,6 +257,10 @@ epoch gets a `full` replay.
   if the agent supports `_session/steering`, otherwise queue.
 - `queue`: always queue behind the running turn.
 
+The app sends `@` file mentions in place as `resource_link` blocks
+(`name` is the path relative to the session folder, `uri` a `file:` URI), so a
+prompt can be `text, resource_link, text`.
+
 The response arrives when the turn that handled the prompt ends (a steered
 prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
@@ -280,6 +284,7 @@ out on the bridge.
 | `_codeaw/workspaces/list` | – | `{roots: [{path, name, source: "config"\|"session"}]}` |
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
+| `_codeaw/fs/search` | `{cwd, query?, limit?}` | `{cwd, files: [{path, relative, type: "file"\|"dir"}], truncated}` — best matches first; `relative` uses `/` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
 | `_codeaw/git/diff` | `{cwd, path?, staged?}` | `{diff, truncated}` |
 | `_codeaw/terminal/open` | `{cwd?, terminalId?, afterSeq?, cols?, rows?}` | `{terminalId, cwd, shell, exited, exitCode?, lastSeq, full, events}` |
@@ -292,7 +297,10 @@ out on the bridge.
 | `_codeaw/notify/test` | – | `{sent}` |
 
 File-system methods only accept paths inside the configured workspaces or a
-known session `cwd`.
+known session `cwd`. `fs/search` ranks git's tracked and unignored files (and
+their folders) when `cwd` is in a repository; elsewhere it walks the folder,
+skipping dependency and build folders, within size and time limits. File lists
+are cached for ten seconds.
 
 ### Interactive terminals
 
