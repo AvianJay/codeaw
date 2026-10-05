@@ -303,13 +303,16 @@ void main() {
             : route == '/settings'
             ? find.byType(SettingsPage)
             : find.byType(FileViewPage);
-      final scroll = tester.state<ScrollableState>(
-        find.descendant(
-          of: page,
-          matching: find.byWidgetPredicate(
-            (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
-          ),
-        ).first,
+        final scroll = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: page,
+                matching: find.byWidgetPredicate(
+                  (w) =>
+                      w is Scrollable && w.axisDirection == AxisDirection.down,
+                ),
+              )
+              .first,
         );
         expect(scroll.position.maxScrollExtent, greaterThan(0), reason: route);
         final bounds = tester.getRect(page);
@@ -398,6 +401,54 @@ void main() {
     expect(tester.takeException(), isNull);
     await h.close(tester);
   });
+
+  for (final size in [const Size(844, 390), const Size(667, 375)]) {
+    testWidgets(
+      'phone landscape $size keeps chat visible and dismisses focus',
+      (tester) async {
+        final h = _Harness();
+        await h.show(tester, size, location: sessionRoute(_first));
+        expect(find.byType(NavigationRail), findsNothing);
+        expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsNothing);
+        expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+        await tester.enterText(_input, '第一行\n第二行\n第三行\n第四行');
+        tester.view.viewInsets = const FakeViewPadding(bottom: 180);
+        await tester.pumpAndSettle();
+        final timeline = find
+            .descendant(
+              of: find.byType(ChatPage),
+              matching: find.byType(ListView),
+            )
+            .first;
+        expect(tester.getSize(timeline).height, greaterThan(60));
+        expect(tester.widget<TextField>(_input).maxLines, 2);
+        expect(find.byTooltip('收起鍵盤'), findsOneWidget);
+        await tester.tap(find.byTooltip('收起鍵盤'));
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+        tester.view.viewInsets = const FakeViewPadding();
+        await tester.pumpAndSettle();
+        await tester.tap(_input);
+        await tester.pumpAndSettle();
+        await tester.tapAt(tester.getCenter(timeline));
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+        await tester.tap(_input);
+        await tester.pumpAndSettle();
+        await tester.drag(timeline, const Offset(0, -50));
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+        await tester.tap(_input);
+        await tester.pumpAndSettle();
+        h.router.go(sessionRoute(_second));
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+        expect(tester.takeException(), isNull);
+        await h.close(tester);
+      },
+      variant: TargetPlatformVariant({TargetPlatform.iOS}),
+    );
+  }
 
   testWidgets('tablet opens session drawer and closes it on selection', (
     tester,

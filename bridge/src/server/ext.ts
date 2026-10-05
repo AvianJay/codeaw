@@ -35,13 +35,17 @@ export class PathGuard {
   constructor(
     private readonly workspaces: () => string[],
     private readonly sessionCwds: () => string[],
+    private readonly allowAllPaths: () => boolean = () => false,
   ) {}
 
-  roots(): { path: string; source: "config" | "session" }[] {
+  get allowsAllPaths(): boolean { return this.allowAllPaths(); }
+
+  roots(): { path: string; source: "config" | "session" | "filesystem" }[] {
     const seen = new Set<string>();
-    const out: { path: string; source: "config" | "session" }[] = [];
-    const add = (p: string, source: "config" | "session") => {
+    const out: { path: string; source: "config" | "session" | "filesystem" }[] = [];
+    const add = (p: string, source: "config" | "session" | "filesystem") => {
       const real = realPath(p);
+      try { if (!fs.statSync(real).isDirectory()) return; } catch { return; }
       const key = process.platform === "win32" ? real.toLowerCase() : real;
       if (seen.has(key)) return;
       seen.add(key);
@@ -49,6 +53,11 @@ export class PathGuard {
     };
     for (const w of this.workspaces()) add(w, "config");
     for (const c of this.sessionCwds()) add(c, "session");
+    if (this.allowAllPaths()) {
+      if (process.platform === "win32") {
+        for (let letter = 65; letter <= 90; letter++) add(`${String.fromCharCode(letter)}:\\`, "filesystem");
+      } else add("/", "filesystem");
+    }
     return out;
   }
 
@@ -56,10 +65,16 @@ export class PathGuard {
     if (typeof p !== "string" || !p) throw acp.RequestError.invalidParams(undefined, "path is required");
     if (!path.isAbsolute(p)) throw acp.RequestError.invalidParams(undefined, "path must be absolute");
     const real = realPath(p);
-    if (!this.roots().some((r) => isInside(r.path, real))) {
+    if (!this.allowAllPaths() && !this.roots().some((r) => isInside(r.path, real))) {
       throw acp.RequestError.invalidParams(undefined, "Path is outside the allowed workspaces");
     }
     return real;
+  }
+
+  directory(p: unknown): string {
+    const dir = this.resolve(p);
+    try { if (fs.statSync(dir).isDirectory()) return dir; } catch { /* Explain before starting an agent. */ }
+    throw acp.RequestError.invalidParams(undefined, `Working directory does not exist or is not a directory on this bridge: ${dir}`);
   }
 }
 

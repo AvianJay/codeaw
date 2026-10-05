@@ -87,7 +87,7 @@ class _ChatPageState extends State<ChatPage> {
         return LayoutBuilder(
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 1000;
-            final compact = constraints.maxWidth < 600;
+            final compact = constraints.maxWidth < 600 || !useWideLayout(context);
             final showSubagents = _showSubagents ?? c.timeline.subagents.isNotEmpty;
             return Scaffold(
               key: _scaffold,
@@ -103,8 +103,9 @@ class _ChatPageState extends State<ChatPage> {
                       ),
                     ),
               appBar: AppBar(
-                automaticallyImplyLeading: MediaQuery.sizeOf(context).width < tabletBreakpoint,
-                titleSpacing: MediaQuery.sizeOf(context).width >= tabletBreakpoint ? 20 : 0,
+                toolbarHeight: MediaQuery.sizeOf(context).height < 500 ? 44 : 56,
+                automaticallyImplyLeading: !useWideLayout(context),
+                titleSpacing: useWideLayout(context) ? 20 : 0,
                 title: Row(
                   children: [
                     AgentAvatar(agentId: c.agentId, label: agentName, size: 30),
@@ -279,6 +280,7 @@ class _TimelineList extends StatelessWidget {
       maxWidth: _chatContentWidth,
       padding: const EdgeInsets.only(top: 8, bottom: 8),
       builder: (context, padding) => ListView.builder(
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         reverse: true,
         padding: padding,
         itemCount: items.length + extra,

@@ -22,6 +22,7 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
+| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload attachment bytes, at most 20 MiB | Bearer |
 
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.
@@ -262,6 +263,15 @@ prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
 open permission/elicitation request with `cancelled`.
 
+Codex desktop steering includes the owner's required `restoreMessage` (message
+ID, input, cwd, workspace roots and collaboration context), and requires an
+accepted result. It never starts a second ACP runtime for a desktop-owned turn.
+Desktop `session/set_config_option` supports `model`, `reasoning_effort`, `mode`
+(`read-only`, `agent`, `agent-full-access`) and `collaboration_mode` (`default`,
+`plan`); `session/set_mode` is also supported. Settings are applied to the next
+turn and confirmed from the owner's snapshot. Updated options are returned and
+broadcast as `config_option_update`.
+
 ## Permission and elicitation requests
 
 The bridge forwards an agent's `session/request_permission` /
@@ -277,7 +287,7 @@ out on the bridge.
 |---|---|---|
 | `_codeaw/agents/list` | – | `{agents: AgentInfo[]}` |
 | `_codeaw/agents/restart` | `{agentId}` | `{}` |
-| `_codeaw/workspaces/list` | – | `{roots: [{path, name, source: "config"\|"session"}]}` |
+| `_codeaw/workspaces/list` | – | `{allowAllPaths, roots: [{path, name, source: "config"\|"session"\|"filesystem"}]}` |
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
@@ -291,13 +301,33 @@ out on the bridge.
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
 
-File-system methods only accept paths inside the configured workspaces or a
-known session `cwd`.
+File-system methods and `session/new` only accept paths inside the configured
+workspaces or a known session `cwd`, unless the PC administrator opts into
+`filesystem.allowAllPaths: true`. The opt-in adds existing Windows drive roots
+(or `/` on POSIX) and allows all absolute paths accessible to the bridge account.
+There is no remote API for enabling it. This exposes private files to every
+paired device; it is not a sandbox for agents or interactive shells. Paths are
+resolved through links before containment checks, and new sessions require an
+existing directory.
+
+### File uploads
+
+`POST /api/uploads?sessionId=<qualified-id>&name=<encoded-filename>` accepts raw
+bytes with `Content-Type: application/octet-stream` and the same Bearer auth as
+ACP. A known session cwd is required. Maximum size is 20 MiB per file; invalid
+names, oversized bodies and upload directory links are rejected. Bytes are
+saved to a unique filename in `<cwd>/.codeaw-uploads/` without overwriting files.
+Success returns HTTP 201 with `{name, path, size, sha256, block}`. `block` is an
+ACP `resource_link` with a `file:` URI and local path description; include it in
+`session/prompt`. Errors return `{error}` with 400/401/403/413 as appropriate.
+Files persist on the PC until explicitly removed.
 
 ### Interactive terminals
 
 Terminals are separate from ACP agent sessions. `open` starts an interactive
 PowerShell on Windows or the host's `$SHELL` (falling back to `/bin/sh`) on POSIX.
+On Windows, writes normalize LF/CRLF to CR so newline means Enter in PSReadLine;
+POSIX bytes are unchanged.
 The starting `cwd` must be an allowed workspace directory. The shell itself has
 the bridge account's usual permissions; the workspace check is not a sandbox.
 There is one retained shell per device and starting directory, with at most eight

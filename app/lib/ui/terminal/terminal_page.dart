@@ -44,6 +44,7 @@ class _TerminalPageState extends State<TerminalPage> {
   }
 
   void _open(String cwd) {
+    _focus.unfocus();
     _shell?.detach();
     _selection.clearSelection();
     final hub = AppScope.read(context).terminals;
@@ -189,6 +190,7 @@ class _TerminalPageState extends State<TerminalPage> {
                         c.terminal,
                         controller: _selection,
                         focusNode: _focus,
+                        autofocus: false,
                         readOnly: !c.canInput,
                         keyboardType: TextInputType.visiblePassword,
                         textStyle: const xterm.TerminalStyle(fontSize: 13),
@@ -238,7 +240,7 @@ class _TerminalPageState extends State<TerminalPage> {
                         icon: const Icon(Icons.content_paste_rounded),
                       ),
                       IconButton(
-                        tooltip: '鍵盤',
+                        tooltip: _focus.hasFocus ? '收起鍵盤' : '鍵盤',
                         onPressed: c.canInput
                             ? () => _focus.hasFocus
                                   ? _focus.unfocus()

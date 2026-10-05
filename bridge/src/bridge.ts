@@ -68,7 +68,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const notifier = new PushNotifier(config.notifications.ntfy, () => manager.clientCount > 0, opts.fetchImpl);
   manager.notifier = notifier;
   manager.start();
-  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds());
+  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths);
   const terminals = new TerminalManager(guard);
   const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot });
 

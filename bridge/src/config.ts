@@ -18,6 +18,7 @@ const AgentConfigSchema = z.object({
   desktopSync: z.union([z.boolean(), z.object({
     pipe: z.string().optional(),
     archivePath: z.string().optional(),
+    modelCatalogPath: z.string().optional(),
     timeoutMs: z.number().int().min(100).max(60000).optional(),
   })]).optional(),
 });
@@ -47,6 +48,8 @@ export const ConfigSchema = z.object({
     .default({ hosts: "auto", port: 7860 }),
   /** Directories the app may browse; session cwds are always allowed as well. */
   workspaces: z.array(z.string()).default([]),
+  /** Opt in on the PC: paired devices can access any path this account can access. */
+  filesystem: z.object({ allowAllPaths: z.boolean().default(false) }).default({ allowAllPaths: false }),
   agents: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), AgentConfigSchema),
   notifications: z.object({ ntfy: NtfySchema.optional() }).default({}),
   /** Release an idle agent-side session (frees e.g. claude.exe) after this many minutes. */

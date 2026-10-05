@@ -3,6 +3,13 @@ import 'package:flutter/material.dart';
 const tabletBreakpoint = 720.0;
 const desktopBreakpoint = 1100.0;
 
+/// A wide phone in landscape still needs the compact phone controls.
+bool useWideLayout(BuildContext context) {
+  final size = MediaQuery.sizeOf(context);
+  return size.width >= desktopBreakpoint ||
+      (size.width >= tabletBreakpoint && size.shortestSide >= 600);
+}
+
 /// Bounds a whole panel. Use [ContentScrollFrame] for scrollable content.
 class ContentFrame extends StatelessWidget {
   const ContentFrame({super.key, required this.child, this.maxWidth = 760});
@@ -81,12 +88,14 @@ Future<T?> showAdaptiveSheet<T>({
   required BuildContext context,
   required WidgetBuilder builder,
 }) {
-  if (MediaQuery.sizeOf(context).width < tabletBreakpoint) {
+  FocusManager.instance.primaryFocus?.unfocus();
+  if (!useWideLayout(context)) {
     return showModalBottomSheet<T>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       showDragHandle: true,
+      requestFocus: false,
       constraints: BoxConstraints(
         maxHeight: MediaQuery.sizeOf(context).height * .9,
       ),
@@ -95,6 +104,7 @@ Future<T?> showAdaptiveSheet<T>({
   }
   return showDialog<T>(
     context: context,
+    requestFocus: false,
     builder: (context) => Dialog(
       constraints: BoxConstraints(
         maxWidth: 560,

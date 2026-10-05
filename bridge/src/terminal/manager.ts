@@ -101,7 +101,8 @@ export class TerminalManager {
     if (typeof params.data !== "string" || params.data.length > 64 * 1024) {
       throw acp.RequestError.invalidParams(undefined, "data must be a string of at most 64 KiB");
     }
-    s.pty!.write(params.data);
+    // iOS soft keyboards and xterm paste emit LF; PSReadLine treats LF as Shift+Enter.
+    s.pty!.write(process.platform === "win32" ? params.data.replace(/\r?\n/g, "\r") : params.data);
     return {};
   }
 

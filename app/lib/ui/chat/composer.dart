@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../data/models.dart';
@@ -11,12 +12,18 @@ import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
-enum _AttachmentAction { gallery, camera, paste }
+enum _AttachmentAction { file, gallery, camera, paste }
 
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.controller, this.imageClipboard});
+  const Composer({
+    super.key,
+    required this.controller,
+    this.imageClipboard,
+    this.selectFiles,
+  });
   final SessionController controller;
   final ImageClipboard? imageClipboard;
+  final Future<List<XFile>> Function()? selectFiles;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -26,6 +33,7 @@ class _ComposerState extends State<Composer> {
   final _text = TextEditingController();
   final _focus = FocusNode();
   final _images = <ClipboardImage>[];
+  final _files = <Map<String, dynamic>>[];
   late final ImageClipboard _clipboard;
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
@@ -37,6 +45,7 @@ class _ComposerState extends State<Composer> {
   @override
   void initState() {
     super.initState();
+    _focus.addListener(_focusChanged);
     _clipboard = widget.imageClipboard ?? ImageClipboard();
     _stopPasteListener = _clipboard.listen(
       canPaste: () => mounted && _focus.hasFocus && _supportsImages,
@@ -47,6 +56,15 @@ class _ComposerState extends State<Composer> {
       c.draft = _text.text;
       setState(() {});
     });
+  }
+
+  void _focusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _dismissKeyboard() {
+    _focus.unfocus();
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
   @override
@@ -61,37 +79,79 @@ class _ComposerState extends State<Composer> {
   void didUpdateWidget(Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, c)) {
+      _dismissKeyboard();
       _pasteGeneration++;
       _readingImages = 0;
       _images.clear();
+      _files.clear();
       _text.text = c.draft;
     } else if (_text.text != c.draft) {
-      _text.value = TextEditingValue(text: c.draft, selection: TextSelection.collapsed(offset: c.draft.length));
+      _text.value = TextEditingValue(
+        text: c.draft,
+        selection: TextSelection.collapsed(offset: c.draft.length),
+      );
     }
   }
 
   Future<void> _pick(ImageSource source) async {
     final target = c;
-    final file = await ImagePicker().pickImage(
-      source: source,
-      maxWidth: 1600,
-      maxHeight: 1600,
-      imageQuality: 85,
-    );
-    if (file == null || !mounted || !identical(c, target)) return;
-    final bytes = await file.readAsBytes();
-    final lower = file.name.toLowerCase();
-    final mime =
-        file.mimeType ??
-        (lower.endsWith('.png')
-            ? 'image/png'
-            : lower.endsWith('.webp')
-            ? 'image/webp'
-            : lower.endsWith('.gif')
-            ? 'image/gif'
-            : 'image/jpeg');
-    if (mounted && identical(c, target)) {
-      setState(() => _images.add(ClipboardImage(bytes, mime)));
+    _dismissKeyboard();
+    try {
+      final file = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 85,
+      );
+      if (file == null || !mounted || !identical(c, target)) return;
+      final bytes = await file.readAsBytes();
+      final lower = file.name.toLowerCase();
+      final mime =
+          file.mimeType ??
+          (lower.endsWith('.png')
+              ? 'image/png'
+              : lower.endsWith('.webp')
+              ? 'image/webp'
+              : lower.endsWith('.gif')
+              ? 'image/gif'
+              : 'image/jpeg');
+      if (mounted && identical(c, target)) {
+        setState(() => _images.add(ClipboardImage(bytes, mime)));
+      }
+    } catch (_) {
+      if (mounted && identical(c, target)) {
+        _pasteMessage('無法讀取圖片，請檢查相簿／相機權限後重試');
+      }
+    }
+  }
+
+  Future<void> _pickFiles() async {
+    final target = c;
+    _dismissKeyboard();
+    final generation = _pasteGeneration;
+    setState(() => _readingImages++);
+    bool current() =>
+        mounted && identical(c, target) && generation == _pasteGeneration;
+    try {
+      final selected = await (widget.selectFiles?.call() ?? openFiles());
+      for (final file in selected) {
+        if (!current()) return;
+        if (await file.length() > 20 * 1024 * 1024) {
+          throw const FormatException('檔案上限為 20 MiB');
+        }
+        final bytes = await file.readAsBytes();
+        if (!current()) return;
+        final block = await target.client.uploadFile(
+          target.sessionId,
+          file.name,
+          bytes,
+        );
+        if (current()) setState(() => _files.add(block));
+      }
+    } catch (error) {
+      if (current()) _pasteMessage('檔案上傳失敗：$error');
+    } finally {
+      if (current()) setState(() => _readingImages--);
     }
   }
 
@@ -164,7 +224,7 @@ class _ComposerState extends State<Composer> {
   void _send({bool queue = false}) {
     if (_readingImages > 0) return;
     final text = _text.text.trim();
-    if (text.isEmpty && _images.isEmpty) return;
+    if (text.isEmpty && _images.isEmpty && _files.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
       if (text.isNotEmpty) {'type': 'text', 'text': text},
       for (final img in _images)
@@ -173,10 +233,32 @@ class _ComposerState extends State<Composer> {
           'mimeType': img.mimeType,
           'data': base64Encode(img.bytes),
         },
+      ..._files,
     ];
-    c.send(blocks, queue: queue);
+    final target = c;
+    final images = List<ClipboardImage>.of(_images);
+    final files = List<Map<String, dynamic>>.of(_files);
+    unawaited(
+      target.send(blocks, queue: queue).then((sent) {
+        if (!sent &&
+            mounted &&
+            identical(c, target) &&
+            _text.text.isEmpty &&
+            _images.isEmpty &&
+            _files.isEmpty) {
+          _text.text = text;
+          setState(() {
+            _images.addAll(images);
+            _files.addAll(files);
+          });
+        }
+      }),
+    );
     _text.clear();
-    setState(_images.clear);
+    setState(() {
+      _images.clear();
+      _files.clear();
+    });
   }
 
   List<Map<String, dynamic>> get _suggestions {
@@ -201,8 +283,16 @@ class _ComposerState extends State<Composer> {
         c.client.isOnline &&
         (!c.desktopSync || c.desktopConnected) &&
         _readingImages == 0 &&
-        (_text.text.trim().isNotEmpty || _images.isNotEmpty);
-    final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
+        (_text.text.trim().isNotEmpty ||
+            _images.isNotEmpty ||
+            _files.isNotEmpty);
+    final wide = useWideLayout(context);
+    // Scaffold removes body viewInsets after resizing; read the actual view
+    // so the Done control and compact composer still see the keyboard.
+    final view = View.of(context);
+    final keyboardInset = view.viewInsets.bottom / view.devicePixelRatio;
+    final keyboard = keyboardInset > 0;
+    final compact = MediaQuery.sizeOf(context).height - keyboardInset < 430;
     return Padding(
       padding: wide
           ? const EdgeInsets.fromLTRB(16, 8, 16, 16)
@@ -270,11 +360,33 @@ class _ComposerState extends State<Composer> {
                         ],
                       ),
                     ),
-                  ConfigBar(controller: c),
+                  if (!(compact && keyboard)) ConfigBar(controller: c),
                   if (_readingImages > 0) const LinearProgressIndicator(),
+                  if (_files.isNotEmpty)
+                    SizedBox(
+                      height: 40,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          for (final file in _files)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 6),
+                              child: InputChip(
+                                avatar: const Icon(Icons.attach_file, size: 16),
+                                label: Text(
+                                  '${file['name']}',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onDeleted: () =>
+                                    setState(() => _files.remove(file)),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
                   if (_images.isNotEmpty)
                     SizedBox(
-                      height: 72,
+                      height: compact ? 48 : 72,
                       child: ListView(
                         scrollDirection: Axis.horizontal,
                         padding: const EdgeInsets.symmetric(
@@ -318,43 +430,51 @@ class _ComposerState extends State<Composer> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        if (agent?.image ?? true)
-                          PopupMenuButton<_AttachmentAction>(
-                            icon: const Icon(
-                              Icons.add_photo_alternate_outlined,
+                        PopupMenuButton<_AttachmentAction>(
+                          icon: const Icon(Icons.add_photo_alternate_outlined),
+                          tooltip: '附加檔案或圖片',
+                          onOpened: _dismissKeyboard,
+                          onSelected: (action) async {
+                            switch (action) {
+                              case _AttachmentAction.file:
+                                await _pickFiles();
+                              case _AttachmentAction.gallery:
+                                await _pick(ImageSource.gallery);
+                              case _AttachmentAction.camera:
+                                await _pick(ImageSource.camera);
+                              case _AttachmentAction.paste:
+                                await _pasteImage(notifyEmpty: true);
+                            }
+                          },
+                          itemBuilder: (_) => [
+                            const PopupMenuItem(
+                              value: _AttachmentAction.file,
+                              child: Text('選擇檔案（20 MiB 上限）'),
                             ),
-                            tooltip: '附加圖片',
-                            onSelected: (action) async {
-                              switch (action) {
-                                case _AttachmentAction.gallery:
-                                  await _pick(ImageSource.gallery);
-                                case _AttachmentAction.camera:
-                                  await _pick(ImageSource.camera);
-                                case _AttachmentAction.paste:
-                                  await _pasteImage(notifyEmpty: true);
-                              }
-                            },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(
+                            if (_supportsImages)
+                              const PopupMenuItem(
                                 value: _AttachmentAction.gallery,
                                 child: Text('從相簿選擇'),
                               ),
-                              PopupMenuItem(
+                            if (_supportsImages)
+                              const PopupMenuItem(
                                 value: _AttachmentAction.camera,
                                 child: Text('拍照'),
                               ),
-                              PopupMenuItem(
+                            if (_supportsImages)
+                              const PopupMenuItem(
                                 value: _AttachmentAction.paste,
                                 child: Text('貼上剪貼簿圖片'),
                               ),
-                            ],
-                          ),
+                          ],
+                        ),
                         Expanded(
                           child: TextField(
                             controller: _text,
                             focusNode: _focus,
                             minLines: 1,
-                            maxLines: 6,
+                            maxLines: compact ? 2 : 6,
+                            onTapOutside: (_) => _dismissKeyboard(),
                             textInputAction: TextInputAction.newline,
                             contentInsertionConfiguration: _supportsImages
                                 ? ContentInsertionConfiguration(
@@ -384,6 +504,12 @@ class _ComposerState extends State<Composer> {
                           ),
                         ),
                         const SizedBox(width: 6),
+                        if (_focus.hasFocus && keyboard)
+                          IconButton(
+                            tooltip: '收起鍵盤',
+                            icon: const Icon(Icons.keyboard_hide_rounded),
+                            onPressed: _dismissKeyboard,
+                          ),
                         if (running)
                           IconButton.filledTonal(
                             tooltip: '停止',

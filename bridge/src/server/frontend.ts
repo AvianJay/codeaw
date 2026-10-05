@@ -54,7 +54,7 @@ export class FrontendConnection implements ClientHandle {
         return manager.initializeResponse();
       })
       .onRequest("authenticate", () => ({}))
-      .onRequest("session/new", (ctx) => this.flushed(manager.newSession(this, bind(ctx).params)))
+      .onRequest("session/new", (ctx) => this.flushed(manager.newSession(this, { ...bind(ctx).params, cwd: deps.guard.directory(ctx.params.cwd) })))
       .onRequest("session/load", (ctx) => this.flushed(manager.loadSession(this, bind(ctx).params)))
       .onRequest("session/resume", (ctx) => this.flushed(manager.resumeSession(this, bind(ctx).params)))
       .onRequest("session/list", (ctx) => manager.listSessions(this, bind(ctx).params))
@@ -75,6 +75,7 @@ export class FrontendConnection implements ClientHandle {
       })
       .onRequest("_codeaw/workspaces/list", passthrough, () => ({
         roots: deps.guard.roots().map((r) => ({ ...r, name: r.path.split(/[\\/]/).filter(Boolean).pop() ?? r.path })),
+        allowAllPaths: deps.guard.allowsAllPaths,
       }))
       .onRequest("_codeaw/fs/list", passthrough, (ctx) => listDir(deps.guard, ctx.params.path))
       .onRequest("_codeaw/fs/read", passthrough, (ctx) => readFile(deps.guard, ctx.params.path, ctx.params.maxBytes))

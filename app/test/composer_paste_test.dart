@@ -7,6 +7,7 @@ import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/util/image_clipboard.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,21 +68,48 @@ class _Client extends BridgeClient {
     ];
   }
   final prompts = <Map<String, dynamic>>[];
+  final uploads = <({String sessionId, String name, Uint8List bytes})>[];
+  bool failPrompt = false;
+
+  @override
+  Future<Map<String, dynamic>> uploadFile(
+    String sessionId,
+    String name,
+    Uint8List bytes,
+  ) async {
+    uploads.add((sessionId: sessionId, name: name, bytes: bytes));
+    return {
+      'type': 'resource_link',
+      'name': name,
+      'uri': 'file:///workspace/$name',
+    };
+  }
 
   @override
   Future<dynamic> request(String method, [Map<String, dynamic>? params]) async {
-    if (method == 'session/prompt') prompts.add(params!);
+    if (method == 'session/prompt') {
+      if (failPrompt) throw const FormatException('Connection lost');
+      prompts.add(params!);
+    }
     return {};
   }
 }
 
-Widget _app(SessionController controller, _Clipboard clipboard) => MaterialApp(
+Widget _app(
+  SessionController controller,
+  _Clipboard clipboard, {
+  Future<List<XFile>> Function()? selectFiles,
+}) => MaterialApp(
   home: Scaffold(
     body: Column(
       children: [
         const TextField(key: ValueKey('other-field')),
         const Spacer(),
-        Composer(controller: controller, imageClipboard: clipboard),
+        Composer(
+          controller: controller,
+          imageClipboard: clipboard,
+          selectFiles: selectFiles,
+        ),
       ],
     ),
   ),
@@ -96,6 +124,7 @@ Future<({SessionController controller, _Client client})> _show(
   WidgetTester tester,
   _Clipboard clipboard, {
   bool images = true,
+  Future<List<XFile>> Function()? selectFiles,
 }) async {
   tester.view.physicalSize = const Size(834, 1112);
   tester.view.devicePixelRatio = 1;
@@ -106,7 +135,9 @@ Future<({SessionController controller, _Client client})> _show(
     controller.dispose();
     client.dispose();
   });
-  await tester.pumpWidget(_app(controller, clipboard));
+  await tester.pumpWidget(
+    _app(controller, clipboard, selectFiles: selectFiles),
+  );
   await tester.pumpAndSettle();
   return (controller: controller, client: client);
 }
@@ -185,33 +216,28 @@ void main() {
     );
   }
 
-  testWidgets(
-    'ordinary paste replaces only selected text and supports undo',
-    (tester) async {
-      final clipboard = _Clipboard();
-      await _show(tester, clipboard);
-      await tester.enterText(_input, 'abcXXdef');
-      await tester.pump(const Duration(seconds: 1));
-      tester.widget<TextField>(_input).controller!.selection =
-          const TextSelection(baseOffset: 3, extentOffset: 5);
-      clipboardText = ' pasted ';
-      await _pasteKey(tester);
-      expect(
-        tester.widget<TextField>(_input).controller!.text,
-        'abc pasted def',
-      );
-      expect(find.byType(Image), findsNothing);
-      await tester.pump(const Duration(seconds: 1));
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pumpAndSettle();
-      expect(tester.widget<TextField>(_input).controller!.text, 'abcXXdef');
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-    variant: TargetPlatformVariant({TargetPlatform.windows}),
-  );
+  testWidgets('ordinary paste replaces only selected text and supports undo', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    await _show(tester, clipboard);
+    await tester.enterText(_input, 'abcXXdef');
+    await tester.pump(const Duration(seconds: 1));
+    tester.widget<TextField>(_input).controller!.selection =
+        const TextSelection(baseOffset: 3, extentOffset: 5);
+    clipboardText = ' pasted ';
+    await _pasteKey(tester);
+    expect(tester.widget<TextField>(_input).controller!.text, 'abc pasted def');
+    expect(find.byType(Image), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(_input).controller!.text, 'abcXXdef');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
 
   testWidgets(
     'image menu pastes without reading on focus and lets users remove the attachment',
@@ -224,7 +250,7 @@ void main() {
       await tester.tap(_input);
       await tester.pumpAndSettle();
       expect(clipboard.reads, 0);
-      await tester.tap(find.byTooltip('附加圖片'));
+      await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();
@@ -318,49 +344,52 @@ void main() {
         isFalse,
       );
       expect(clipboard.reads, 0);
-      expect(find.byTooltip('附加圖片'), findsNothing);
+      expect(find.byTooltip('附加檔案或圖片'), findsOneWidget);
+      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.pumpAndSettle();
+      expect(find.text('選擇檔案（20 MiB 上限）'), findsOneWidget);
+      expect(find.text('從相簿選擇'), findsNothing);
+      expect(find.text('貼上剪貼簿圖片'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },
   );
 
-  testWidgets(
-    'Android keyboard content becomes an image attachment',
-    (tester) async {
-      final clipboard = _Clipboard();
-      final h = await _show(tester, clipboard);
-      await tester.tap(_input);
-      await tester.showKeyboard(_input);
-      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-        'flutter/textinput',
-        const JSONMessageCodec().encodeMessage({
-          'method': 'TextInputClient.performAction',
-          'args': [
-            -1,
-            'TextInputAction.commitContent',
-            {
-              'mimeType': 'image/png',
-              'uri': 'content://fixture/image.png',
-              'data': _png.toList(),
-            },
-          ],
-        }),
-        (_) {},
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(Image), findsOneWidget);
-      await tester.tap(find.byTooltip('送出'));
-      await tester.pumpAndSettle();
-      expect(
-        (h.client.prompts.single['prompt'] as List).single['mimeType'],
-        'image/png',
-      );
-      expect(clipboard.reads, 0);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-    variant: TargetPlatformVariant({TargetPlatform.android}),
-  );
+  testWidgets('Android keyboard content becomes an image attachment', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    await tester.tap(_input);
+    await tester.showKeyboard(_input);
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/textinput',
+      const JSONMessageCodec().encodeMessage({
+        'method': 'TextInputClient.performAction',
+        'args': [
+          -1,
+          'TextInputAction.commitContent',
+          {
+            'mimeType': 'image/png',
+            'uri': 'content://fixture/image.png',
+            'data': _png.toList(),
+          },
+        ],
+      }),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(Image), findsOneWidget);
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(
+      (h.client.prompts.single['prompt'] as List).single['mimeType'],
+      'image/png',
+    );
+    expect(clipboard.reads, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
   testWidgets(
     'read failures show a safe message and release the loading state',
@@ -370,7 +399,7 @@ void main() {
           PlatformException(code: 'denied', message: 'private native details'),
         );
       await _show(tester, clipboard);
-      await tester.tap(find.byTooltip('附加圖片'));
+      await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();
@@ -381,4 +410,77 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'selected file bytes are uploaded and its resource is sent with the message',
+    (tester) async {
+      final bytes = Uint8List.fromList(utf8.encode('上傳內容'));
+      final h = await _show(
+        tester,
+        _Clipboard(),
+        selectFiles: () async => [
+          XFile.fromData(bytes, name: '資料.txt', path: '資料.txt'),
+        ],
+      );
+      await tester.enterText(_input, 'Read the attached file');
+      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+      await tester.pumpAndSettle();
+      expect(h.client.uploads.single.sessionId, 'codex:one');
+      expect(h.client.uploads.single.name, '資料.txt');
+      expect(h.client.uploads.single.bytes, bytes);
+      expect(find.text('資料.txt'), findsOneWidget);
+      expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
+      await tester.tap(find.byTooltip('送出'));
+      await tester.pumpAndSettle();
+      expect(h.client.prompts.single['prompt'], [
+        {'type': 'text', 'text': 'Read the attached file'},
+        {
+          'type': 'resource_link',
+          'name': '資料.txt',
+          'uri': 'file:///workspace/資料.txt',
+        },
+      ]);
+      expect(find.text('資料.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('failed send restores the draft and uploaded file for retry', (
+    tester,
+  ) async {
+    final h = await _show(
+      tester,
+      _Clipboard(),
+      selectFiles: () async => [
+        XFile.fromData(
+          Uint8List.fromList([1, 2]),
+          name: 'retry.txt',
+          path: 'retry.txt',
+        ),
+      ],
+    );
+    h.client.failPrompt = true;
+    await tester.enterText(_input, 'Keep this draft');
+    await tester.tap(find.byTooltip('附加檔案或圖片'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(_input).controller!.text,
+      'Keep this draft',
+    );
+    expect(find.text('retry.txt'), findsOneWidget);
+    h.client.failPrompt = false;
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(h.client.prompts, hasLength(1));
+    expect(h.client.uploads, hasLength(1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 }

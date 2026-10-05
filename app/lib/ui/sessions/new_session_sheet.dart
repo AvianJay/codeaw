@@ -53,7 +53,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
           await state.client!.request('_codeaw/workspaces/list')
               as Map<String, dynamic>;
       for (final w in (r['roots'] as List? ?? const []).whereType<Map>()) {
-        if (w['source'] == 'config' && !roots.any((x) => x.path == w['path'])) {
+        if ((w['source'] == 'config' || w['source'] == 'filesystem') && !roots.any((x) => x.path == w['path'])) {
           roots.add((path: '${w['path']}', source: 'workspace'));
         }
       }
@@ -66,6 +66,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
   }
 
   Future<void> _browse() async {
+    FocusManager.instance.primaryFocus?.unfocus();
     final picked = await Navigator.of(context).push<String>(
       MaterialPageRoute(builder: (_) => FolderPickerPage(start: _cwd)),
     );
@@ -284,6 +285,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
   String? _parent;
   List<Map<String, dynamic>> _dirs = [];
   List<Map<String, dynamic>> _roots = [];
+  bool _allowAllPaths = false;
   String? _error;
   bool _loading = false;
 
@@ -307,6 +309,7 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
         _roots = (r['roots'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
             .toList();
+        _allowAllPaths = r['allowAllPaths'] == true;
         _path = null;
         _parent = null;
         _dirs = [];
@@ -356,6 +359,8 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
                     ),
                   ),
                 if (_path == null) ...[
+                  if (!_allowAllPaths)
+                    const Padding(padding: EdgeInsets.all(16), child: Text('要瀏覽其他磁碟，請在電腦 bridge 設定啟用「允許已配對裝置瀏覽所有磁碟與資料夾」。這會讓所有已配對裝置存取此帳號可讀取的檔案；僅在信任配對裝置時啟用。')),
                   if (_roots.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(16),

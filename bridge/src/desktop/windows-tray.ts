@@ -157,7 +157,7 @@ function Add-Number($Form, [string]$Text, [int]$Y, [int]$Maximum, [int]$Value, [
 
 function Show-Settings {
     try { $script:settings = Invoke-Control 'settings' } catch { Show-Error $_; return }
-    $form = New-Window '設定' 508 602
+    $form = New-Window '設定' 508 686
     (Add-Label $form 'Bridge 設定' 24 18 460 30).Font = [System.Drawing.Font]::new('Microsoft JhengHei UI', 16, [System.Drawing.FontStyle]::Bold)
     $script:port = Add-Number $form '連接埠（0 = 自動分配）' 70 65535 $script:settings.port 0
     $script:sessionIdle = Add-Number $form '閒置對話釋放時間（分鐘）' 110 10080 $script:settings.idleSessionCloseMinutes
@@ -170,22 +170,29 @@ function Show-Settings {
     $script:folders.ScrollBars = 'Vertical'
     $script:folders.Text = $script:settings.workspaces -join [Environment]::NewLine
     $form.Controls.Add($script:folders)
-    Add-Label $form '啟用的 agents' 24 370 460 28 | Out-Null
+    $script:allPaths = [System.Windows.Forms.CheckBox]::new()
+    $script:allPaths.Text = '允許已配對裝置瀏覽所有磁碟與資料夾'
+    $script:allPaths.Location = [System.Drawing.Point]::new(24, 366)
+    $script:allPaths.Size = [System.Drawing.Size]::new(460, 28)
+    $script:allPaths.Checked = [bool]$script:settings.allowAllPaths
+    $form.Controls.Add($script:allPaths)
+    Add-Label $form '啟用後所有已配對裝置可存取此 Windows 帳號可讀取的檔案。這不是沙箱；只配對你信任的裝置。' 24 396 460 48 | Out-Null
+    Add-Label $form '啟用的 agents' 24 448 460 28 | Out-Null
     $script:agents = [System.Windows.Forms.CheckedListBox]::new()
-    $script:agents.Location = [System.Drawing.Point]::new(24, 400)
+    $script:agents.Location = [System.Drawing.Point]::new(24, 478)
     $script:agents.Size = [System.Drawing.Size]::new(460, 94)
     $script:agents.CheckOnClick = $true
     foreach ($agent in $script:settings.agents) { $script:agents.Items.Add($agent.name + ' (' + $agent.id + ')', [bool]$agent.enabled) | Out-Null }
     $form.Controls.Add($script:agents)
-    Add-Button $form '安裝 ACP agent…' 24 552 160 { Show-AgentInstaller } | Out-Null
-    Add-Label $form '儲存會重新啟動 bridge，正在執行的回合將中止。' 24 514 460 28 | Out-Null
-    Add-Button $form '取消' 194 552 100 { $script:window.Close() } | Out-Null
-    Add-Button $form '儲存並重新啟動' 304 552 180 {
+    Add-Button $form '安裝 ACP agent…' 24 630 160 { Show-AgentInstaller } | Out-Null
+    Add-Label $form '儲存會重新啟動 bridge，正在執行的回合將中止。' 24 592 460 28 | Out-Null
+    Add-Button $form '取消' 194 630 100 { $script:window.Close() } | Out-Null
+    Add-Button $form '儲存並重新啟動' 304 630 180 {
         if ([System.Windows.Forms.MessageBox]::Show('套用設定並重新啟動 bridge？正在執行的回合將中止。', '套用設定', 'OKCancel', 'Question') -ne 'OK') { return }
         $enabled = @{}
         for ($i = 0; $i -lt @($script:settings.agents).Count; $i++) { $enabled[$script:settings.agents[$i].id] = $script:agents.GetItemChecked($i) }
         $folders = @($script:folders.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $settings = @{ port = [int]$script:port.Value; workspaces = $folders; agents = $enabled;
+        $settings = @{ port = [int]$script:port.Value; workspaces = $folders; allowAllPaths = [bool]$script:allPaths.Checked; agents = $enabled;
             idleSessionCloseMinutes = [int]$script:sessionIdle.Value; idleAgentStopMinutes = [int]$script:agentIdle.Value }
         try { Invoke-Control 'saveSettings' @{ settings = $settings } | Out-Null; $script:window.Close() }
         catch { Show-Error $_ }

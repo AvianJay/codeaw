@@ -28,8 +28,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
     final width = MediaQuery.sizeOf(context).width;
-    final desktop = width >= desktopBreakpoint;
-    final tablet = width >= tabletBreakpoint && !desktop;
+    final desktop = useWideLayout(context) && width >= desktopBreakpoint;
+    final tablet = useWideLayout(context) && !desktop;
     final scheme = Theme.of(context).colorScheme;
     if (widget.location.path == '/session') {
       _sessionId = widget.location.queryParameters['id'];
@@ -148,7 +148,7 @@ class WorkspaceHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (MediaQuery.sizeOf(context).width < tabletBreakpoint) {
+    if (!useWideLayout(context)) {
       return const SessionsPage();
     }
     final state = AppScope.of(context);
