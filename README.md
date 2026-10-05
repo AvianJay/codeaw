@@ -32,13 +32,15 @@ npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP
 
 安裝 bridge：
 
-Linux 一行安裝（預設 nightly）：
+Linux／macOS 一行安裝（預設 nightly）：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AvianJay/codeaw/master/install.sh | sh
 ```
 
 安裝器自動選擇 x64／ARM64 與 glibc／musl，下載後驗證 `SHA256SUMS`，將執行檔與 `web/` 安裝到 `${XDG_DATA_HOME:-~/.local/share}/codeaw-bridge`，並在 `~/.local/bin/codeaw-bridge` 建立指令連結。不需 sudo、Node 或 Bun；需要 `curl`、`tar`、`sha256sum` 與一般 Linux 命令列工具。若 `~/.local/bin` 尚未加入 PATH，依安裝完成時的提示設定，再執行 `codeaw-bridge start`，首次啟動會建立設定並顯示配對 QR code。Tailscale 與 ACP agents 仍需另外安裝。
+
+macOS 會選擇 Intel／Apple Silicon 套件並使用內建 `shasum` 驗證；安裝後執行 `codeaw-bridge tray`，選單列提供配對、ACP 安裝、設定、裝置管理與更新。macOS 也可使用 `codeaw-bridge-macos-x64-setup.dmg`／`codeaw-bridge-macos-arm64-setup.dmg`，將 `codeaw.app` 拖到 Applications 後開啟。未公證版本可能需要在「系統設定 → 隱私權與安全性」允許開啟。
 
 可指定穩定版（`latest`）、版本 tag，或安裝路徑：
 
@@ -86,7 +88,7 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 
 ### ACP agent 安裝器
 
-Windows 可從系統匣的「安裝 ACP agents…」或設定視窗的「安裝 ACP agent…」開啟安裝器，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
+Windows 系統匣與 macOS 選單列都可開啟「安裝 ACP agent…」，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
 
 所有平台都可使用 CLI：
 
@@ -100,6 +102,8 @@ codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；�
 ```
 
 agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式；Hermes Agent 目前不在 ACP registry，請依下方指引安裝。
+
+macOS 的 npm 安裝器會先檢查 Node.js／npm；若缺少或損壞，會下載官方 Node 24、驗證 SHA-256，放在設定旁的 `runtime/node/`，不更動 Homebrew 或系統 Node。新設定只列出真正找到的 ACP 執行檔，不再自動加入未安裝的 Claude。
 
 ### Hermes Agent
 
@@ -231,7 +235,7 @@ New-NetFirewallRule -DisplayName "codeaw-bridge (Tailscale)" -Direction Inbound 
 
 ### 開機自動啟動
 
-Windows 可從系統匣勾選「登入後自動啟動系統匣」，或使用指令（不需要管理員權限）：
+Windows／macOS 可從系統匣或選單列勾選「登入後自動啟動」，或使用指令（不需要管理員權限）：
 
 ```powershell
 codeaw-bridge autostart install
@@ -240,6 +244,8 @@ codeaw-bridge autostart uninstall
 ```
 
 登入啟動採用使用者的 Windows Run 登錄項目，以隱藏視窗啟動，會沿用本機設定；若 bridge 已由服務啟動，登入時只附加系統匣。舊的 `bridge/scripts/autostart.ps1` 保留為相容入口，也會移除舊版登入排程。
+
+macOS 登入啟動使用 `~/Library/LaunchAgents/tw.codeaw.*.tray.plist`，下次登入後啟動選單列；若 Bridge 已在背景運行，只附加選單列。從 DMG 安裝後，請先把 App 放進 Applications 再啟用，避免啟動路徑指向已卸載的磁碟映像。
 
 ### 服務模式
 
@@ -319,11 +325,13 @@ GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` 
 
 在 repository 的 Actions secrets 設定 `KEYSTORE_BASE64`（keystore 的 Base64）、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`。密碼同時用於 keystore 與 key；CI 缺少任何一項會失敗。Android 會產出已簽章的 universal APK、三個 ABI APK 與 AAB，版本編號使用 workflow run number。
 
-Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件提供 NSIS `*-setup.exe` 與可攜式 ZIP，其餘為 tar.gz，全部列入 `SHA256SUMS`。
+Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 提供 NSIS `*-setup.exe` 與可攜式 ZIP；macOS 提供 `*-setup.dmg` 與 tar.gz，Linux 提供 tar.gz，全部列入 `SHA256SUMS`。
 
 Web 先建置，再附入所有 bridge 發行包與 Windows 安裝程式。iOS 在 macOS runner 執行 `flutter build ios --release --no-codesign`，把 `Runner.app` 放進 `Payload/` 壓縮成 `codeaw-ios-unsigned.ipa`，不需要 Apple 簽署 secrets。本機 iOS 建置需 macOS／Xcode，也可以用相同方式打包。
 
 本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。Windows 執行檔需在 Windows 建置，才能嵌入與 Flutter App 相同的圖示；系統匣和原生視窗會使用這個圖示。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
+
+macOS 本機建置另需 Xcode Command Line Tools；先建置 web 與 standalone bridge，再執行 `npm run build:macos -- --out-dir dist/bin` 和 `npm run build:macos-installer`，產生含選單列與 web 的 `bridge/dist/installer/codeaw-bridge-macos-<架構>-setup.dmg`。CI 在對應架構的 macOS runner 建置。
 
 建置 Windows NSIS 安裝程式另需 [NSIS 3.09+](https://nsis.sourceforge.io/Download)（建議使用最新版）；Windows 安裝 NSIS，Linux 可安裝 `nsis` 套件。預設會先建置對應的 Windows 執行檔，再產生安裝包：
 
@@ -348,6 +356,7 @@ npm run typecheck
 npm run smoke            # 對本機真的 agent 做握手 / 列 session / 開 session（不送 prompt）
 npm run smoke:desktop    # Windows：隔離設定渲染三個原生視窗、編譯服務 host；不安裝服務／自動啟動
 npm run smoke:tray       # Windows：驗證打包版 CLI 結束後系統匣仍存活，重複啟動只有一個圖示
+npm run smoke:macos      # macOS：驗證選單列存活、原生 IPC、重複啟動與重啟／停止（隔離設定）
 npx tsx scripts/dev-bridge.ts --host 0.0.0.0 --port 7861   # 只有假 agent 的 bridge，方便調 UI
 
 cd ../app

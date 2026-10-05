@@ -42,7 +42,7 @@ export class BridgeRuntime {
   }
 
   openDesktop(page?: DesktopPage): void {
-    if (process.platform !== "win32") throw new Error("Native tray and windows are currently available on Windows");
+    if (!["win32", "darwin"].includes(process.platform)) throw new Error("Native tray and windows are available on Windows and macOS");
     this.page = page;
   }
 

@@ -16,6 +16,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs",
     "build:web": "node scripts/build-web.mjs",
+    "build:macos": "node scripts/build-macos.mjs",
+    "build:macos-installer": "node scripts/build-macos-installer.mjs",
     "build:bin": "npm run build && node scripts/build-binaries.mjs",
     "build:installer": "node scripts/build-installer.mjs",
     "dev": "tsx src/index.ts",
@@ -26,6 +28,7 @@
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
     "smoke:desktop": "tsx scripts/desktop-smoke.ts",
     "smoke:tray": "node scripts/tray-smoke.mjs",
+    "smoke:macos": "node scripts/macos-smoke.mjs",
     "smoke:installer": "node scripts/installer-smoke.mjs"
   },
   "dependencies": {

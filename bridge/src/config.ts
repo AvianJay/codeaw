@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 import YAML from "yaml";
 import { z } from "zod";
 import { codeawHome, expandHome } from "./util/paths.js";
+import { resolveCommand } from "./util/environment.js";
 
 const AgentConfigSchema = z.object({
   name: z.string(),
@@ -81,11 +81,6 @@ export function loadConfig(file = defaultConfigFile()): LoadedConfig {
   return { config, file, home, dataDir };
 }
 
-function commandExists(cmd: string): boolean {
-  const probe = process.platform === "win32" ? spawnSync("where", [cmd], { windowsHide: true }) : spawnSync("which", [cmd]);
-  return probe.status === 0;
-}
-
 /** Known ACP agents and how to launch them. Only the installed ones end up in a fresh config. */
 export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig }> = [
   { id: "claude", probe: "claude-agent-acp", agent: { name: "Claude Code", command: "claude-agent-acp", args: [], env: {}, enabled: true } },
@@ -109,7 +104,10 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
 
 export function detectAgents(): Record<string, AgentConfig> {
   const found: Record<string, AgentConfig> = {};
-  for (const k of KNOWN_AGENTS) if (commandExists(k.probe)) found[k.id] = k.agent;
+  for (const entry of KNOWN_AGENTS) {
+    const command = resolveCommand(entry.probe);
+    if (command) found[entry.id] = { ...entry.agent, command };
+  }
   return found;
 }
 
@@ -117,7 +115,6 @@ export function detectAgents(): Record<string, AgentConfig> {
 export function writeDefaultConfig(file = defaultConfigFile()): boolean {
   if (fs.existsSync(file)) return false;
   const agents = detectAgents();
-  if (Object.keys(agents).length === 0) agents.claude = KNOWN_AGENTS[0].agent;
   const topic = "codeaw-" + crypto.randomBytes(12).toString("hex");
   const doc = {
     listen: { hosts: "auto", port: 7860 },
