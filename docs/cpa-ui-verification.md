@@ -17,7 +17,8 @@ by the full regression suite.
 | Single/double check marks | Separate bridge acceptance from AI processing, persist receipt states and correlate native desktop prompt ids | Queue/disconnect/replay/deduplication bridge tests; receipt icons; native steering id replay; real Luna Low desktop-linked tests |
 | Uploaded image enlargement | ACP BlockImage had no onTap, unlike Markdown images | Shared full-screen preview; own-image tap, double-tap zoom, drag, reset and close tests; authenticated blob source uses the same image provider |
 
-Local checks: bridge `npm test` (105 passed), `npm run typecheck`, Flutter
+Local checks after integration with the macOS changes: bridge `npm test`
+(106 passed, 7 platform tests skipped on Windows), `npm run typecheck`, Flutter
 `flutter test` (149 passed, 11 optional tests skipped), `flutter analyze` with
 no issues, and release Web build. Unit/widget checks use test fixtures.
 

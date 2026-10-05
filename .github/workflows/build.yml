@@ -280,7 +280,7 @@ jobs:
         run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$APP_BUILD_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
       - name: Build every package bin
         run: |
-          node --test ../scripts/macos-icon.test.mjs
+          node --test ../scripts/macos-icon.test.mjs ../scripts/macos-dmg.test.mjs
           npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')

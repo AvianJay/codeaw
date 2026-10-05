@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
+import { createMacosDmg } from "./create-macos-dmg.mjs";
 
 if (process.platform !== "darwin") throw new Error("Build the macOS installer on macOS.");
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -53,6 +54,7 @@ try {
   run("codesign", ["--force", "--sign", "-", path.join(stage, "codeaw.app")]);
   fs.cpSync(path.join(stage, "codeaw.app"), path.join(output, "codeaw.app"), { recursive: true });
   const disk = path.join(output, `codeaw-bridge-macos-${values.arch}-setup.dmg`);
-  run("hdiutil", ["create", "-ov", "-size", "512m", "-fs", "HFS+", "-format", "UDZO", "-volname", "codeaw", "-srcfolder", stage, disk]);
+  await createMacosDmg(stage, disk);
+  run("hdiutil", ["verify", disk]);
   process.stdout.write(`Installer: ${disk}\n`);
 } finally { fs.rmSync(stage, { recursive: true, force: true }); }
