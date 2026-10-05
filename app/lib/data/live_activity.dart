@@ -86,11 +86,6 @@ class LiveActivityController extends ChangeNotifier {
       _registered.clear();
       unawaited(refresh());
     });
-    if (supported) {
-      _heartbeat = Timer.periodic(const Duration(seconds: 60), (_) {
-        if (foreground && client.isOnline) unawaited(refresh());
-      });
-    }
     if (client.isOnline) unawaited(refresh());
   }
 
@@ -160,6 +155,7 @@ class LiveActivityController extends ChangeNotifier {
     final id = snapshot['sessionId'];
     if (id is! String) return;
     _snapshots[id] = snapshot;
+    _scheduleHeartbeat();
     if (!supported || !enabled || !_followed.contains(id)) return;
     final hostKey = _hostKey;
     final generation = _generation;
@@ -214,6 +210,27 @@ class LiveActivityController extends ChangeNotifier {
     });
   }
 
+  void _scheduleHeartbeat() {
+    final running =
+        supported &&
+        enabled &&
+        _snapshots.entries.any(
+          (entry) =>
+              _followed.contains(entry.key) &&
+              entry.value['work'] is Map &&
+              entry.value['state'] != 'idle' &&
+              entry.value['deleted'] != true,
+        );
+    if (!running) {
+      _heartbeat?.cancel();
+      _heartbeat = null;
+    } else {
+      _heartbeat ??= Timer.periodic(const Duration(seconds: 60), (_) {
+        if (foreground && (_client?.isOnline ?? false)) unawaited(refresh());
+      });
+    }
+  }
+
   Future<void> _register(Map<String, dynamic> token) async {
     final client = _client;
     if (!enabled || client == null || token['hostKey'] != _hostKey) return;
@@ -250,6 +267,7 @@ class LiveActivityController extends ChangeNotifier {
   Future<void> configure({bool? enabled, bool? showDetails}) async {
     this.enabled = enabled ?? this.enabled;
     this.showDetails = showDetails ?? this.showDetails;
+    _scheduleHeartbeat();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('codeaw.liveActivity.enabled', this.enabled);
     await prefs.setBool('codeaw.liveActivity.details', this.showDetails);
