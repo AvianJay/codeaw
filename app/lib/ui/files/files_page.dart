@@ -57,12 +57,6 @@ class _FilesPageState extends State<FilesPage> {
     }
   }
 
-  String _size(num n) {
-    if (n < 1024) return '$n B';
-    if (n < 1024 * 1024) return '${(n / 1024).toStringAsFixed(1)} KB';
-    return '${(n / 1024 / 1024).toStringAsFixed(1)} MB';
-  }
-
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -166,7 +160,7 @@ class _FilesPageState extends State<FilesPage> {
                                   subtitle: e['type'] == 'dir'
                                       ? null
                                       : Text(
-                                          '${_size(e['size'] as num? ?? 0)} · ${timeAgo(DateTime.tryParse('${e['mtime']}'))}',
+                                          '${formatBytes(e['size'] as num? ?? 0)} ·${timeAgo(DateTime.tryParse('${e['mtime']}'))}',
                                         ),
                                   onTap: () {
                                     final path = '${e['path']}';

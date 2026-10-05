@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
@@ -7,11 +10,15 @@ import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/ui/chat/items.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _root = '/work/app';
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+);
 const _tree = [
   ('lib', 'dir'),
   ('lib/ui', 'dir'),
@@ -33,6 +40,10 @@ class _Client extends BridgeClient {
   final bool search;
   final prompts = <List<dynamic>>[];
   final methods = <String>[];
+  Future<UploadedFile> Function(String name, Uint8List bytes)? onUpload;
+
+  @override
+  Future<UploadedFile> upload(String name, Uint8List bytes, {String? mimeType}) => onUpload!(name, bytes);
 
   @override
   Future<dynamic> request(String method, [Map<String, dynamic>? params]) async {
@@ -68,7 +79,12 @@ Finder get _input => find.descendant(of: find.byType(Composer), matching: find.b
 
 String _text(WidgetTester tester) => tester.widget<TextField>(_input).controller!.text;
 
-Future<({SessionController controller, _Client client})> _show(WidgetTester tester, {bool search = true, Size size = const Size(430, 900)}) async {
+Future<({SessionController controller, _Client client})> _show(
+  WidgetTester tester, {
+  bool search = true,
+  Size size = const Size(430, 900),
+  Future<List<XFile>> Function()? pickFiles,
+}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.reset);
@@ -81,7 +97,7 @@ Future<({SessionController controller, _Client client})> _show(WidgetTester test
   await tester.pumpWidget(
     MaterialApp(
       home: Scaffold(
-        body: Column(children: [const Spacer(), Composer(controller: controller)]),
+        body: Column(children: [const Spacer(), Composer(controller: controller, pickFiles: pickFiles)]),
       ),
     ),
   );
@@ -237,6 +253,67 @@ void main() {
     await _search(tester);
     expect(find.text('composer.dart'), findsOneWidget);
     expect(h.client.methods.where((m) => m == '_codeaw/fs/search'), hasLength(1));
+  });
+
+  testWidgets('picked files upload right away and are sent as links; small images stay inline', (tester) async {
+    final pdf = Uint8List.fromList(utf8.encode('%PDF-1.7 fixture'));
+    final h = await _show(
+      tester,
+      pickFiles: () async => [
+        XFile.fromData(pdf, name: 'report.pdf', path: 'report.pdf', mimeType: 'application/pdf'),
+        XFile.fromData(_png, name: 'shot.png', path: 'shot.png'),
+      ],
+    );
+    final stored = Completer<UploadedFile>();
+    h.client.onUpload = (name, bytes) {
+      expect((name, bytes), ('report.pdf', pdf));
+      return stored.future;
+    };
+    await tester.tap(find.byTooltip('附加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('上傳檔案'));
+    // The upload spinner keeps animating, so pumpAndSettle would never return.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('report.pdf'), findsOneWidget);
+    expect(find.text('上傳中…'), findsOneWidget);
+    expect(find.byType(Image), findsOneWidget);
+    await tester.enterText(_input, '幫我摘要');
+    await tester.pump();
+    expect(tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded)).onPressed, isNull);
+    stored.complete(const UploadedFile(
+      path: '/home/me/.codeaw/data/uploads/a1/report.pdf',
+      uri: 'file:///home/me/.codeaw/data/uploads/a1/report.pdf',
+      name: 'report.pdf',
+      size: 16,
+      mimeType: 'application/pdf',
+    ));
+    await tester.pump();
+    expect(find.text('16 B'), findsOneWidget);
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pump();
+    final prompt = h.client.prompts.single;
+    expect(prompt.take(2), [
+      {'type': 'text', 'text': '幫我摘要'},
+      {'type': 'resource_link', 'name': 'report.pdf', 'uri': 'file:///home/me/.codeaw/data/uploads/a1/report.pdf', 'size': 16, 'mimeType': 'application/pdf'},
+    ]);
+    expect((prompt[2] as Map)['type'], 'image');
+    expect(find.text('report.pdf'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a failed upload says why and leaves the composer usable', (tester) async {
+    final h = await _show(tester, pickFiles: () async => [XFile.fromData(Uint8List(3), name: 'log.txt', path: 'log.txt')]);
+    h.client.onUpload = (_, _) => Future.error(const UploadException('電腦上的 bridge 版本較舊，請更新後再上傳檔案'));
+    await tester.tap(find.byTooltip('附加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('上傳檔案'));
+    await tester.pumpAndSettle();
+    expect(find.text('無法上傳 log.txt：電腦上的 bridge 版本較舊，請更新後再上傳檔案'), findsOneWidget);
+    expect(find.text('log.txt'), findsNothing);
+    await tester.enterText(_input, 'hi');
+    await tester.pump();
+    expect(tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded)).onPressed, isNotNull);
   });
 
   testWidgets('sent mentions read inline in the user bubble', (tester) async {

@@ -35,6 +35,8 @@ export class PathGuard {
   constructor(
     private readonly workspaces: () => string[],
     private readonly sessionCwds: () => string[],
+    /** Readable through `resolveReadable`, never offered as workspaces (device uploads). */
+    private readonly readableRoots: () => string[] = () => [],
   ) {}
 
   roots(): { path: string; source: "config" | "session" }[] {
@@ -53,10 +55,19 @@ export class PathGuard {
   }
 
   resolve(p: unknown): string {
+    return this.check(p, this.roots().map((r) => r.path));
+  }
+
+  /** Like `resolve`, but also allows files that devices uploaded, for previews. */
+  resolveReadable(p: unknown): string {
+    return this.check(p, [...this.roots().map((r) => r.path), ...this.readableRoots().map(realPath)]);
+  }
+
+  private check(p: unknown, roots: string[]): string {
     if (typeof p !== "string" || !p) throw acp.RequestError.invalidParams(undefined, "path is required");
     if (!path.isAbsolute(p)) throw acp.RequestError.invalidParams(undefined, "path must be absolute");
     const real = realPath(p);
-    if (!this.roots().some((r) => isInside(r.path, real))) {
+    if (!roots.some((root) => isInside(root, real))) {
       throw acp.RequestError.invalidParams(undefined, "Path is outside the allowed workspaces");
     }
     return real;
@@ -107,7 +118,7 @@ export function listDir(guard: PathGuard, p: unknown): { path: string; parent?: 
 }
 
 export function readFile(guard: PathGuard, p: unknown, maxBytes: unknown) {
-  const file = guard.resolve(p);
+  const file = guard.resolveReadable(p);
   const limit = Math.min(typeof maxBytes === "number" && maxBytes > 0 ? maxBytes : DEFAULT_READ_BYTES, MAX_READ_BYTES);
   let st: fs.Stats;
   try {

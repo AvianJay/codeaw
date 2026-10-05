@@ -22,6 +22,11 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
+| `POST /api/uploads?name=<file name>` | store the request body (≤ 50 MB) for an agent to read; returns `{path, uri, name, size, mimeType?}` | Bearer |
+
+Uploads go to `<dataDir>/uploads/<id>/<file name>` and are deleted after 30
+days. `fs/read` and `fs/raw` may read them; they are never listed as
+workspaces. The app sends an upload as a `resource_link` with that `uri`.
 
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.

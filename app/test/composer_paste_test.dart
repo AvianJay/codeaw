@@ -318,7 +318,12 @@ void main() {
         isFalse,
       );
       expect(clipboard.reads, 0);
-      expect(find.byTooltip('附加'), findsNothing);
+      // Files can still be sent; the image options are gone.
+      await tester.tap(find.byTooltip('附加'));
+      await tester.pumpAndSettle();
+      expect(find.text('上傳檔案'), findsOneWidget);
+      expect(find.text('從相簿選擇'), findsNothing);
+      expect(find.text('貼上剪貼簿圖片'), findsNothing);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     },

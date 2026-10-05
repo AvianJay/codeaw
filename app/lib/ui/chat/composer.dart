@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,9 +16,12 @@ import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.controller, this.imageClipboard});
+  const Composer({super.key, required this.controller, this.imageClipboard, this.pickFiles});
   final SessionController controller;
   final ImageClipboard? imageClipboard;
+
+  /// Chooses files to send; defaults to the platform file picker.
+  final Future<List<XFile>> Function()? pickFiles;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -27,12 +31,13 @@ class _ComposerState extends State<Composer> {
   late final _text = _ComposerTextController(() => c.draftMentions.keys);
   final _focus = FocusNode();
   final _images = <ClipboardImage>[];
+  final _uploads = <_Upload>[];
   final _attachMenu = MenuController();
   final _highlightKey = GlobalKey();
   late final ImageClipboard _clipboard;
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
-  int _pasteGeneration = 0;
+  int _attachGeneration = 0;
 
   // `@` completion: the word before the cursor and the bridge's matches for it.
   ({int start, String query})? _mention;
@@ -73,9 +78,10 @@ class _ComposerState extends State<Composer> {
   void didUpdateWidget(Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, c)) {
-      _pasteGeneration++;
+      _attachGeneration++;
       _readingImages = 0;
       _images.clear();
+      _uploads.clear();
       _closeMention();
       if (_attachMenu.isOpen) _attachMenu.close();
       _text.text = c.draft;
@@ -110,6 +116,56 @@ class _ComposerState extends State<Composer> {
     }
   }
 
+  static const _maxUpload = 50 * 1024 * 1024;
+  // Larger images go up as files, so the prompt stays within model limits.
+  static const _maxInlineImage = 4 * 1024 * 1024;
+
+  Future<void> _pickFiles() async {
+    final target = c;
+    final List<XFile> files;
+    try {
+      files = await (widget.pickFiles ?? openFiles)();
+    } catch (_) {
+      if (mounted) _message('無法開啟檔案選擇器');
+      return;
+    }
+    for (final file in files) {
+      if (!mounted || !identical(c, target)) return;
+      final size = await file.length();
+      if (_supportsImages && size <= _maxInlineImage && RegExp(r'\.(png|jpe?g|webp|gif)$', caseSensitive: false).hasMatch(file.name)) {
+        try {
+          final image = ClipboardImage.fromBytes(await file.readAsBytes());
+          if (mounted && identical(c, target)) setState(() => _images.add(image));
+          continue;
+        } on FormatException {
+          // Not really an image: send it as a file.
+        }
+      }
+      if (size > _maxUpload) {
+        _message('${file.name} 超過 50 MB，無法上傳');
+        continue;
+      }
+      unawaited(_upload(file, size));
+    }
+  }
+
+  /// Uploads now, so sending later is instant and failures show up early.
+  Future<void> _upload(XFile file, int size) async {
+    final target = c;
+    final generation = _attachGeneration;
+    final upload = _Upload(file.name, size);
+    setState(() => _uploads.add(upload));
+    bool current() => mounted && identical(c, target) && generation == _attachGeneration && _uploads.contains(upload);
+    try {
+      final stored = await target.client.upload(file.name, await file.readAsBytes(), mimeType: file.mimeType);
+      if (current()) setState(() => upload.file = stored);
+    } catch (e) {
+      if (!current()) return;
+      setState(() => _uploads.remove(upload));
+      _message('無法上傳 ${file.name}：${e is UploadException ? e.message : '讀取檔案失敗'}');
+    }
+  }
+
   String _mimeType(XFile file) {
     final lower = file.name.toLowerCase();
     return file.mimeType ??
@@ -127,10 +183,10 @@ class _ComposerState extends State<Composer> {
     bool notifyEmpty = false,
   }) async {
     final target = c;
-    final generation = _pasteGeneration;
+    final generation = _attachGeneration;
     setState(() => _readingImages++);
     bool current() =>
-        mounted && identical(c, target) && generation == _pasteGeneration;
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
       final paste = await future;
       if (!current() || !_supportsImages) return true;
@@ -189,11 +245,12 @@ class _ComposerState extends State<Composer> {
   }
 
   void _send({bool queue = false}) {
-    if (_readingImages > 0) return;
+    if (_readingImages > 0 || _uploads.any((u) => u.file == null)) return;
     final text = _text.text.trim();
-    if (text.isEmpty && _images.isEmpty) return;
+    if (text.isEmpty && _images.isEmpty && _uploads.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
       if (text.isNotEmpty) ...promptBlocks(text, c.draftMentions),
+      for (final upload in _uploads) upload.file!.block,
       for (final img in _images)
         {
           'type': 'image',
@@ -204,7 +261,10 @@ class _ComposerState extends State<Composer> {
     c.send(blocks, queue: queue);
     c.draftMentions.clear();
     _text.clear();
-    setState(_images.clear);
+    setState(() {
+      _images.clear();
+      _uploads.clear();
+    });
   }
 
   /// Replaces `start..end` and puts the cursor after the inserted text.
@@ -388,7 +448,8 @@ class _ComposerState extends State<Composer> {
       if (images) _AttachAction(Icons.photo_library_outlined, '從相簿選擇', () => _pickImages(ImageSource.gallery)),
       if (camera) _AttachAction(Icons.photo_camera_outlined, '拍照', () => _pickImages(ImageSource.camera)),
       if (images) _AttachAction(Icons.content_paste_rounded, '貼上剪貼簿圖片', () => _pasteImage(notifyEmpty: true)),
-      if (images && (mention || command)) null,
+      if (images) null,
+      _AttachAction(Icons.attach_file_rounded, '上傳檔案', _pickFiles),
       if (mention) _AttachAction(Icons.alternate_email_rounded, '提及檔案', _startMention, shortcut: '@'),
       if (command) _AttachAction(Icons.bolt_rounded, '斜線指令', _startCommand, shortcut: '/'),
     ];
@@ -444,7 +505,8 @@ class _ComposerState extends State<Composer> {
         c.client.isOnline &&
         (!c.desktopSync || c.desktopConnected) &&
         _readingImages == 0 &&
-        (_text.text.trim().isNotEmpty || _images.isNotEmpty);
+        !_uploads.any((u) => u.file == null) &&
+        (_text.text.trim().isNotEmpty || _images.isNotEmpty || _uploads.isNotEmpty);
     final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
     return Padding(
       padding: wide
@@ -506,7 +568,7 @@ class _ComposerState extends State<Composer> {
                     _SuggestionList(children: _fileTiles(scheme)),
                   ConfigBar(controller: c),
                   if (_readingImages > 0) const LinearProgressIndicator(),
-                  if (_images.isNotEmpty)
+                  if (_images.isNotEmpty || _uploads.isNotEmpty)
                     SizedBox(
                       height: 72,
                       child: ListView(
@@ -516,6 +578,14 @@ class _ComposerState extends State<Composer> {
                           vertical: 6,
                         ),
                         children: [
+                          for (final upload in _uploads)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: _UploadChip(
+                                upload: upload,
+                                onRemove: () => setState(() => _uploads.remove(upload)),
+                              ),
+                            ),
                           for (final img in _images)
                             Padding(
                               padding: const EdgeInsets.only(right: 8),
@@ -763,6 +833,76 @@ class _AttachMenu extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// A file on its way to the bridge ([file] is null), or stored there.
+class _Upload {
+  _Upload(this.name, this.size);
+  final String name;
+  final int size;
+  UploadedFile? file;
+}
+
+class _UploadChip extends StatelessWidget {
+  const _UploadChip({required this.upload, required this.onRemove});
+  final _Upload upload;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Stack(
+      children: [
+        Container(
+          height: 60,
+          constraints: const BoxConstraints(maxWidth: 200),
+          padding: const EdgeInsets.fromLTRB(10, 8, 22, 8),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (upload.file == null)
+                const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+              else
+                Icon(fileIcon(upload.name), size: 22, color: scheme.primary),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      upload.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                    Text(
+                      upload.file == null ? '上傳中…' : formatBytes(upload.size),
+                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Positioned(
+          right: -10,
+          top: -10,
+          child: IconButton(
+            iconSize: 16,
+            tooltip: '移除檔案',
+            icon: const Icon(Icons.cancel_rounded),
+            onPressed: onRemove,
+          ),
+        ),
+      ],
     );
   }
 }

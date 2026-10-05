@@ -10,6 +10,7 @@ import type { DeviceStore } from "./auth.js";
 import { mimeFor, type PathGuard } from "./ext.js";
 import { FrontendConnection, type FrontendDeps } from "./frontend.js";
 import type { SessionStore } from "../session/store.js";
+import { UploadTooLargeError, type UploadStore } from "./uploads.js";
 import { findWebRoot, serveWeb } from "./web.js";
 
 const log = logger("http");
@@ -19,6 +20,7 @@ const MAX_PAIR_BODY = 4096;
 export interface HttpDeps extends FrontendDeps {
   devices: DeviceStore;
   store: SessionStore;
+  uploads: UploadStore;
   hostName: string;
   webRoot?: string;
 }
@@ -120,12 +122,27 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
       if (req.method === "GET" && url.pathname === "/api/fs/raw") {
         let file: string;
         try {
-          file = deps.guard.resolve(url.searchParams.get("path"));
+          file = deps.guard.resolveReadable(url.searchParams.get("path"));
         } catch (err) {
           return sendJson(res, 403, { error: (err as Error).message });
         }
         if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return sendJson(res, 404, { error: "Not found" });
         return sendFile(res, file, mimeFor(file) ?? "application/octet-stream");
+      }
+      if (req.method === "POST" && url.pathname === "/api/uploads") {
+        const tooLarge = () => {
+          sendJson(res, 413, { error: new UploadTooLargeError(deps.uploads.limit).message });
+          req.resume();
+        };
+        if (Number(req.headers["content-length"]) > deps.uploads.limit) return tooLarge();
+        try {
+          const file = await deps.uploads.save(url.searchParams.get("name"), req.headers["content-type"], req);
+          log.info(`${device.name} uploaded ${file.name} (${file.size} bytes)`);
+          return sendJson(res, 200, file);
+        } catch (err) {
+          if (err instanceof UploadTooLargeError) return tooLarge();
+          throw err;
+        }
       }
       return sendJson(res, 404, { error: "Not found" });
     } catch (err) {

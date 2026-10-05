@@ -119,6 +119,36 @@ class ConfigOption {
   }
 }
 
+/// A file the bridge stored for an agent to read (`POST /api/uploads`).
+class UploadedFile {
+  const UploadedFile({required this.path, required this.uri, required this.name, required this.size, this.mimeType});
+
+  factory UploadedFile.fromJson(Map<String, dynamic> j) => UploadedFile(
+        path: '${j['path']}',
+        uri: '${j['uri']}',
+        name: '${j['name']}',
+        size: (j['size'] as num?)?.toInt() ?? 0,
+        mimeType: j['mimeType'] as String?,
+      );
+
+  final String path;
+  final String uri;
+  final String name;
+  final int size;
+  final String? mimeType;
+
+  /// Agents read the file themselves, so any type works.
+  Map<String, dynamic> get block => {'type': 'resource_link', 'name': name, 'uri': uri, 'size': size, 'mimeType': ?mimeType};
+}
+
+class UploadException implements Exception {
+  const UploadException(this.message);
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Plain text of an ACP content block, for previews and copy.
 String blockText(Map<String, dynamic> block) {
   switch (block['type']) {

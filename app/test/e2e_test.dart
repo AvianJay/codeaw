@@ -6,6 +6,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
@@ -152,5 +153,22 @@ void main() {
     expect(c.terminalId, isNot(id));
     expect(c.canInput, isTrue);
     c.detach();
+  });
+
+  test('uploads files for the agent and finds project files for @ mentions', () async {
+    final client = connect();
+    await client.connected.first.timeout(const Duration(seconds: 15));
+    final file = await client.upload('筆記 1.md', Uint8List.fromList(utf8.encode('# 計畫')), mimeType: 'text/markdown');
+    expect(file.name, '筆記 1.md');
+    expect(file.mimeType, 'text/markdown');
+    expect(Uri.parse(file.uri).toFilePath(windows: Platform.isWindows), file.path);
+    expect((await client.request('_codeaw/fs/read', {'path': file.path}) as Map)['text'], '# 計畫');
+    final home = info['home'] as String;
+    File('$home/notes/plan.md')
+      ..createSync(recursive: true)
+      ..writeAsStringSync('plan');
+    final c = SessionController(client, 'fake:search', cwd: home);
+    cleanups.add(c.dispose);
+    expect((await c.searchFiles('plan')).first.relative, 'notes/plan.md');
   });
 }

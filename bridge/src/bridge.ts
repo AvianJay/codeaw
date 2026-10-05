@@ -7,6 +7,7 @@ import { PushNotifier } from "./notify/ntfy.js";
 import { DeviceStore } from "./server/auth.js";
 import { PathGuard } from "./server/ext.js";
 import { createHttpHandlers } from "./server/http.js";
+import { UploadStore } from "./server/uploads.js";
 import { SessionManager } from "./session/manager.js";
 import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
@@ -68,9 +69,13 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const notifier = new PushNotifier(config.notifications.ntfy, () => manager.clientCount > 0, opts.fetchImpl);
   manager.notifier = notifier;
   manager.start();
-  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds());
+  const uploads = new UploadStore(dataDir);
+  uploads.prune();
+  const pruneUploads = setInterval(() => uploads.prune(), 12 * 60 * 60_000);
+  pruneUploads.unref();
+  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => [uploads.dir]);
   const terminals = new TerminalManager(guard);
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot });
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, uploads, hostName: os.hostname(), webRoot });
 
   const servers = new Map<string, http.Server>();
   const binding = new Set<string>();
@@ -105,6 +110,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
 
   const stop = (): Promise<void> => stopping ??= (async () => {
     if (retry) clearInterval(retry);
+    clearInterval(pruneUploads);
     notifier.dispose();
     await terminals.dispose();
     await handlers.close();

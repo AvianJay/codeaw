@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
@@ -224,6 +226,32 @@ class BridgeClient extends ChangeNotifier {
   Uri httpUri(String path, [Map<String, String>? query]) => host.httpUri(activeUrl ?? host.urls.first, path, {...?query, if (kIsWeb) 'token': host.token});
 
   Map<String, String> get authHeaders => {'Authorization': 'Bearer ${host.token}'};
+
+  /// Stores a file on the bridge's computer for the agent to read.
+  Future<UploadedFile> upload(String name, Uint8List bytes, {String? mimeType}) async {
+    if (!isOnline) throw const UploadException('尚未連上 bridge');
+    final http.Response response;
+    try {
+      response = await http
+          .post(
+            httpUri('/api/uploads', {'name': name}),
+            headers: {...authHeaders, 'Content-Type': mimeType ?? 'application/octet-stream'},
+            body: bytes,
+          )
+          .timeout(const Duration(minutes: 5));
+    } catch (_) {
+      throw const UploadException('連線中斷，請再試一次');
+    }
+    Object? body;
+    try {
+      body = jsonDecode(utf8.decode(response.bodyBytes));
+    } catch (_) {}
+    if (response.statusCode == 200 && body is Map<String, dynamic>) return UploadedFile.fromJson(body);
+    // Bridges from before uploads answer the route with 404.
+    if (response.statusCode == 404) throw const UploadException('電腦上的 bridge 版本較舊，請更新後再上傳檔案');
+    if (response.statusCode == 413) throw const UploadException('檔案超過 50 MB');
+    throw UploadException(body is Map && body['error'] is String ? body['error'] as String : 'HTTP ${response.statusCode}');
+  }
 
   @override
   void dispose() {
