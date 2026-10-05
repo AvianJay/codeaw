@@ -65,7 +65,7 @@ describe("sessions", () => {
     const updates = c.updates(s.sessionId);
     const user = updates.find((u) => u.update.sessionUpdate === "user_message_chunk");
     expect(user.update.content.text).toBe("echo hello world");
-    expect(user.update._meta.codeaw.promptId).toMatch(/^p_/);
+    expect(user.update._meta.codeaw.promptId).toMatch(/^[0-9a-f-]{36}$/);
     const chunks = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk");
     expect(chunks.map((u) => u.update.content.text).join("")).toBe("hello world");
     expect(new Set(chunks.map((u) => u.update._meta.codeaw.mid)).size).toBe(1);
@@ -235,6 +235,28 @@ describe("sessions", () => {
     expect((await long).stopReason).toBe("cancelled");
     expect((await dropped).stopReason).toBe("cancelled");
     expect(c.text(s.sessionId)).not.toContain("never");
+  });
+
+  it("acknowledges a queued prompt, replays receipts after disconnect and suppresses duplicate delivery", async () => {
+    tb = await startTestBridge();
+    const a = await client();
+    const s = await newFakeSession(a, tb.home);
+    const first = a.request("session/prompt", promptText(s.sessionId, "slow 15")).catch(() => undefined);
+    await a.waitFor(() => a.text(s.sessionId).length > 0);
+    const id = "a2fa3c1c-a01c-4d12-845d-43e1d0bf346b";
+    const params = { ...promptText(s.sessionId, "echo queued receipt"), _meta: { codeaw: { delivery: "queue", clientPromptId: id } } };
+    const queued = a.request("session/prompt", params).catch(() => undefined);
+    await a.waitFor(() => a.events(s.sessionId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "received"));
+    expect(a.events(s.sessionId, "prompt_receipt").filter((e) => e.event.promptId === id).map((e) => e.event.status)).toEqual(["received"]);
+    await a.request("session/prompt", params);
+    expect(a.events(s.sessionId, "state").at(-1)!.event.queued).toBe(1);
+    a.close();
+    const b = await client();
+    await b.request("session/load", { sessionId: s.sessionId, cwd: tb.home, mcpServers: [] });
+    await b.waitFor(() => b.events(s.sessionId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "read"));
+    expect(b.text(s.sessionId, "user_message_chunk").match(/queued receipt/g)).toHaveLength(1);
+    expect(b.text(s.sessionId)).toContain("queued receipt");
+    await Promise.all([first, queued]);
   });
 
   it("steers into a running turn when the agent supports it", async () => {

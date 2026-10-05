@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -47,6 +48,7 @@ class SessionController extends ChangeNotifier {
 
   /// Unsent text survives navigating between recently opened conversations.
   String draft = '';
+  final _promptReceipts = <String, Completer<bool>>{};
   final timeline = Timeline();
 
   String get agentId => sessionId.split(':').first;
@@ -118,6 +120,7 @@ class SessionController extends ChangeNotifier {
       desktopSync = m['connection'] == 'desktop';
       desktopConnected = m['desktopConnected'] == true;
       _replayingFull = false;
+      timeline.finishReplay();
       lastSeq = (m['lastSeq'] as num?)?.toInt() ?? lastSeq;
       epoch = m['epoch'] as String? ?? epoch;
       if (m['cwd'] is String) cwd = m['cwd'] as String;
@@ -162,14 +165,16 @@ class SessionController extends ChangeNotifier {
   }
 
   void onMessage(SessionMessage msg) {
+    if (_disposed) return;
     if (msg.method == '_codeaw/replay') {
       if (msg.params['mode'] == 'full') {
-        timeline.clear();
+        timeline.clear(preserveUnconfirmed: true);
         lastSeq = 0;
         _replayingFull = true;
       } else if (msg.params['mode'] == 'complete') {
         lastSeq = (msg.params['lastSeq'] as num?)?.toInt() ?? lastSeq;
         _replayingFull = false;
+        timeline.finishReplay();
         timeline.flush();
         _notify();
       }
@@ -185,6 +190,11 @@ class SessionController extends ChangeNotifier {
     }
     if (msg.method == '_codeaw/event') {
       final event = msg.params['event'] as Map?;
+      if (event?['type'] == 'prompt_receipt' &&
+          ['received', 'read'].contains(event?['status'])) {
+        final receipt = _promptReceipts[event?['promptId']];
+        if (receipt != null && !receipt.isCompleted) receipt.complete(true);
+      }
       if (event?['type'] == 'state' && event?['connection'] == 'desktop') {
         desktopSync = true;
         desktopConnected = event?['desktopConnected'] == true;
@@ -247,22 +257,64 @@ class SessionController extends ChangeNotifier {
     List<Map<String, dynamic>> blocks, {
     bool queue = false,
   }) async {
-    try {
-      await client.request('session/prompt', {
-        'sessionId': sessionId,
-        'prompt': blocks,
-        if (queue)
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((v) => v.toRadixString(16).padLeft(2, '0')).join();
+    final promptId =
+        '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+    final receipt = Completer<bool>();
+    _promptReceipts[promptId] = receipt;
+    timeline.addPendingPrompt(promptId, blocks);
+    final sent = () async {
+      try {
+        await client.request('session/prompt', {
+          'sessionId': sessionId,
+          'prompt': blocks,
           '_meta': {
-            'codeaw': {'delivery': 'queue'},
+            'codeaw': {
+              'clientPromptId': promptId,
+              if (queue) 'delivery': 'queue',
+            },
           },
+        });
+        return true;
+      } on RpcError catch (e) {
+        if (_disposed) return true;
+        if (e.code == RpcError.connectionClosed) {
+          if (!receipt.isCompleted) {
+            _toast('連線中斷，送出結果待確認；請先查看聊天紀錄，避免重複傳送');
+            timeline.apply('_codeaw/event', {
+              'event': {
+                'type': 'prompt_receipt',
+                'promptId': promptId,
+                'status': 'unknown',
+              },
+            });
+            timeline.flush();
+          }
+          // An interrupted turn RPC does not mean the bridge rejected the prompt.
+          // Replay will reconcile it; never resurrect possibly accepted text.
+          return true;
+        }
+        _toast(e.detail);
+      } catch (e) {
+        if (_disposed) return true;
+        _toast('$e');
+      }
+      timeline.apply('_codeaw/event', {
+        'event': {
+          'type': 'prompt_receipt',
+          'promptId': promptId,
+          'status': 'failed',
+        },
       });
-      return true;
-    } on RpcError catch (e) {
-      if (e.code != RpcError.connectionClosed) _toast(e.detail);
-    } catch (e) {
-      _toast('$e');
-    }
-    return false;
+      timeline.flush();
+      return false;
+    }();
+    unawaited(sent.whenComplete(() => _promptReceipts.remove(promptId)));
+    return Future.any([receipt.future, sent]);
   }
 
   void cancel() => client.notify('session/cancel', {'sessionId': sessionId});

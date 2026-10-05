@@ -6,6 +6,7 @@ import '../../app_state.dart';
 import '../../data/cpa_usage.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'quota_color.dart';
 
 class CpaUsagePage extends StatefulWidget {
   const CpaUsagePage({super.key, this.controller});
@@ -15,35 +16,33 @@ class CpaUsagePage extends StatefulWidget {
 }
 
 class _CpaUsagePageState extends State<CpaUsagePage> {
-  late final CpaController _controller;
+  CpaController? _boundController;
+  CpaController get _controller => _boundController!;
   final _search = TextEditingController();
   String? _provider;
-  Timer? _clock;
   @override
   void initState() {
     super.initState();
-    _controller =
-        widget.controller ??
-        CpaController(
-          request: (method, params) async {
-            final client = AppScope.read(context).client;
-            if (client == null || !client.isOnline) {
-              throw StateError('請先連上電腦 bridge');
-            }
-            return client.request(method, params);
-          },
-        );
-    if (!_controller.initialized) unawaited(_controller.initialize());
-    _clock = Timer.periodic(const Duration(minutes: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    _bind(widget.controller);
+  }
+
+  void _bind(CpaController? controller) {
+    if (identical(controller, _boundController)) return;
+    _boundController = controller;
+    if (controller == null) return;
+    if (!controller.initialized) unawaited(controller.initialize());
+    controller.startAutoRefresh();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (widget.controller == null) _bind(AppScope.of(context).cpa);
   }
 
   @override
   void dispose() {
-    _clock?.cancel();
     _search.dispose();
-    if (widget.controller == null) _controller.dispose();
     super.dispose();
   }
 
@@ -72,7 +71,17 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) {
+    if (_boundController == null) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('CPA 用量')),
+        body: const Center(child: Text('請先連上電腦 bridge')),
+      );
+    }
+    return _buildUsage(context);
+  }
+
+  Widget _buildUsage(BuildContext context) => ListenableBuilder(
     listenable: _controller,
     builder: (context, _) {
       final c = _controller, scheme = Theme.of(context).colorScheme;
@@ -89,6 +98,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
       final providers = c.accounts.map((a) => a.provider).toSet().toList()
         ..sort();
       final endpoint = Uri.tryParse(c.settings?.endpoint ?? '');
+      final averages = cpaProviderAverages(c.accounts, c.quotas);
       return Scaffold(
         appBar: AppBar(
           title: const Text('用量與額度'),
@@ -101,7 +111,9 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
             IconButton(
               tooltip: '重新整理額度',
               onPressed:
-                  c.settings != null && !c.loading && c.loadingQuotas.isEmpty
+                  c.settings != null &&
+                      !c.loading &&
+                      c.loadingQuotas.isEmpty
                   ? c.refresh
                   : null,
               icon: const Icon(Icons.refresh_rounded),
@@ -129,9 +141,8 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                   Text(
                     '你的帳號額度，一眼看清',
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: Theme.of(context).textTheme.headlineSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 12),
                   Text(
@@ -165,9 +176,20 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
                 children: [
+                  if (averages.isNotEmpty) ...[
+                    for (final average in averages)
+                      _ProviderAverageRow(average: average),
+                    const SizedBox(height: 12),
+                    const Divider(),
+                    const SizedBox(height: 12),
+                  ],
                   Row(
                     children: [
-                      Icon(Icons.hub_outlined, size: 17, color: scheme.primary),
+                      Icon(
+                        Icons.hub_outlined,
+                        size: 17,
+                        color: scheme.primary,
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -204,7 +226,10 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         FocusManager.instance.primaryFocus?.unfocus(),
                     decoration: InputDecoration(
                       hintText: '搜尋帳號、類型或方案',
-                      prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                      prefixIcon: const Icon(
+                        Icons.search_rounded,
+                        size: 20,
+                      ),
                       isDense: true,
                       suffixIcon: query.isEmpty
                           ? null
@@ -228,12 +253,15 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                             _Filter(
                               label: '全部',
                               selected: _provider == null,
-                              onTap: () => setState(() => _provider = null),
+                              onTap: () =>
+                                  setState(() => _provider = null),
                             ),
                             for (final provider in providers)
                               _Filter(
                                 label: c.accounts
-                                    .firstWhere((a) => a.provider == provider)
+                                    .firstWhere(
+                                      (a) => a.provider == provider,
+                                    )
                                     .providerLabel,
                                 selected: _provider == provider,
                                 onTap: () =>
@@ -264,7 +292,8 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         ],
                       ),
                     ),
-                  if (c.loading) const LinearProgressIndicator(minHeight: 2),
+                  if (c.loading)
+                    const LinearProgressIndicator(minHeight: 2),
                   if (!c.loading && accounts.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 48),
@@ -291,7 +320,10 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                       padding: const EdgeInsets.only(top: 16),
                       child: Text(
                         '百分比代表剩餘額度。重置時間依裝置時區顯示；服務商未提供的值會標示未知。',
-                        style: TextStyle(fontSize: 11, color: scheme.outline),
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: scheme.outline,
+                        ),
                       ),
                     ),
                 ],
@@ -302,6 +334,149 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
       );
     },
   );
+}
+
+class _ProviderAverageRow extends StatelessWidget {
+  const _ProviderAverageRow({required this.average});
+  final CpaProviderAverage average;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      key: ValueKey('cpa-average-${average.provider}'),
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 92,
+            child: Row(
+              children: [
+                AgentAvatar(
+                  agentId: average.provider,
+                  label: average.label,
+                  size: 22,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        average.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      Text(
+                        '${average.totalAccounts} 個帳號',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final weekly = _AverageBar(
+                  provider: average,
+                  label: '週',
+                  average: average.weekly,
+                );
+                final fiveHour = _AverageBar(
+                  provider: average,
+                  label: '5hr',
+                  average: average.fiveHour,
+                );
+                if (constraints.maxWidth <
+                    MediaQuery.textScalerOf(context).scale(160)) {
+                  return Column(
+                    children: [weekly, const SizedBox(height: 9), fiveHour],
+                  );
+                }
+                return Row(
+                  children: [
+                    Expanded(child: weekly),
+                    const SizedBox(width: 14),
+                    Expanded(child: fiveHour),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AverageBar extends StatelessWidget {
+  const _AverageBar({
+    required this.provider,
+    required this.label,
+    required this.average,
+  });
+  final CpaProviderAverage provider;
+  final String label;
+  final CpaUsageAverage average;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final value = average.remainingPercent;
+    final color = cpaQuotaColor(context, value);
+    final formatted = value == null ? '—' : '${value.toStringAsFixed(1)}%';
+    final coverage = average.accountCount < provider.totalAccounts
+        ? ' (${average.accountCount}/${provider.totalAccounts})'
+        : '';
+    final explanation =
+        '${provider.label} $label 平均剩餘額度：$formatted。'
+        '有效帳號 ${average.accountCount}/${provider.totalAccounts}；'
+        '未知、失敗、停用或不可用帳號不納入，搜尋與篩選不影響平均。'
+        '${provider.provider == 'antigravity' ? 'AGY 先平均各帳號的模型群組，再平均帳號。' : ''}';
+    return Tooltip(
+      message: explanation,
+      child: Semantics(
+        label: explanation,
+        excludeSemantics: true,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '$label: $formatted$coverage',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: color,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 5),
+            LinearProgressIndicator(
+              value: value == null ? 0 : value / 100,
+              minHeight: 3,
+              color: color,
+              backgroundColor: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(3),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _Filter extends StatelessWidget {
@@ -485,13 +660,7 @@ class _QuotaLine extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme,
         left = window.remainingPercent;
-    final color = left == null
-        ? scheme.outline
-        : left <= 15
-        ? scheme.error
-        : left <= 35
-        ? const Color(0xFFC28B28)
-        : scheme.primary;
+    final color = cpaQuotaColor(context, left);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

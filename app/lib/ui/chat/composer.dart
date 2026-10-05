@@ -539,19 +539,24 @@ class _ComposerState extends State<Composer> {
                             icon: const Icon(Icons.stop_rounded),
                             onPressed: c.cancel,
                           ),
-                        GestureDetector(
-                          onLongPress: canSend && running
-                              ? () => _send(queue: true)
-                              : null,
-                          child: IconButton.filled(
-                            style: IconButton.styleFrom(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
+                        TooltipTheme(
+                          data: const TooltipThemeData(
+                            triggerMode: TooltipTriggerMode.manual,
+                          ),
+                          child: GestureDetector(
+                            onLongPress: canSend && running
+                                ? () => _send(queue: true)
+                                : null,
+                            child: IconButton.filled(
+                              style: IconButton.styleFrom(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
                               ),
+                              tooltip: running ? '送出（長按＝排隊）' : '送出',
+                              icon: const Icon(Icons.arrow_upward_rounded),
+                              onPressed: canSend ? _send : null,
                             ),
-                            tooltip: running ? '送出（長按＝排隊）' : '送出',
-                            icon: const Icon(Icons.arrow_upward_rounded),
-                            onPressed: canSend ? _send : null,
                           ),
                         ),
                       ],

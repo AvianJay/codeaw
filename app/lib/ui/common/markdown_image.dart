@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../data/bridge_client.dart';
+import 'image_preview.dart';
 
 /// Resolve paths using the bridge's OS conventions, not the phone's.
 String? markdownImagePath(String source, {String? basePath}) {
@@ -107,32 +108,7 @@ class MarkdownImage extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
             child: InkWell(
-              onTap: () => showDialog<void>(
-                context: context,
-                builder: (context) => Dialog.fullscreen(
-                  child: Scaffold(
-                    appBar: AppBar(
-                      title: const Text('圖片'),
-                      leading: IconButton(
-                        tooltip: '關閉',
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                    ),
-                    body: Center(
-                      child: InteractiveViewer(
-                        minScale: 0.5,
-                        maxScale: 8,
-                        child: Image(
-                          image: provider,
-                          fit: BoxFit.contain,
-                          errorBuilder: (_, _, _) => const _ImageFailure(),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
+              onTap: () => showImagePreview(context, provider),
               child: Image(
                 image: provider,
                 width: width,

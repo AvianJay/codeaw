@@ -5,6 +5,7 @@ import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
+import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/util/image_clipboard.dart';
 import 'package:file_selector/file_selector.dart';
@@ -70,6 +71,7 @@ class _Client extends BridgeClient {
   final prompts = <Map<String, dynamic>>[];
   final uploads = <({String sessionId, String name, Uint8List bytes})>[];
   bool failPrompt = false;
+  Completer<dynamic>? pendingPrompt;
 
   @override
   Future<Map<String, dynamic>> uploadFile(
@@ -90,6 +92,7 @@ class _Client extends BridgeClient {
     if (method == 'session/prompt') {
       if (failPrompt) throw const FormatException('Connection lost');
       prompts.add(params!);
+      if (pendingPrompt != null) return pendingPrompt!.future;
     }
     return {};
   }
@@ -482,5 +485,77 @@ void main() {
     expect(h.client.uploads, hasLength(1));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a queued send stays cleared after socket loss and remount', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    h.client.pendingPrompt = Completer<dynamic>();
+    h.controller.timeline.state = 'running';
+    await tester.enterText(_input, 'Queue this once');
+    await tester.pump();
+    await tester.longPress(
+      find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded),
+    );
+    await tester.pumpAndSettle();
+    expect(h.client.prompts.single['_meta']['codeaw']['delivery'], 'queue');
+    expect(tester.widget<TextField>(_input).controller!.text, isEmpty);
+    h.client.pendingPrompt!.completeError(
+      RpcError(RpcError.connectionClosed, 'Connection closed'),
+    );
+    await tester.pumpAndSettle();
+    expect(h.controller.draft, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_app(h.controller, clipboard));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(_input).controller!.text, isEmpty);
+    expect(h.client.prompts, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('accepted queue never overwrites a new draft after disconnect', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    h.client.pendingPrompt = Completer<dynamic>();
+    h.controller.timeline.state = 'running';
+    await tester.enterText(_input, 'Already queued');
+    await tester.pump();
+    await tester.longPress(
+      find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded),
+    );
+    await tester.pumpAndSettle();
+    final id = h.client.prompts.single['_meta']['codeaw']['clientPromptId'];
+    h.controller.onMessage(
+      SessionMessage('_codeaw/event', {
+        'event': {
+          'type': 'prompt_receipt',
+          'promptId': id,
+          'status': 'received',
+        },
+      }),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(_input, 'My next unsent draft');
+    h.client.pendingPrompt!.completeError(
+      RpcError(RpcError.connectionClosed, 'Connection closed'),
+    );
+    await tester.pumpAndSettle();
+    final next = SessionController(h.client, 'codex:next');
+    await tester.pumpWidget(_app(next, clipboard));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(_app(h.controller, clipboard));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(_input).controller!.text,
+      'My next unsent draft',
+    );
+    expect(h.controller.draft, 'My next unsent draft');
+    expect(h.client.prompts, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    next.dispose();
   });
 }

@@ -70,6 +70,7 @@ class BridgeSession {
   desktop?: DesktopState;
   queue: QueuedPrompt[] = [];
   readonly pending = new Map<string, PendingRequest>();
+  receipts?: Map<string, "received" | "read" | "failed">;
   /** Agent process generation in which this session is live; 0 = not live. */
   backendGen = 0;
   suppressUpdates = false;
@@ -242,6 +243,9 @@ export class SessionManager implements AgentHandlers {
       return;
     }
     if (s.suppressUpdates) return;
+    if (s.meta.connection !== "desktop" && s.turn && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(params.update.sessionUpdate)) {
+      this.receipt(s, s.turn.promptId, "read");
+    }
     this.ingest(s, params.update);
   }
 
@@ -250,6 +254,12 @@ export class SessionManager implements AgentHandlers {
     if (this.shuttingDown) return;
     const s = this.sessions.get(extId(agentId, backendId)) ?? this.fromDisk(extId(agentId, backendId));
     if (!s) return;
+    const receipts = this.receiptStates(s);
+    const nativeIds = new Set(updates.filter((u) => u.sessionUpdate === "user_message_chunk").map((u) => codeawMeta(u).promptId));
+    // A native snapshot has no unsent codeaw queue. Preserve those messages and
+    // receipt states across its epoch rebuild, including after reconnect.
+    const waiting = (s.entries ?? this.store.readEntries(s.id)).filter((entry) => entry.kind === "update" && entry.update.sessionUpdate === "user_message_chunk" &&
+      ["received", "failed"].includes(receipts.get(codeawMeta(entry.update).promptId) ?? "") && !nativeIds.has(codeawMeta(entry.update).promptId));
     this.store.truncate(s.id);
     s.entries = [];
     s.meta.lastSeq = 0;
@@ -261,6 +271,8 @@ export class SessionManager implements AgentHandlers {
     s.emitted = undefined;
     for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "full", epoch: s.meta.epoch, lastSeq: 0 });
     for (const update of updates) this.ingest(s, update);
+    for (const entry of waiting) if (entry.kind === "update") this.append(s, { kind: "update", update: entry.update });
+    for (const [promptId, status] of receipts) this.appendEvent(s, { type: "prompt_receipt", promptId, status });
     for (const pending of s.pending.values()) {
       if (pending.kind === "permission") this.appendEvent(s, { type: "permission_request", requestId: pending.id, toolCall: pending.params.toolCall, options: pending.params.options });
       else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
@@ -313,7 +325,12 @@ export class SessionManager implements AgentHandlers {
       const type = update.sessionUpdate as string;
       const parent = parentToolCallId(update);
       let mid: string;
-      if (typeof update.messageId === "string" && update.messageId) mid = update.messageId;
+      const meta = codeawMeta(update);
+      if (type === "user_message_chunk" && typeof meta.promptId === "string") {
+        mid = `u-${meta.promptId}`;
+        if (meta.receipt === "read") this.receipt(s, meta.promptId, "read");
+        if (meta.replace && (s.entries ?? []).some((entry) => entry.kind === "update" && entry.update.sessionUpdate === "user_message_chunk" && codeawMeta(entry.update).promptId === meta.promptId && !codeawMeta(entry.update).replace)) return;
+      } else if (typeof update.messageId === "string" && update.messageId) mid = update.messageId;
       else if (s.midRun?.type === type && s.midRun.parent === parent) mid = s.midRun.mid;
       else mid = `m${s.meta.lastSeq + 1}`;
       s.midRun = { type, mid, parent };
@@ -328,6 +345,7 @@ export class SessionManager implements AgentHandlers {
   async onPermission(agentId: string, params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
     const s = this.sessions.get(extId(agentId, params.sessionId));
     if (!s) return { outcome: { outcome: "cancelled" } };
+    if (s.turn) this.receipt(s, s.turn.promptId, "read");
     const toolTitle = (params.toolCall as any)?.title as string | undefined;
     return this.openRequest(s, {
       kind: "permission",
@@ -344,6 +362,7 @@ export class SessionManager implements AgentHandlers {
     const backendSession = (params as any).sessionId as string | undefined;
     const s = backendSession ? this.sessions.get(extId(agentId, backendSession)) : undefined;
     if (!s) return { action: "decline" } as acp.CreateElicitationResponse;
+    if (s.turn) this.receipt(s, s.turn.promptId, "read");
     return this.openRequest(s, {
       kind: "elicitation",
       method: "elicitation/create",
@@ -466,8 +485,26 @@ export class SessionManager implements AgentHandlers {
   }
 
   private appendEvent(s: BridgeSession, event: CodeawEvent): void {
-    if (event.type !== "dequeued") s.midRun = undefined;
+    if (event.type !== "dequeued" && event.type !== "prompt_receipt") s.midRun = undefined;
     this.append(s, { kind: "event", event });
+  }
+
+  private receiptStates(s: BridgeSession): Map<string, "received" | "read" | "failed"> {
+    if (!s.receipts) {
+      s.receipts = new Map();
+      for (const entry of s.entries ?? this.store.readEntries(s.id)) {
+        if (entry.kind === "event" && entry.event.type === "prompt_receipt") s.receipts.set(entry.event.promptId, entry.event.status);
+      }
+    }
+    return s.receipts;
+  }
+
+  private receipt(s: BridgeSession, promptId: string, status: "received" | "read" | "failed"): void {
+    const receipts = this.receiptStates(s);
+    const before = receipts.get(promptId);
+    if (before === status || (before === "read" && status !== "read")) return;
+    receipts.set(promptId, status);
+    this.appendEvent(s, { type: "prompt_receipt", promptId, status });
   }
 
   private sendEntry(c: ClientHandle, s: BridgeSession, entry: LogEntry): void {
@@ -887,34 +924,44 @@ export class SessionManager implements AgentHandlers {
     if (!s.subscribers.has(c)) await this.attach(c, s);
     const agent = await this.ensureActive(s);
     const delivery: string = codeawMeta(params as any).delivery ?? "auto";
-    const promptId = "p_" + crypto.randomBytes(6).toString("hex");
+    const clientPromptId = codeawMeta(params as any).clientPromptId;
+    if (clientPromptId !== undefined && (typeof clientPromptId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientPromptId))) {
+      throw acp.RequestError.invalidParams(undefined, "Invalid clientPromptId");
+    }
+    const promptId = clientPromptId ?? crypto.randomUUID();
+    if (this.receiptStates(s).has(promptId)) {
+      if (s.turn && s.turn.promptId === promptId) return s.turn.done;
+      return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
+    }
     const blocks = params.prompt;
 
     const busy = s.turn !== undefined || (s.desktop?.connected && s.desktop.state !== "idle");
+    this.logUserMessage(s, blocks, promptId, { queued: busy, steered: busy && delivery !== "queue" && agent.supportsSteering });
+    this.receipt(s, promptId, "received");
     if (busy && delivery !== "queue" && agent.supportsSteering && (s.meta.connection === "desktop" || s.backendGen === agent.generation)) {
       try {
         const r = await agent.request<any>("_session/steering", {
           sessionId: s.meta.backendId,
           prompt: blocks,
-          _meta: { steering: { idleBehavior: "promptRequired" } },
+          _meta: { steering: { idleBehavior: "promptRequired" }, codeaw: { promptId } },
         });
         if (r?.outcome === "injected") {
-          if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId, { steered: true });
+          this.logUserMessage(s, [{ type: "text", text: "" }], promptId, { queued: false, steered: true });
+          this.receipt(s, promptId, "read");
           return s.turn ? s.turn.done : { stopReason: "end_turn" };
         }
       } catch (err) {
-        if (s.meta.connection === "desktop") throw err;
+        if (s.meta.connection === "desktop") { this.receipt(s, promptId, "failed"); throw err; }
         log.warn(`steering failed for ${s.id}, queueing instead: ${errorMessage(err)}`);
+        this.logUserMessage(s, [{ type: "text", text: "" }], promptId, { queued: true, steered: false });
       }
     }
     if (busy) {
-      if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId, { queued: true });
       return new Promise<acp.PromptResponse>((resolve, reject) => {
         s.queue.push({ promptId, blocks, resolve, reject });
         this.emitState(s);
       });
     }
-    if (s.meta.connection !== "desktop") this.logUserMessage(s, blocks, promptId);
     return this.runTurn(s, promptId, blocks);
   }
 
@@ -933,7 +980,7 @@ export class SessionManager implements AgentHandlers {
       let error: unknown;
       try {
         const agent = await this.ensureActive(s);
-        result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: blocks });
+        result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: blocks, _meta: { codeaw: { promptId } } });
       } catch (err) {
         error = err;
       }
@@ -941,10 +988,12 @@ export class SessionManager implements AgentHandlers {
       s.turn = undefined;
       if (this.shuttingDown) { rejectDone(toRequestError(error ?? new Error("Bridge stopped"))); return; }
       if (result) {
+        if (result.stopReason !== "cancelled") this.receipt(s, promptId, "read");
         this.emitState(s, result.stopReason, completedTurn);
         this.push(s, "turn_end", undefined, () => !s.turn);
         resolveDone(result);
       } else {
+        this.receipt(s, promptId, "failed");
         const e = toRequestError(error);
         this.appendEvent(s, { type: "error", message: errorMessage(error), code: e.code });
         this.emitState(s, "error", completedTurn);

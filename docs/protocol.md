@@ -137,8 +137,9 @@ than synthesized locally. Closing a linked session unfollows it and cancels
 unsent codeaw queue entries; it does not interrupt the desktop turn. Explicit
 `session/cancel` interrupts the currently observed native turn. Desktop affinity
 is persisted so an unavailable owner fails closed instead of silently falling
-back to an independent runtime. Desktop settings and deletion are not exposed
-through this first integration.
+back to an independent runtime. Desktop model, effort, permission and collaboration
+settings are exposed through the operations described under Prompts. Desktop
+deletion remains unavailable.
 
 ### `session/list`
 
@@ -263,6 +264,26 @@ prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
 open permission/elicitation request with `cancelled`.
 
+Clients may supply a UUID `_meta.codeaw.clientPromptId`. The bridge uses it as
+the logged `promptId` and suppresses duplicate delivery within that session,
+including replay/reconnect. Older clients receive a bridge-generated UUID.
+Acceptance is independent of the turn's eventual RPC response: the bridge logs
+the user message and sends a `prompt_receipt` event `{promptId, status}` with
+`received` immediately. `read` means confirmed injection/native user echo for
+desktop sessions, or first agent response activity for ACP sessions (a successful
+non-cancelled completion also confirms read). Queued prompts remain `received`
+until consumed. `failed` reports a known dispatch failure; read never regresses.
+These receipt events are persisted and replayed, including across a native
+history rebuild. They do not indicate response completion or guarantee semantic
+understanding. A connection-close exception while awaiting the turn response
+does not prove rejection; clients retain the uncertain message and reconcile
+with replay instead of restoring the old draft or blindly resending it.
+
+Desktop user echoes carry `promptId`, `receipt: "read"`, `replace: true` and
+`partIndex` in `update._meta.codeaw`. The first part replaces the local echo;
+later parts append. Steering uses the native item's `clientUserMessageId`
+(or its server/restore equivalent), retaining correlation after reattachment.
+
 Codex desktop steering includes the owner's required `restoreMessage` (message
 ID, input, cwd, workspace roots and collaboration context), and requires an
 accepted result. It never starts a second ACP runtime for a desktop-owned turn.
@@ -351,6 +372,17 @@ over the paired connection. Network access occurs from the PC, so localhost
 refers to the bridge machine. Protect remote management connections with
 HTTPS or a trusted private network. A past reset timestamp does not prove
 replenishment: clients keep the received percentage until refreshed.
+
+The app shares one CPA controller between chat and usage screens. It polls
+every 30 seconds in the foreground, refreshes on resume/reconnect and skips
+overlapping automatic requests. Each provider/window is averaged independently,
+with one vote per account and one decimal display. Unknown, invalid, failed,
+disabled and unavailable values are excluded; zero is valid. Main Codex/Claude
+weekly/five-hour windows exclude special allowances. AGY first averages groups
+of the same duration within each account. The chat header selects the current
+agent's provider; missing windows stay unknown rather than borrowing another
+provider's value. Quota colors reflect remaining amount: green >=50, amber
+20–49.9, red <20, gray unknown.
 
 ### File uploads
 

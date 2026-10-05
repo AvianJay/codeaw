@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 typedef CpaRequest =
@@ -42,9 +42,11 @@ class CpaWindow {
     : id = j['id'] as String? ?? '',
       label = j['label'] as String? ?? '額度',
       remainingPercent = (j['remainingPercent'] as num?)?.toDouble(),
+      periodSeconds = (j['periodSeconds'] as num?)?.toInt(),
       resetAt = DateTime.tryParse(j['resetAt'] as String? ?? '');
   final String id, label;
   final double? remainingPercent;
+  final int? periodSeconds;
   final DateTime? resetAt;
 }
 
@@ -96,7 +98,91 @@ class CpaAccount {
   };
 }
 
-class CpaController extends ChangeNotifier {
+class CpaUsageAverage {
+  const CpaUsageAverage(this.remainingPercent, this.accountCount);
+  final double? remainingPercent;
+  final int accountCount;
+}
+
+class CpaProviderAverage {
+  const CpaProviderAverage({
+    required this.provider,
+    required this.label,
+    required this.totalAccounts,
+    required this.weekly,
+    required this.fiveHour,
+  });
+  final String provider, label;
+  final int totalAccounts;
+  final CpaUsageAverage weekly, fiveHour;
+}
+
+/// Each account has equal weight, independently for each provider and window.
+/// AGY averages model groups within an account before averaging accounts.
+List<CpaProviderAverage> cpaProviderAverages(
+  List<CpaAccount> accounts,
+  Map<String, CpaQuota> quotas,
+) {
+  final groups = <String, List<CpaAccount>>{};
+  for (final account in accounts) {
+    groups.putIfAbsent(account.provider, () => []).add(account);
+  }
+  CpaUsageAverage average(List<CpaAccount> group, String id, int seconds) {
+    final values = <double>[];
+    for (final account in group) {
+      final quota = quotas[account.id];
+      if (account.disabled || account.unavailable || quota?.status != 'ok') {
+        continue;
+      }
+      final mainWindows = quota!.windows.where((w) => w.id == id).toList();
+      // Codex review and Claude model-specific windows are separate allowances.
+      final windows =
+          mainWindows.isNotEmpty ||
+              account.provider == 'codex' ||
+              account.provider == 'claude'
+          ? mainWindows
+          : quota.windows.where((w) => w.periodSeconds == seconds);
+      final remaining = windows
+          .map((w) => w.remainingPercent)
+          .whereType<double>()
+          .where((v) => v.isFinite && v >= 0 && v <= 100)
+          .toList();
+      if (remaining.isNotEmpty) {
+        values.add(remaining.reduce((a, b) => a + b) / remaining.length);
+      }
+    }
+    return CpaUsageAverage(
+      values.isEmpty ? null : values.reduce((a, b) => a + b) / values.length,
+      values.length,
+    );
+  }
+
+  const order = ['codex', 'claude', 'antigravity', 'grok'];
+  final providers = groups.keys.toList()
+    ..sort((a, b) {
+      final ai = order.indexOf(a), bi = order.indexOf(b);
+      if (ai >= 0 || bi >= 0) {
+        return (ai < 0 ? order.length : ai).compareTo(
+          bi < 0 ? order.length : bi,
+        );
+      }
+      return a.compareTo(b);
+    });
+  return [
+    for (final provider in providers)
+      CpaProviderAverage(
+        provider: provider,
+        label: provider == 'antigravity'
+            ? 'AGY'
+            : groups[provider]!.first.providerLabel,
+        totalAccounts: groups[provider]!.length,
+        weekly: average(groups[provider]!, 'weekly', 604800),
+        fiveHour: average(groups[provider]!, 'five-hour', 18000),
+      ),
+  ];
+}
+
+class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   CpaController({required this.request, CpaStore? store})
     : store = store ?? CpaStore();
   final CpaRequest request;
@@ -110,17 +196,60 @@ class CpaController extends ChangeNotifier {
   DateTime? updatedAt;
   int _generation = 0;
   bool _disposed = false;
+  Timer? _refreshTimer;
+  bool _autoRefresh = false;
+  Future<void>? _initializing;
+
+  /// Shared by the chat header and usage page; mounting both never adds a poller.
+  void startAutoRefresh() {
+    if (_autoRefresh || _disposed) return;
+    _autoRefresh = true;
+    WidgetsBinding.instance.addObserver(this);
+    _scheduleAutoRefresh();
+  }
+
+  void _scheduleAutoRefresh() {
+    if (!_autoRefresh || _refreshTimer != null || settings == null || _disposed) {
+      return;
+    }
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => refreshIfActive(),
+    );
+  }
+
+  void refreshIfActive() {
+    if (_disposed ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
+        settings == null ||
+        loading ||
+        loadingQuotas.isNotEmpty) {
+      return;
+    }
+    unawaited(refresh());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) refreshIfActive();
+  }
+
   void _changed() {
     if (!_disposed) notifyListeners();
   }
 
-  Future<void> initialize() async {
+  Future<void> initialize() => _initializing ??= _initialize();
+
+  Future<void> _initialize() async {
     try {
-      settings = await store.load();
+      final saved = await store.load();
+      if (_disposed) return;
+      settings = saved;
     } catch (_) {
       error = '無法讀取 CPA 設定，請重新設定連線';
     }
     initialized = true;
+    _scheduleAutoRefresh();
     _changed();
     if (settings != null) await refresh();
   }
@@ -143,8 +272,10 @@ class CpaController extends ChangeNotifier {
       managementKey: value.managementKey.trim(),
     );
     await store.save(next);
+    if (_disposed) return;
     _generation++;
     settings = next;
+    _scheduleAutoRefresh();
     accounts = [];
     quotas.clear();
     loadingQuotas.clear();
@@ -153,8 +284,11 @@ class CpaController extends ChangeNotifier {
 
   Future<void> forget() async {
     await store.clear();
+    if (_disposed) return;
     _generation++;
     settings = null;
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
     accounts = [];
     quotas.clear();
     loadingQuotas.clear();
@@ -249,6 +383,8 @@ class CpaController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _generation++;
+    if (_autoRefresh) WidgetsBinding.instance.removeObserver(this);
+    _refreshTimer?.cancel();
     super.dispose();
   }
 }

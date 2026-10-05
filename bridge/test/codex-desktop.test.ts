@@ -220,6 +220,26 @@ describe("Codex desktop synchronization", () => {
     expect(a.text(nativeId, "user_message_chunk").match(/look here/g)).toHaveLength(1);
   });
 
+  it("keeps queued receipts through native history rebuilds and marks read only after desktop accepts", async () => {
+    const { a, desktop } = await setup(); await load(a);
+    desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
+    const id = "42e82e99-6479-437f-b1a1-e84303284f19";
+    const queued = a.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text: "receipt after desktop" }], _meta: { codeaw: { delivery: "queue", clientPromptId: id } } });
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.queued === 1);
+    expect(a.events(nativeId, "prompt_receipt").filter((e) => e.event.promptId === id).map((e) => e.event.status)).toEqual(["received"]);
+    const b = await TestClient.connect(bridge!.url, bridge!.tokenFor("receipt tablet")); clients.push(b); await load(b);
+    expect(b.text(nativeId, "user_message_chunk")).toContain("receipt after desktop");
+    desktop.patch([{ op: "replace", path: ["turns", 0, "items", 0, "text"], value: "edited older reply" }]);
+    await b.waitFor(() => b.received.some((r) => r.method === "_codeaw/replay" && r.params.mode === "complete"));
+    expect(b.events(nativeId, "prompt_receipt").at(-1)?.event.status).toBe("received");
+    desktop.finish();
+    await a.waitFor(() => a.events(nativeId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "read"));
+    desktop.text("receipt reply"); desktop.finish(); await queued;
+    const fresh = await TestClient.connect(bridge!.url, bridge!.tokenFor("receipt fresh")); clients.push(fresh); await load(fresh);
+    expect(fresh.text(nativeId, "user_message_chunk").match(/receipt after desktop/g)).toHaveLength(1);
+    expect(fresh.events(nativeId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "read")).toBe(true);
+  });
+
   it("interrupts a desktop-started turn, while closing the mobile view only unfollows", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
@@ -323,6 +343,15 @@ describe("Codex desktop synchronization", () => {
 });
 
 describe("desktop IPC wire and state", () => {
+  it("retains steering client prompt ids directly from the native snapshot after reconnect", () => {
+    const id = randomUUID();
+    const conversation = { turns: [{ turnId: "t", status: "completed", items: [{
+      type: "steeringUserMessage", id: "steer", clientUserMessageId: id,
+      input: [{ type: "text", text: "steered" }],
+    }] }] };
+    const user = projectDesktopConversation(conversation).records.find((r) => r.key === "t:steer:0")!.update as any;
+    expect(user._meta.codeaw).toMatchObject({ promptId: id, receipt: "read", steered: true });
+  });
   it("reads method versions from an app archive and handles fragmented UTF-8 frames and concurrent requests", async () => {
     desktop = new DesktopPeer(); desktop.fragment = true; await desktop.start();
     expect(await readDesktopIpcVersions(desktop.archivePath)).toEqual(VERSIONS);

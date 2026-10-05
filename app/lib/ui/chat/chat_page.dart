@@ -11,6 +11,7 @@ import '../../data/timeline.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
 import 'composer.dart';
+import 'chat_header.dart';
 import 'elicitation_sheet.dart';
 import 'items.dart';
 import 'subagent_panel.dart';
@@ -78,9 +79,9 @@ class _ChatPageState extends State<ChatPage> {
     if (c == null) return const Scaffold(body: Center(child: Text('找不到這個對話')));
     final state = AppScope.of(context);
     return ListenableBuilder(
-      listenable: Listenable.merge([c, c.timeline]),
+      listenable: Listenable.merge([c, c.timeline, if (state.cpa != null) state.cpa!]),
       builder: (context, _) {
-        final scheme = Theme.of(context).colorScheme;
+        final quotaConfigured = state.cpa?.settings != null;
         final summary = state.sessions?.byId(c.sessionId);
         final title = c.timeline.title ?? summary?.title ?? folderName(c.cwd);
         final agentName = c.agent?.name ?? c.agentId;
@@ -106,27 +107,16 @@ class _ChatPageState extends State<ChatPage> {
                 toolbarHeight: MediaQuery.sizeOf(context).height < 500 ? 44 : 56,
                 automaticallyImplyLeading: !useWideLayout(context),
                 titleSpacing: useWideLayout(context) ? 20 : 0,
-                title: Row(
-                  children: [
-                    AgentAvatar(agentId: c.agentId, label: agentName, size: 30),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 16)),
-                          Text(
-                            '$agentName · ${folderName(c.cwd)}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: scheme.outline),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                title: ChatHeaderTitle(
+                  title: title,
+                  subtitle: '$agentName · ${folderName(c.cwd)}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
+                  agentId: c.agentId,
+                  agentName: agentName,
+                  usage: state.cpa,
+                  onUsageTap: () => context.push('/usage'),
                 ),
                 actions: [
+                  if (!quotaConfigured || constraints.maxWidth >= 430)
                   IconButton(
                     tooltip: '所有子代理',
                     isSelected: wide && showSubagents,
@@ -151,7 +141,7 @@ class _ChatPageState extends State<ChatPage> {
                       icon: const Icon(Icons.terminal_rounded),
                       onPressed: c.cwd.isEmpty ? null : () => context.push('/terminal?cwd=${Uri.encodeQueryComponent(c.cwd)}'),
                     ),
-                  IconButton(
+                  if (!quotaConfigured || constraints.maxWidth >= 360) IconButton(
                     tooltip: '檔案',
                     icon: const Icon(Icons.folder_outlined),
                     onPressed: c.cwd.isEmpty ? null : () => context.push('/files?path=${Uri.encodeQueryComponent(c.cwd)}'),
@@ -165,6 +155,12 @@ class _ChatPageState extends State<ChatPage> {
                   PopupMenuButton<String>(
                     onSelected: (v) async {
                       switch (v) {
+                        case 'usage':
+                          context.push('/usage');
+                        case 'subagents':
+                          _scaffold.currentState?.openEndDrawer();
+                        case 'files':
+                          context.push('/files?path=${Uri.encodeQueryComponent(c.cwd)}');
                         case 'terminal':
                           context.push('/terminal?cwd=${Uri.encodeQueryComponent(c.cwd)}');
                         case 'git':
@@ -182,6 +178,9 @@ class _ChatPageState extends State<ChatPage> {
                       }
                     },
                     itemBuilder: (_) => [
+                      const PopupMenuItem(value: 'usage', child: Text('CPA 用量')),
+                      if (quotaConfigured && constraints.maxWidth < 430) const PopupMenuItem(value: 'subagents', child: Text('所有子代理')),
+                      if (quotaConfigured && constraints.maxWidth < 360) PopupMenuItem(value: 'files', enabled: c.cwd.isNotEmpty, child: const Text('檔案')),
                       if (compact) PopupMenuItem(value: 'terminal', enabled: c.cwd.isNotEmpty, child: const Text('終端機')),
                       if (compact) PopupMenuItem(value: 'git', enabled: c.cwd.isNotEmpty, child: const Text('Git 變更')),
                       const PopupMenuItem(value: 'reimport', child: Text('從電腦重新載入歷史')),
