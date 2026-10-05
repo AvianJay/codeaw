@@ -289,6 +289,7 @@ out on the bridge.
 | `_codeaw/agents/restart` | `{agentId}` | `{}` |
 | `_codeaw/workspaces/list` | – | `{allowAllPaths, roots: [{path, name, source: "config"\|"session"\|"filesystem"}]}` |
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |
+| `_codeaw/fs/mkdir` | `{path, name}` | `{path, name}` (created child directory) |
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
 | `_codeaw/git/diff` | `{cwd, path?, staged?}` | `{diff, truncated}` |
@@ -300,6 +301,8 @@ out on the bridge.
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
+| `_codeaw/cpa/accounts` | `{endpoint, managementKey}` | `{accounts: CpaAccount[], checkedAt}` |
+| `_codeaw/cpa/quota` | `{endpoint, managementKey, accountId}` | `CpaQuota` |
 
 File-system methods and `session/new` only accept paths inside the configured
 workspaces or a known session `cwd`, unless the PC administrator opts into
@@ -309,6 +312,45 @@ There is no remote API for enabling it. This exposes private files to every
 paired device; it is not a sandbox for agents or interactive shells. Paths are
 resolved through links before containment checks, and new sessions require an
 existing directory.
+
+`fs/mkdir` resolves and checks the existing parent `path` before creating a
+single child. `name` must be a valid single directory component (maximum 200
+characters); traversal, separators, control characters and reserved Windows
+names are rejected. It never creates missing ancestors or overwrites an
+existing file/directory. The result is the canonical created directory path.
+
+### CPA usage (paired clients only)
+
+The bridge calls CLIProxyAPI's management API with a Bearer Management Key,
+not a model API key. `endpoint` accepts an HTTP(S) root/prefix, management page,
+or explicit `/v0/management` or `/v8/management` URL. Embedded credentials,
+query strings and fragments are rejected; redirects are not followed.
+Root URLs default to v0. v0 uses `auth-files` and `api-call`; v8 uses
+`credentials` and `requests/api-call`. Requests have a 12-second timeout and
+an 8 MiB response limit. Connection failures expose no upstream response body.
+
+`CpaAccount` is `{id, name, provider, label, plan, disabled, unavailable,
+status, requests, subscriptionUntil}`. `id` is opaque; `requests` is the CPA
+success/failure count if supplied, not an allowance. The bridge discards raw
+credentials and only caches minimal query metadata for five minutes. Neither
+service-provider tokens nor CPA's potentially secret `account` field are
+returned to clients. The Management Key is not persisted by the bridge.
+
+`CpaQuota` is `{accountId, windows, resetsRemaining, plan, subscriptionUntil,
+checkedAt, status, message?}`, where `status` is `ok`, `error`, `unsupported`,
+or `disabled`. Each window is `{id, label, remainingPercent, resetAt,
+periodSeconds}`. Percentages mean **remaining**, timestamps are ISO 8601 UTC,
+and unknown fields are `null`. Windows are classified from provider durations,
+not primary/secondary position. `resetsRemaining` is an actual provider reset
+credit count; no reset or redemption action is exposed. Queries use fixed
+Codex, Claude, Grok and Antigravity usage/plan URLs via CPA's `$TOKEN$`
+substitution; they do not send model prompts or download auth files.
+
+The app persists the endpoint/key in its device secure storage and sends them
+over the paired connection. Network access occurs from the PC, so localhost
+refers to the bridge machine. Protect remote management connections with
+HTTPS or a trusted private network. A past reset timestamp does not prove
+replenishment: clients keep the received percentage until refreshed.
 
 ### File uploads
 

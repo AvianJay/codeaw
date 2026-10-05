@@ -4,8 +4,9 @@ import type { AgentRegistry } from "../backend/registry.js";
 import type { PushNotifier } from "../notify/ntfy.js";
 import type { ClientHandle, SessionManager } from "../session/manager.js";
 import { logger } from "../util/log.js";
-import { gitDiff, gitStatus, listDir, readFile, type PathGuard } from "./ext.js";
+import { createDirectory, gitDiff, gitStatus, listDir, readFile, type PathGuard } from "./ext.js";
 import type { TerminalManager } from "../terminal/manager.js";
+import { CpaUsageService } from "./cpa.js";
 
 const log = logger("client");
 
@@ -15,6 +16,7 @@ export interface FrontendDeps {
   guard: PathGuard;
   notifier: PushNotifier;
   terminals: TerminalManager;
+  cpa?: CpaUsageService;
 }
 
 const passthrough = (params: unknown) => (params ?? {}) as Record<string, any>;
@@ -38,6 +40,11 @@ export class FrontendConnection implements ClientHandle {
     private readonly deviceId: string,
   ) {
     const { manager } = deps;
+    const cpa = deps.cpa ?? new CpaUsageService();
+    const cpaResult = async (query: Promise<unknown>) => {
+      try { return await query; }
+      catch (error) { throw acp.RequestError.invalidParams(undefined, error instanceof Error ? error.message : "CPA 查詢失敗"); }
+    };
     const bind = <T extends { client: acp.AgentContext }>(ctx: T): T => {
       this.ctx ??= ctx.client;
       return ctx;
@@ -67,6 +74,8 @@ export class FrontendConnection implements ClientHandle {
       .onNotification("_codeaw/client/state", passthrough, (ctx) => manager.setClientState(this, ctx.params))
       .onNotification("_codeaw/session/detach", passthrough, (ctx) => manager.detach(this, ctx.params.sessionId))
       .onRequest("_codeaw/agents/list", passthrough, () => ({ agents: deps.registry.describe() }))
+      .onRequest("_codeaw/cpa/accounts", passthrough, (ctx) => cpaResult(cpa.accounts(ctx.params)))
+      .onRequest("_codeaw/cpa/quota", passthrough, (ctx) => cpaResult(cpa.quota(ctx.params)))
       .onRequest("_codeaw/agents/restart", passthrough, async (ctx) => {
         const agent = deps.registry.get(String(ctx.params.agentId));
         await agent.stop("restart requested");
@@ -78,6 +87,7 @@ export class FrontendConnection implements ClientHandle {
         allowAllPaths: deps.guard.allowsAllPaths,
       }))
       .onRequest("_codeaw/fs/list", passthrough, (ctx) => listDir(deps.guard, ctx.params.path))
+      .onRequest("_codeaw/fs/mkdir", passthrough, (ctx) => createDirectory(deps.guard, ctx.params.path, ctx.params.name))
       .onRequest("_codeaw/fs/read", passthrough, (ctx) => readFile(deps.guard, ctx.params.path, ctx.params.maxBytes))
       .onRequest("_codeaw/git/status", passthrough, (ctx) => gitStatus(deps.guard, ctx.params.cwd))
       .onRequest("_codeaw/git/diff", passthrough, (ctx) => gitDiff(deps.guard, ctx.params.cwd, ctx.params.path, ctx.params.staged))

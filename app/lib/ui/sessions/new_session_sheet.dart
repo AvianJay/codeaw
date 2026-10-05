@@ -7,6 +7,7 @@ import '../../data/models.dart';
 import '../../main.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import '../common/create_folder.dart';
 
 Future<void> showNewSessionSheet(BuildContext context) {
   return showAdaptiveSheet<void>(
@@ -337,6 +338,15 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
       appBar: AppBar(
         title: Text(_path == null ? '選擇資料夾' : folderName(_path!)),
         actions: [
+          if (_path != null)
+            IconButton(
+              tooltip: '新增資料夾',
+              icon: const Icon(Icons.create_new_folder_outlined),
+              onPressed: _loading ? null : () async {
+                final path = await showCreateFolder(context, _path!);
+                if (path != null && mounted) await _open(path);
+              },
+            ),
           if (_path != null)
             TextButton(
               onPressed: () => Navigator.pop(context, _path),

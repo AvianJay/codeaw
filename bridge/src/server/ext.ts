@@ -86,6 +86,23 @@ export interface DirEntry {
   mtime: string;
 }
 
+/** Create exactly one child in a validated existing directory; never overwrite. */
+export function createDirectory(guard: PathGuard, parentPath: unknown, name: unknown) {
+  const parent = guard.directory(parentPath);
+  if (typeof name !== "string" || !name || name !== name.trim() || name.length > 200 ||
+      /[\\/<>:"|?*\x00-\x1f]/.test(name) || name === "." || name === ".." || /[. ]$/.test(name) ||
+      /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(name)) {
+    throw acp.RequestError.invalidParams(undefined, "資料夾名稱不可含路徑、特殊字元或 Windows 保留名稱");
+  }
+  const target = path.join(parent, name);
+  try { fs.mkdirSync(target, { recursive: false }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw acp.RequestError.invalidParams(undefined, "同名檔案或資料夾已存在，請換一個名稱");
+    throw acp.RequestError.invalidParams(undefined, "無法建立資料夾，請檢查電腦上的寫入權限");
+  }
+  return { path: guard.directory(target), name };
+}
+
 export function listDir(guard: PathGuard, p: unknown): { path: string; parent?: string; entries: DirEntry[] } {
   const dir = guard.resolve(p);
   let dirents: fs.Dirent[];

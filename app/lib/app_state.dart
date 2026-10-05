@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 import 'data/app_updater.dart';
 import 'data/bridge_client.dart';
@@ -34,6 +34,12 @@ class AppState extends ChangeNotifier {
   SessionsModel? sessions;
   TerminalHub? terminals;
   bool loaded = false;
+  ThemeMode themeMode = ThemeMode.system;
+  Future<void> setThemeMode(ThemeMode mode) async {
+    await store.saveAppearance(mode.name);
+    themeMode = mode;
+    notifyListeners();
+  }
 
   /// A pairing link received before/while the pair screen is shown (QR scanned by the system camera).
   PairingLink? pendingPairing;
@@ -43,6 +49,10 @@ class AppState extends ChangeNotifier {
   Future<void> load() async {
     await notifier.init();
     final library = await store.load();
+    final appearance = await store.loadAppearance();
+    themeMode =
+        ThemeMode.values.where((mode) => mode.name == appearance).firstOrNull ??
+        ThemeMode.system;
     _hosts = library.hosts;
     final h = library.activeHost;
     if (h != null) _bind(h);

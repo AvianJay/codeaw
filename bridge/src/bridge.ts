@@ -12,6 +12,7 @@ import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
 import { tailscaleIPv4 } from "./util/tailscale.js";
 import { TerminalManager } from "./terminal/manager.js";
+import { CpaUsageService } from "./server/cpa.js";
 import { findWebRoot } from "./server/web.js";
 
 const log = logger("bridge");
@@ -70,7 +71,8 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   manager.start();
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths);
   const terminals = new TerminalManager(guard);
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, devices, store, hostName: os.hostname(), webRoot });
+  const cpa = new CpaUsageService(opts.fetchImpl);
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, hostName: os.hostname(), webRoot });
 
   const servers = new Map<string, http.Server>();
   const binding = new Set<string>();

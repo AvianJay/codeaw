@@ -315,11 +315,13 @@ class _ComposerState extends State<Composer> {
             ),
           },
           child: Material(
-            color: scheme.surfaceContainer,
+            color: scheme.surfaceContainerLow,
             shape: wide
                 ? RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(20),
-                    side: BorderSide(color: scheme.outlineVariant),
+                    side: BorderSide(
+                      color: scheme.outlineVariant.withValues(alpha: .7),
+                    ),
                   )
                 : null,
             clipBehavior: Clip.antiAlias,
@@ -431,7 +433,10 @@ class _ComposerState extends State<Composer> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         PopupMenuButton<_AttachmentAction>(
-                          icon: const Icon(Icons.add_photo_alternate_outlined),
+                          icon: Icon(
+                            Icons.add_rounded,
+                            color: scheme.onSurfaceVariant,
+                          ),
                           tooltip: '附加檔案或圖片',
                           onOpened: _dismissKeyboard,
                           onSelected: (action) async {
@@ -490,15 +495,33 @@ class _ComposerState extends State<Composer> {
                                   : '輸入訊息，/ 開頭是指令',
                               hintMaxLines: 1,
                               filled: true,
-                              fillColor: scheme.surface,
+                              fillColor: scheme.surfaceContainerLowest,
                               isDense: true,
                               contentPadding: const EdgeInsets.symmetric(
                                 horizontal: 14,
                                 vertical: 10,
                               ),
                               border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(22),
-                                borderSide: BorderSide.none,
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: scheme.outlineVariant.withValues(
+                                    alpha: .7,
+                                  ),
+                                ),
+                              ),
+                              enabledBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: scheme.outlineVariant.withValues(
+                                    alpha: .7,
+                                  ),
+                                ),
+                              ),
+                              focusedBorder: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(14),
+                                borderSide: BorderSide(
+                                  color: scheme.primary.withValues(alpha: .6),
+                                ),
                               ),
                             ),
                           ),
@@ -521,6 +544,11 @@ class _ComposerState extends State<Composer> {
                               ? () => _send(queue: true)
                               : null,
                           child: IconButton.filled(
+                            style: IconButton.styleFrom(
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
                             tooltip: running ? '送出（長按＝排隊）' : '送出',
                             icon: const Icon(Icons.arrow_upward_rounded),
                             onPressed: canSend ? _send : null,
@@ -599,10 +627,35 @@ class ConfigBar extends StatelessWidget {
                     )
                   : ActionChip(
                       visualDensity: VisualDensity.compact,
-                      avatar: Icon(_categoryIcon(o.category), size: 15),
-                      label: Text(
-                        o.currentLabel,
-                        style: const TextStyle(fontSize: 12),
+                      backgroundColor: Colors.transparent,
+                      side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      avatar: o.category == 'model'
+                          ? AgentAvatar(agentId: controller.agentId, size: 18)
+                          : Icon(
+                              _categoryIcon(o),
+                              size: 15,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            o.currentLabel,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 13,
+                            color: scheme.outline,
+                          ),
+                        ],
                       ),
                       onPressed: () => _pickValue(context, o),
                     ),
@@ -625,13 +678,16 @@ class ConfigBar extends StatelessWidget {
     );
   }
 
-  IconData _categoryIcon(String? category) => switch (category) {
-    'mode' => Icons.shield_outlined,
-    'model' => Icons.memory_rounded,
-    'thought_level' => Icons.psychology_outlined,
-    'model_config' => Icons.tune_rounded,
-    _ => Icons.settings_outlined,
-  };
+  IconData _categoryIcon(ConfigOption option) =>
+      option.id == 'collaboration_mode'
+      ? Icons.route_outlined
+      : switch (option.category) {
+          'mode' => Icons.shield_outlined,
+          'model' => Icons.memory_rounded,
+          'thought_level' => Icons.psychology_outlined,
+          'model_config' => Icons.tune_rounded,
+          _ => Icons.settings_outlined,
+        };
 
   Future<void> _pickValue(BuildContext context, ConfigOption o) async {
     final values = o.values;
