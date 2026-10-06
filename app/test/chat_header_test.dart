@@ -16,6 +16,7 @@ CpaController _usage() {
         CpaAccount.fromJson({'id': id, 'provider': 'codex'}),
       CpaAccount.fromJson({'id': 'claude', 'provider': 'claude'}),
       CpaAccount.fromJson({'id': 'agy', 'provider': 'antigravity'}),
+      CpaAccount.fromJson({'id': 'grok', 'provider': 'grok'}),
     ];
   for (final (id, weekly, five) in [
     ('c1', 97, 100),
@@ -32,6 +33,13 @@ CpaController _usage() {
       ],
     });
   }
+  // Weekly-only provider: the missing five-hour window must not render.
+  c.quotas['grok'] = CpaQuota.fromJson({
+    'status': 'ok',
+    'windows': [
+      {'id': 'weekly', 'remainingPercent': 64},
+    ],
+  });
   return c;
 }
 
@@ -72,45 +80,53 @@ void main() {
             ),
           ),
         );
-        for (final (agent, weekly, five, color) in [
-          ('codex', '46.7%', '50.0%', const Color(0xFFB77900)),
-          ('claude', '12.0%', '72.0%', const Color(0xFFDC2626)),
-          ('agy', '90.0%', '10.0%', const Color(0xFF15803D)),
-          ('other', '—', '—', null),
-        ]) {
+        for (final (agent, weekly, five, color)
+            in <(String, String?, String?, Color?)>[
+              ('codex', '46.7%', '50.0%', const Color(0xFFB77900)),
+              ('claude', '12.0%', '72.0%', const Color(0xFFDC2626)),
+              ('agy', '90.0%', '10.0%', const Color(0xFF15803D)),
+              ('grok', '64.0%', null, const Color(0xFF15803D)),
+              ('other', null, null, null),
+            ]) {
           await tester.pumpWidget(page(agent));
           await tester.pumpAndSettle();
           final bars = find.byKey(const ValueKey('chat-usage-bars'));
-          expect(
-            find.descendant(of: bars, matching: find.text('週: $weekly')),
-            findsOneWidget,
-          );
-          expect(
-            find.descendant(of: bars, matching: find.text('5小時: $five')),
-            findsOneWidget,
-          );
+          expect(tester.takeException(), isNull);
+          if (weekly == null && five == null) {
+            expect(bars, findsNothing);
+            continue;
+          }
+          for (final (label, value) in [('週', weekly), ('5小時', five)]) {
+            expect(
+              find.descendant(
+                of: bars,
+                matching: value == null
+                    ? find.textContaining('$label:')
+                    : find.text('$label: $value'),
+              ),
+              value == null ? findsNothing : findsOneWidget,
+            );
+          }
           expect(
             find.descendant(of: bars, matching: find.text(agent)),
             findsNothing,
           );
-          if (color != null) {
-            expect(
-              tester
-                  .widget<LinearProgressIndicator>(
-                    find
-                        .descendant(
-                          of: bars,
-                          matching: find.byType(LinearProgressIndicator),
-                        )
-                        .first,
-                  )
-                  .color,
-              color,
-            );
-          }
+          expect(
+            tester
+                .widget<LinearProgressIndicator>(
+                  find
+                      .descendant(
+                        of: bars,
+                        matching: find.byType(LinearProgressIndicator),
+                      )
+                      .first,
+                )
+                .color,
+            color,
+          );
           expect(tester.getRect(bars).right, lessThanOrEqualTo(size.width));
-          expect(tester.takeException(), isNull);
         }
+        await tester.pumpWidget(page('codex'));
         await tester.tap(find.byKey(const ValueKey('chat-usage-bars')));
         expect(opened, isTrue);
         c.settings = null;

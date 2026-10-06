@@ -98,7 +98,13 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
       final providers = c.accounts.map((a) => a.provider).toSet().toList()
         ..sort();
       final endpoint = Uri.tryParse(c.settings?.endpoint ?? '');
-      final averages = cpaProviderAverages(c.accounts, c.quotas);
+      final averages = cpaProviderAverages(c.accounts, c.quotas)
+          .where(
+            (a) =>
+                a.weekly.remainingPercent != null ||
+                a.fiveHour.remainingPercent != null,
+          )
+          .toList();
       return Scaffold(
         appBar: AppBar(
           title: const Text('用量與額度'),
@@ -390,27 +396,38 @@ class _ProviderAverageRow extends StatelessWidget {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                final weekly = _AverageBar(
-                  provider: average,
-                  label: '週',
-                  average: average.weekly,
-                );
-                final fiveHour = _AverageBar(
-                  provider: average,
-                  label: '5小時',
-                  average: average.fiveHour,
-                );
+                // Windows without any reported value are left out.
+                final weekly = average.weekly.remainingPercent == null
+                    ? null
+                    : _AverageBar(
+                        provider: average,
+                        label: '週',
+                        average: average.weekly,
+                      );
+                final fiveHour = average.fiveHour.remainingPercent == null
+                    ? null
+                    : _AverageBar(
+                        provider: average,
+                        label: '5小時',
+                        average: average.fiveHour,
+                      );
                 if (constraints.maxWidth <
                     MediaQuery.textScalerOf(context).scale(160)) {
                   return Column(
-                    children: [weekly, const SizedBox(height: 9), fiveHour],
+                    children: [
+                      ?weekly,
+                      if (weekly != null && fiveHour != null)
+                        const SizedBox(height: 9),
+                      ?fiveHour,
+                    ],
                   );
                 }
+                // Keep both slots so each window lines up across providers.
                 return Row(
                   children: [
-                    Expanded(child: weekly),
+                    Expanded(child: weekly ?? const SizedBox.shrink()),
                     const SizedBox(width: 14),
-                    Expanded(child: fiveHour),
+                    Expanded(child: fiveHour ?? const SizedBox.shrink()),
                   ],
                 );
               },
@@ -435,9 +452,9 @@ class _AverageBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final value = average.remainingPercent;
+    final value = average.remainingPercent!;
     final color = cpaQuotaColor(context, value);
-    final formatted = value == null ? '—' : '${value.toStringAsFixed(1)}%';
+    final formatted = '${value.toStringAsFixed(1)}%';
     final coverage = average.accountCount < provider.totalAccounts
         ? ' (${average.accountCount}/${provider.totalAccounts})'
         : '';
@@ -466,7 +483,7 @@ class _AverageBar extends StatelessWidget {
             ),
             const SizedBox(height: 5),
             LinearProgressIndicator(
-              value: value == null ? 0 : value / 100,
+              value: value / 100,
               minHeight: 3,
               color: color,
               backgroundColor: scheme.surfaceContainerHighest,

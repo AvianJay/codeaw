@@ -220,6 +220,7 @@ void main() {
               CpaAccount.fromJson(account(id, 'codex')),
             CpaAccount.fromJson(account('claude', 'claude')),
             CpaAccount.fromJson(account('agy', 'antigravity')),
+            CpaAccount.fromJson(account('grok', 'grok')),
           ];
         c.quotas.addAll({
           'c1': allowance(97, 100),
@@ -227,6 +228,7 @@ void main() {
           'c3': allowance(20, 0),
           'claude': allowance(81, 72),
           'agy': agyAllowance([60], [30]),
+          'grok': allowance(64, null),
         });
         await tester.pumpWidget(
           MaterialApp(
@@ -281,6 +283,23 @@ void main() {
           expect(bars[0].color, entry.value[2]);
           expect(bars[1].color, entry.value[3]);
         }
+        // A provider with only a weekly window shows no five-hour bar.
+        final grok = find.byKey(const ValueKey('cpa-average-grok'));
+        expect(
+          find.descendant(of: grok, matching: find.text('週: 64.0%')),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(of: grok, matching: find.textContaining('5小時')),
+          findsNothing,
+        );
+        expect(
+          find.descendant(
+            of: grok,
+            matching: find.byType(LinearProgressIndicator),
+          ),
+          findsOneWidget,
+        );
         await tester.enterText(find.byType(TextField), 'claude');
         await tester.pumpAndSettle();
         expect(find.text('週: 46.7%'), findsOneWidget);
@@ -399,16 +418,20 @@ void main() {
             ),
           );
           await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull);
           final row = find.byKey(const ValueKey('cpa-average-codex'));
+          if (value == null) {
+            // No reported window at all: the provider row is not shown.
+            expect(row, findsNothing);
+            continue;
+          }
           final bars = tester.widgetList<LinearProgressIndicator>(
             find.descendant(
               of: row,
               matching: find.byType(LinearProgressIndicator),
             ),
           );
-          final label = value == null
-              ? '— (0/1)'
-              : '${value.toStringAsFixed(1)}%';
+          final label = '${value.toStringAsFixed(1)}%';
           expect(
             find.descendant(of: row, matching: find.text('週: $label')),
             findsOneWidget,
@@ -417,13 +440,7 @@ void main() {
             find.descendant(of: row, matching: find.text('5小時: $label')),
             findsOneWidget,
           );
-          if (expectedColor != null) {
-            expect(bars.every((bar) => bar.color == expectedColor), isTrue);
-          }
-          if (value == null) {
-            expect(bars.every((bar) => bar.value == 0), isTrue);
-          }
-          expect(tester.takeException(), isNull);
+          expect(bars.every((bar) => bar.color == expectedColor), isTrue);
         }
         await tester.pumpWidget(const SizedBox.shrink());
         c.dispose();

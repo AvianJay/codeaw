@@ -39,9 +39,16 @@ class ChatHeaderTitle extends StatelessWidget {
                 controller.quotas,
               ).where((a) => a.provider == provider).firstOrNull
             : null;
+        // Windows the provider never reports stay hidden instead of showing —.
+        final bars = [
+          if (average?.weekly.remainingPercent != null)
+            ('週', average!.weekly),
+          if (average?.fiveHour.remainingPercent != null)
+            ('5小時', average!.fiveHour),
+        ];
         return Row(
           children: [
-            if (!configured || constraints.maxWidth >= 210) ...[
+            if (bars.isEmpty || constraints.maxWidth >= 210) ...[
               AgentAvatar(agentId: agentId, label: agentName, size: 28),
               const SizedBox(width: 8),
             ],
@@ -68,30 +75,27 @@ class ChatHeaderTitle extends StatelessWidget {
                 ],
               ),
             ),
-            if (configured) ...[
+            if (bars.isNotEmpty) ...[
               const SizedBox(width: 8),
               SizedBox(
                 key: const ValueKey('chat-usage-bars'),
                 width: 84,
                 child: Tooltip(
-                  message: '${average?.label ?? '目前代理'} 平均剩餘額度，點擊查看帳號詳情',
+                  message: '${average!.label} 平均剩餘額度，點擊查看帳號詳情',
                   child: InkWell(
                     onTap: onUsageTap,
                     borderRadius: BorderRadius.circular(4),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        _HeaderBar(
-                          label: '週',
-                          average: average?.weekly,
-                          total: average?.totalAccounts ?? 0,
-                        ),
-                        const SizedBox(height: 3),
-                        _HeaderBar(
-                          label: '5小時',
-                          average: average?.fiveHour,
-                          total: average?.totalAccounts ?? 0,
-                        ),
+                        for (final (i, (label, value)) in bars.indexed) ...[
+                          if (i > 0) const SizedBox(height: 3),
+                          _HeaderBar(
+                            label: label,
+                            average: value,
+                            total: average.totalAccounts,
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -118,15 +122,15 @@ class _HeaderBar extends StatelessWidget {
     required this.total,
   });
   final String label;
-  final CpaUsageAverage? average;
+  final CpaUsageAverage average;
   final int total;
   @override
   Widget build(BuildContext context) {
-    final value = average?.remainingPercent;
-    final text = value == null ? '—' : '${value.toStringAsFixed(1)}%';
+    final value = average.remainingPercent!;
+    final text = '${value.toStringAsFixed(1)}%';
     final color = cpaQuotaColor(context, value);
     return Semantics(
-      label: '$label 平均剩餘 $text，有效帳號 ${average?.accountCount ?? 0}/$total',
+      label: '$label 平均剩餘 $text，有效帳號 ${average.accountCount}/$total',
       excludeSemantics: true,
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -147,7 +151,7 @@ class _HeaderBar extends StatelessWidget {
             ),
           ),
           LinearProgressIndicator(
-            value: value == null ? 0 : value / 100,
+            value: value / 100,
             minHeight: 3,
             color: color,
             backgroundColor: Theme.of(
