@@ -6,6 +6,7 @@ struct CodeawActivityAttributes: ActivityAttributes {
   struct ContentState: Codable, Hashable {
     var title: String?
     var backgroundUpdates: Bool?
+    var locationUpdates: Bool?
     var project: String
     var agent: String
     var state: String

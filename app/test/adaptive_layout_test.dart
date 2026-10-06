@@ -209,6 +209,43 @@ Finder get _input => find.descendant(
 void main() {
   setUp(() => FlutterSecureStorage.setMockInitialValues({}));
 
+  for (final size in [const Size(390, 844), const Size(844, 390)]) {
+    testWidgets('direct chat entry has a back button at $size', (tester) async {
+      final h = _Harness();
+      await h.show(tester, size, location: sessionRoute(_first));
+      expect(h.router.canPop(), isFalse);
+      expect(find.byType(BackButton), findsOneWidget);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(h.router.state.uri.path, '/');
+      expect(find.byType(SessionsPage), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      h.router.go(sessionRoute(_second));
+      await tester.pumpAndSettle();
+      expect(h.router.canPop(), isFalse);
+      await tester.tap(find.byType(BackButton));
+      await tester.pumpAndSettle();
+      expect(h.router.state.uri.path, '/');
+      await h.close(tester);
+    });
+  }
+
+  testWidgets('chat back button preserves an existing previous route', (
+    tester,
+  ) async {
+    final h = _Harness();
+    await h.show(tester, const Size(390, 844), location: '/settings');
+    unawaited(h.router.push(sessionRoute(_first)));
+    await tester.pumpAndSettle();
+    expect(h.router.canPop(), isTrue);
+    await tester.tap(find.byType(BackButton));
+    await tester.pumpAndSettle();
+    expect(find.byType(SettingsPage), findsOneWidget);
+    expect(h.router.state.uri.path, '/settings');
+    expect(tester.takeException(), isNull);
+    await h.close(tester);
+  });
+
   for (final width in [390.0, 720.0, 834.0, 1099.0, 1100.0, 1440.0]) {
     testWidgets('workspace navigation at $width pixels', (tester) async {
       final h = _Harness();

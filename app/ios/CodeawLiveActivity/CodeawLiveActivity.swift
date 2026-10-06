@@ -88,7 +88,7 @@ struct CodeawLiveActivity: Widget {
 
   private func lastSync(_ state: CodeawActivityAttributes.ContentState) -> some View {
     HStack(spacing: 3) {
-      Text("本機同步 · 上次")
+      Text(state.locationUpdates == true ? "背景定位同步 · 上次" : "本機同步 · 上次")
       Text(Date(timeIntervalSince1970: state.updatedAt / 1000), style: .time)
     }.font(.caption2).foregroundStyle(.secondary)
   }
@@ -101,7 +101,7 @@ struct CodeawLiveActivity: Widget {
   }
 
   private func label(_ context: ActivityViewContext<CodeawActivityAttributes>) -> String {
-    if context.isStale { return "狀態待同步" }
+    if context.isStale { return "更新已暫停" }
     return ["thinking": "思考中", "command": "執行指令", "tool": "使用工具", "responding": "正在回覆",
       "attention": "需要你的回覆", "completed": "已完成", "cancelled": "已停止", "error": "執行失敗", "disconnected": "桌面已離線"][context.state.phase] ?? "工作中"
   }

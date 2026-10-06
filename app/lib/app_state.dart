@@ -21,15 +21,18 @@ class AppState extends ChangeNotifier {
     required void Function(String sessionId) openSession,
     BridgeClient Function(HostConfig)? createClient,
     AppUpdater? updater,
+    LiveActivityController? liveActivity,
     LiveActivityTracker? androidLiveActivity,
   }) : notifier = LocalNotifier(openSession),
        updater = updater ?? AppUpdater(),
+       liveActivity = liveActivity ?? LiveActivityController(),
        androidLiveActivity = androidLiveActivity ?? LiveActivityTracker(),
        _createClient = createClient ?? BridgeClient.new;
 
   final HostStore store;
   final LocalNotifier notifier;
-  final LiveActivityController liveActivity = LiveActivityController();
+  final LiveActivityController liveActivity;
+  Future<void>? _platformInitialization;
   final AppUpdater updater;
   final LiveActivityTracker androidLiveActivity;
   final BridgeClient Function(HostConfig) _createClient;
@@ -57,9 +60,6 @@ class AppState extends ChangeNotifier {
   bool get paired => host != null;
 
   Future<void> load() async {
-    await notifier.init();
-    await liveActivity.initialize();
-    await androidLiveActivity.load();
     final library = await store.load();
     final appearance = await store.loadAppearance();
     themeMode =
@@ -71,6 +71,14 @@ class AppState extends ChangeNotifier {
     loaded = true;
     notifyListeners();
   }
+
+  /// Optional native services must not block the saved chats or the first frame.
+  Future<void> initializePlatformFeatures() =>
+      _platformInitialization ??= Future.wait([
+        notifier.init(),
+        liveActivity.initialize(),
+        androidLiveActivity.load(),
+      ]);
 
   Future<void> setHost(HostConfig h) async {
     if (identical(host, h)) return;

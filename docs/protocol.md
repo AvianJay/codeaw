@@ -604,6 +604,14 @@ after that activity's token was registered successfully. The app tracks all runn
 snapshots and requests multiple activities; ActivityKit controls the device limit.
 Registrations are limited to 16 per paired device and 64 across the bridge.
 
+The iOS app may add optional `locationUpdates` to local content state to label
+its explicitly enabled background location session. This is independent of
+`backgroundUpdates`/APNs registration; no coordinates are added to this protocol.
+All active local content uses a stale date 120 seconds after the latest received
+bridge snapshot, including when APNs is unavailable. Stale content retains its
+system timer and shows “更新已暫停”. Optional native restoration runs after the
+app's first screen and cannot block loading saved chats.
+
 ### ntfy
 
 When an event needs attention (permission/elicitation request, turn finished,

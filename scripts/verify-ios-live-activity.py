@@ -10,6 +10,8 @@ with (app / "Info.plist").open("rb") as file:
 with (widget / "Info.plist").open("rb") as file:
     info = plistlib.load(file)
 assert main.get("NSSupportsLiveActivities") is True
+assert "location" in main.get("UIBackgroundModes", [])
+assert main.get("NSLocationWhenInUseUsageDescription")
 assert info["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.widgetkit-extension"
 assert info["CFBundleIdentifier"].startswith(main["CFBundleIdentifier"] + ".")
 for key in ("CFBundleVersion", "CFBundleShortVersionString"):

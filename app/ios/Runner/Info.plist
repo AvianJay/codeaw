@@ -52,6 +52,10 @@
 	<string>選擇圖片傳給 agent。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>連線至你的電腦上的 codeaw bridge。</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>僅在你啟用「背景定位維持同步」並有 AI 工作時使用定位服務，嘗試在鎖屏後維持連線。座標不儲存、不傳送，會顯示定位指示並增加耗電。</string>
+	<key>UIBackgroundModes</key>
+	<array><string>location</string></array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Native bridges use HTTP/WebSocket over the encrypted Tailscale tunnel. -->
