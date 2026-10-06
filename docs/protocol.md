@@ -173,8 +173,9 @@ authoritative replacement when ready instead of blocking the initial load.
 ### Deferred tool history and local cache
 
 Clients opting into `lazyHistory` receive transport projections for replayed tool
-outputs over 16 KiB. Inputs, title, status, locations, parent attribution and
-lifecycle revisions remain inline; bulky content, raw output and terminal bytes
+updates over 4 KiB. Small inputs (at most 1 KiB), bounded titles (256 characters),
+status, locations, parent attribution and lifecycle revisions remain inline;
+bulky inputs, content, raw output, duplicated Claude tool responses and terminal bytes
 are replaced by `update._meta.codeaw.deferredTool =
 {seq, bytes, hasDiff, exitCode?}`. Collaboration identity/lifecycle reports remain
 inline. Ordinary live updates and the durable log are unchanged. Clients that
@@ -182,7 +183,10 @@ omit this option still receive full output, including on older bridges.
 
 Authenticated `_codeaw/history/tool` with `{sessionId, epoch, toolCallId}` returns
 `{epoch, seq, t, update}` containing the exact folded output from the current log.
-Stale epochs and missing tools are rejected. A hydrated tool can be ahead of
+Expansion also restores the original full title and input. Deferred historical
+diffs stay folded until explicitly opened so merely scrolling through a long
+chat cannot download every patch. Stale epochs and missing tools are rejected.
+A hydrated tool can be ahead of
 pending stream notifications; ignore already-folded updates for that tool through
 the returned seq, without advancing the session cursor past unrelated entries.
 
@@ -194,6 +198,12 @@ cache is bounded to 32 snapshots (including the session list) and 128 MiB; older
 cache entries may be evicted. Image/file references are retained, but fetching
 their bytes and deferred tool output requires the bridge. Forgetting a pairing or
 the Settings cache control removes its local cache; bridge history is unaffected.
+
+The WebSocket server negotiates `permessage-deflate` with native and browser
+clients. Context takeover is disabled in both directions, compression concurrency
+is bounded, and messages smaller than 1 KiB stay uncompressed. Clients that do not
+offer compression continue to work. Compression does not change sequence numbers,
+the JSON protocol or durable history, and images/files use separate HTTP requests.
 
 Desktop turns can start outside codeaw, so state events may refer to native
 turn ids. Desktop-origin messages are echoed from the desktop stream rather

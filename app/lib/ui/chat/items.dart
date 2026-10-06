@@ -378,7 +378,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final t = widget.t;
     final scheme = Theme.of(context).colorScheme;
     final hasDiff = t.deferredDiff || (t.content ?? const []).any((c) => c['type'] == 'diff');
-    final open = _open ?? (hasDiff && t.kind == 'edit' && t.status != 'failed');
+    final open = _open ?? (!t.detailsDeferred && hasDiff && t.kind == 'edit' && t.status != 'failed');
     if (open && t.detailsDeferred && !t.loadingDetails && t.detailError == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.controller.loadToolDetails(t);

@@ -34,6 +34,32 @@ describe("lazy tool history", () => {
     expect(edit.update._meta.codeaw.deferredTool.hasDiff).toBe(true);
   });
 
+  it("does not mistake ordinary commands mentioning agents or tasks for collaboration", () => {
+    for (const title of ["Get-Content agent.md", "rg task src", "npm install spawn-package", "Get-Content subagent.ts", "node send_input-test.js"]) {
+      const projected: any = lazyToolEntry(tool(3, { title }));
+      expect(projected.update._meta.codeaw.deferredTool).toBeDefined();
+      expect(projected.update.content).toBeUndefined();
+    }
+    for (const name of ["functions.spawn_agent", "Task", "Agent", "collabAgentToolCall"]) {
+      const original = tool(4, { name });
+      expect(lazyToolEntry(original)).toBe(original);
+    }
+  });
+
+  it("bounds large inputs, titles and duplicated Claude metadata, retaining originals for expansion", () => {
+    const original = tool(30, { title: output, rawInput: { patch: output },
+      _meta: { claudeCode: { toolName: "Bash", parentToolUseId: "parent", toolResponse: { stdout: output } }, terminal_output: { data: output } } });
+    const projected: any = lazyToolEntry(original);
+    expect(Buffer.byteLength(JSON.stringify(projected))).toBeLessThan(1024);
+    expect(projected.update.rawInput).toBeUndefined();
+    expect(projected.update._meta.claudeCode).toEqual({ toolName: "Bash", parentToolUseId: "parent" });
+    expect((original as any).update.rawInput.patch).toBe(output);
+    expect((original as any).update._meta.claudeCode.toolResponse.stdout).toBe(output);
+    expect(lazyToolEntry(tool(1, { rawInput: { command: "pwd" }, content: [], rawOutput: { output: "small" } }))).toMatchObject({ update: { rawOutput: { output: "small" } } });
+    const medium: any = lazyToolEntry(tool(2, { rawOutput: { output: "x".repeat(3000), exitCode: 0 }, content: [{ type: "content", content: { type: "text", text: "x".repeat(3000) } }] }));
+    expect(medium.update._meta.codeaw.deferredTool.exitCode).toBe(0);
+  });
+
   it("hydrates exact folded output, rejects stale epochs and preserves old-client full replay", async () => {
     bridge = await startTestBridge();
     const a = await TestClient.connect(bridge.url, bridge.tokenFor("A")); clients.push(a);
