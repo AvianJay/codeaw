@@ -168,6 +168,7 @@ final class CodeawActivityManager {
 
 /// Explicitly opted-in Core Location session. Coordinates never leave this delegate.
 /// When-in-use permission is sufficient for a foreground-started background session.
+@available(iOS 16.2, *)
 @MainActor
 final class CodeawBackgroundLocation: NSObject, CLLocationManagerDelegate {
   private let channel: FlutterMethodChannel
