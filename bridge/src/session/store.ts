@@ -17,13 +17,21 @@ const log = logger("store");
 export class SessionStore {
   private readonly sessionsDir: string;
   private readonly blobsDir: string;
+  private readonly deletedDir: string;
+  private readonly deleted = new Set<string>();
   private readonly fds = new Map<string, number>();
 
   constructor(readonly dataDir: string) {
     this.sessionsDir = path.join(dataDir, "sessions");
     this.blobsDir = path.join(dataDir, "blobs");
+    this.deletedDir = path.join(dataDir, "deleted-sessions");
     fs.mkdirSync(this.sessionsDir, { recursive: true });
     fs.mkdirSync(this.blobsDir, { recursive: true });
+    fs.mkdirSync(this.deletedDir, { recursive: true });
+    for (const name of fs.readdirSync(this.deletedDir)) {
+      const record = readJson<{ id?: string }>(path.join(this.deletedDir, name), {});
+      if (typeof record.id === "string") this.deleted.add(record.id);
+    }
   }
 
   private dir(id: string): string {
@@ -31,10 +39,12 @@ export class SessionStore {
   }
 
   readMeta(id: string): SessionMeta | undefined {
+    if (this.isDeleted(id)) return undefined;
     return readJson<SessionMeta | undefined>(path.join(this.dir(id), "meta.json"), undefined);
   }
 
   writeMeta(meta: SessionMeta): void {
+    if (this.isDeleted(meta.id)) return;
     writeFileAtomic(path.join(this.dir(meta.id), "meta.json"), JSON.stringify(meta, null, 1));
   }
 
@@ -42,7 +52,7 @@ export class SessionStore {
     const out: SessionMeta[] = [];
     for (const name of fs.readdirSync(this.sessionsDir)) {
       const meta = readJson<SessionMeta | undefined>(path.join(this.sessionsDir, name, "meta.json"), undefined);
-      if (meta?.id) out.push(meta);
+      if (meta?.id && !this.isDeleted(meta.id)) out.push(meta);
     }
     return out;
   }
@@ -62,6 +72,7 @@ export class SessionStore {
   }
 
   readEntries(id: string): LogEntry[] {
+    if (this.isDeleted(id)) return [];
     const file = path.join(this.dir(id), "events.jsonl");
     let text: string;
     try {
@@ -83,6 +94,7 @@ export class SessionStore {
   }
 
   append(id: string, entry: LogEntry): void {
+    if (this.isDeleted(id)) return;
     let fd = this.fds.get(id);
     if (fd === undefined) {
       fs.mkdirSync(this.dir(id), { recursive: true });
@@ -103,9 +115,16 @@ export class SessionStore {
   }
 
   delete(id: string): void {
+    const directory = path.resolve(this.dir(id));
+    if (path.dirname(directory) !== path.resolve(this.sessionsDir)) throw new Error("Invalid session deletion path");
+    // Retained native histories must not reappear after refresh or bridge restart.
+    writeFileAtomic(path.join(this.deletedDir, safeName(id) + ".json"), JSON.stringify({ id, deletedAt: new Date().toISOString() }));
+    this.deleted.add(id);
     this.close(id);
-    fs.rmSync(this.dir(id), { recursive: true, force: true });
+    fs.rmSync(directory, { recursive: true, force: true });
   }
+
+  isDeleted(id: string): boolean { return this.deleted.has(id); }
 
   close(id: string): void {
     const fd = this.fds.get(id);

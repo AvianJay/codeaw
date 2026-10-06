@@ -43,13 +43,31 @@ installed lazy replay was about 11 MB. These are PC-local byte measurements;
 they do not establish a mobile throughput rate or prove Android device behavior.
 The reported phone symptom is **1.8 MB/s**, not 11.8 MB/s.
 
-Current local checks passed: bridge `npm test` (181 passed, 7 skipped),
-`npm run typecheck`, Flutter `flutter test` (231 passed, 12 skipped), and analysis
+Current local checks passed: bridge `npm test` (184 passed, 7 skipped),
+`npm run typecheck`, Flutter `flutter test` (237 passed, 12 skipped), and analysis
 of changed Flutter files. The native transport test and real history test use
 the actual Codex history, separately from the fake-agent unit checks. Update
 both App and bridge to enable gzip, then verify cold long-chat opening and
 reconnection on the Android handset. Background location and retained-activity
 startup also still require physical iPhone verification.
+
+## Confirmed chat deletion
+
+The chat list has a Delete button and the chat menu has the same action. Both
+require confirmation before sending the request. Cancelling sends no deletion;
+failed requests preserve history. Running/queued chats reject deletion without
+cancelling their work. Desktop-linked chats are removed only from Codeaw, and
+the confirmation explains that their Codex desktop conversation remains.
+Project directories and uploaded files remain on the PC.
+
+Deletion markers persist on the bridge so agents retaining their own transcripts
+cannot resurrect removed chats through refresh, reconnect or restart. The App
+also removes its list entry and cache, and suppresses stale list responses and
+late disposal saves. Bridge tests cover restart, retained native history, files
+remaining intact and desktop ownership; six App tests cover explicit confirmation,
+cancellation, failure, cache restoration, navigation and small portrait/landscape
+screens. Two dedicated real Luna Low chats ran commands, completed and were
+deleted successfully; subsequent listing omitted them and reopening was rejected.
 
 ## Reproduce without changing the primary desktop chat
 

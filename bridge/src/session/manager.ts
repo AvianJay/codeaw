@@ -146,6 +146,7 @@ function modeOf(meta: SessionMeta): string | undefined {
 
 export class SessionManager implements AgentHandlers {
   private readonly sessions = new Map<string, BridgeSession>();
+  private readonly deleting = new Set<string>();
   private readonly clients = new Set<ClientHandle>();
   private readonly attachedTo = new Map<ClientHandle, Set<BridgeSession>>();
   private readonly lazyHistory = new Map<ClientHandle, Set<string>>();
@@ -248,6 +249,7 @@ export class SessionManager implements AgentHandlers {
   onUpdate(agentId: string, params: acp.SessionNotification): void {
     if (this.shuttingDown) return;
     const id = extId(agentId, params.sessionId);
+    if (this.store.isDeleted(id) || this.deleting.has(id)) return;
     const s = this.sessions.get(id) ?? this.fromDisk(id);
     if (!s) {
       // e.g. available_commands_update racing the session/new response
@@ -803,6 +805,7 @@ export class SessionManager implements AgentHandlers {
 
   /** Finds a session in memory, on disk, or imports it from the agent's own history. */
   private async sessionForAttach(id: string, cwd?: string): Promise<BridgeSession> {
+    if (this.store.isDeleted(id) || this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "This chat has been deleted from Codeaw");
     const s = this.sessions.get(id) ?? this.fromDisk(id);
     if (s && !s.stale) {
       if (s.meta.connection === "desktop" || (s.meta.origin === "native" && s.backendGen === 0)) await this.ensureActive(s);
@@ -856,6 +859,7 @@ export class SessionManager implements AgentHandlers {
 
   private requireLoaded(id: unknown): BridgeSession {
     if (typeof id !== "string") throw acp.RequestError.invalidParams(undefined, "sessionId is required");
+    if (this.store.isDeleted(id) || this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "This chat has been deleted from Codeaw");
     const s = this.sessions.get(id) ?? this.fromDisk(id);
     if (!s) throw acp.RequestError.invalidParams(undefined, `Unknown session ${id}; load it first`);
     return s;
@@ -949,6 +953,7 @@ export class SessionManager implements AgentHandlers {
           if (r.nextCursor) next[agent.id] = r.nextCursor;
           for (const info of r.sessions ?? []) {
             const id = extId(agent.id, info.sessionId);
+            if (this.store.isDeleted(id) || this.deleting.has(id)) continue;
             this.nativeInfo.set(id, info);
             out.set(id, { ...info, sessionId: id });
           }
@@ -964,6 +969,7 @@ export class SessionManager implements AgentHandlers {
       for (const meta of this.store.listMetas()) metas.set(meta.id, meta);
       for (const s of this.sessions.values()) metas.set(s.id, s.meta);
       for (const meta of metas.values()) {
+        if (this.store.isDeleted(meta.id) || this.deleting.has(meta.id)) continue;
         if (out.has(meta.id) || (filter && meta.agentId !== filter) || !this.registry.has(meta.agentId)) continue;
         if (params.cwd && meta.cwd !== params.cwd) continue;
         out.set(meta.id, { sessionId: meta.id, cwd: meta.cwd, title: meta.title ?? null, updatedAt: meta.updatedAt });
@@ -1179,32 +1185,48 @@ export class SessionManager implements AgentHandlers {
     s.backendGen = 0;
   }
 
-  async deleteSession(c: ClientHandle, params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
+  async deleteSession(_c: ClientHandle, params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
     const id = params.sessionId;
     const { agentId, backendId } = parseExtId(id);
-    const s = this.sessions.get(id) ?? this.fromDisk(id);
-    if (s?.meta.connection === "desktop") throw acp.RequestError.invalidRequest(undefined, "Delete this desktop-linked conversation in Codex desktop");
-    if (s) {
-      await this.cancel(c, { sessionId: id });
-      await this.releaseBackend(s);
+    if (!backendId) throw acp.RequestError.invalidParams(undefined, "sessionId is required");
+    if (this.store.isDeleted(id)) return {};
+    if (this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "Chat deletion is already in progress");
+    let s = this.sessions.get(id) ?? this.fromDisk(id);
+    if (!s && this.nativeInfo.has(id)) s = await this.sessionForAttach(id);
+    if (!s) throw acp.RequestError.invalidParams(undefined, "Unknown session; list or load it before deletion");
+    if (s?.meta.connection === "desktop") await this.ensureActive(s);
+    if (this.store.isDeleted(id)) return {};
+    if (this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "Chat deletion is already in progress");
+    if (s && (s.turn || s.state !== "idle" || s.pending.size || s.queue.length)) {
+      throw acp.RequestError.invalidRequest(undefined, "Chat is busy; stop the turn before deleting it");
     }
-    const agent = this.requireAgent(agentId);
-    if (agent.running && agent.capabilities?.sessionCapabilities?.delete) {
-      try {
-        await agent.request("session/delete", { sessionId: backendId });
-      } catch (err) {
-        log.debug(`delete ${id}: ${errorMessage(err)}`);
+    this.deleting.add(id);
+    try {
+      if (s) await this.releaseBackend(s);
+      // Desktop close only detaches our follower; the desktop conversation is retained.
+      if (s?.meta.connection !== "desktop") {
+        try {
+          const agent = this.requireAgent(agentId);
+          await agent.ensureStarted();
+          if (agent.capabilities?.sessionCapabilities?.delete) await agent.request("session/delete", { sessionId: backendId });
+        } catch (err) {
+          log.debug(`native delete ${id}: ${errorMessage(err)}`);
+        }
       }
-    } else if (!agent.running) {
-      await agent.ensureStarted();
-      if (agent.capabilities?.sessionCapabilities?.delete) await agent.request("session/delete", { sessionId: backendId }).catch(() => undefined);
+      if (s) {
+        if (s.metaTimer) clearTimeout(s.metaTimer);
+        if (s.workTimer) clearTimeout(s.workTimer);
+        for (const sub of s.subscribers) this.attachedTo.get(sub)?.delete(s);
+      }
+      this.store.delete(id);
+      this.sessions.delete(id);
+      this.nativeInfo.delete(id);
+      this.orphans.delete(id);
+      for (const client of this.clients) void client.notify("_codeaw/activity", { sessionId: id, agentId, deleted: true });
+      return {};
+    } finally {
+      this.deleting.delete(id);
     }
-    if (s) for (const sub of s.subscribers) this.attachedTo.get(sub)?.delete(s);
-    this.sessions.delete(id);
-    this.nativeInfo.delete(id);
-    this.store.delete(id);
-    for (const client of this.clients) void client.notify("_codeaw/activity", { sessionId: id, agentId, deleted: true });
-    return {};
   }
 
   async reimport(sessionId: string): Promise<{ epoch: string }> {

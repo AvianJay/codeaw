@@ -23,6 +23,9 @@ class SessionsModel extends ChangeNotifier {
   bool _cacheReady = false;
   int _revision = 0;
   List<SessionSummary> sessions = [];
+  final _removed = <String>{};
+  final _deleting = <String>{};
+  bool isDeleting(String id) => _deleting.contains(id);
   bool loading = false;
   String? error;
   List<String> agentErrors = [];
@@ -43,10 +46,12 @@ class SessionsModel extends ChangeNotifier {
       return;
     }
     try {
+      _removed.addAll((saved['removed'] as List? ?? const []).whereType<String>());
       sessions = (saved['sessions'] as List)
           .map(
             (s) => SessionSummary.fromJson(Map<String, dynamic>.from(s as Map)),
           )
+          .where((s) => !_removed.contains(s.id))
           .toList();
       _cacheReady = true;
       notifyListeners();
@@ -59,6 +64,7 @@ class SessionsModel extends ChangeNotifier {
     return !_cacheReady
         ? Future.value()
         : cache.write(_cacheId, {
+            'removed': _removed.toList(),
             'sessions': [
               for (final s in sessions)
                 {
@@ -74,6 +80,7 @@ class SessionsModel extends ChangeNotifier {
                       'queued': s.queued,
                       'known': s.known,
                       'projectless': s.projectless,
+                      if (s.desktopSync) 'connection': 'desktop',
                     },
                   },
                 },
@@ -150,7 +157,30 @@ class SessionsModel extends ChangeNotifier {
     return (r['sessions'] as List? ?? const [])
         .whereType<Map<String, dynamic>>()
         .map(SessionSummary.fromJson)
+        .where((s) => !_removed.contains(s.id))
         .toList();
+  }
+
+  Future<void> deleteSession(String id) async {
+    if (!client.isOnline) throw StateError('請先連線到電腦，再刪除聊天');
+    if (!_deleting.add(id)) return;
+    notifyListeners();
+    try {
+      await client.request('session/delete', {'sessionId': id});
+      if (_disposed) return;
+      _remove(id);
+      await cache.remove(id);
+      await persist();
+    } finally {
+      _deleting.remove(id);
+      if (!_disposed) notifyListeners();
+    }
+  }
+
+  void _remove(String id) {
+    _removed.add(id);
+    sessions = sessions.where((s) => s.id != id).toList();
+    _saveSoon();
   }
 
   SessionSummary? byId(String id) {
@@ -164,11 +194,13 @@ class SessionsModel extends ChangeNotifier {
     final id = a['sessionId'] as String?;
     if (id == null) return;
     if (a['deleted'] == true) {
-      sessions = sessions.where((s) => s.id != id).toList();
-      _saveSoon();
+      _remove(id);
+      unawaited(cache.remove(id));
+      unawaited(persist());
       notifyListeners();
       return;
     }
+    if (_removed.contains(id)) return;
     final s = byId(id);
     if (s == null) {
       // A session created elsewhere: pick it up on the next (debounced) list.

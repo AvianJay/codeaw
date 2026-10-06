@@ -201,7 +201,13 @@ try {
     assert.ok(!watcher.received.some((r) => r.method === "session/update"));
     checks.push({ phase: "real-concurrent-work", status: "passed", model: "gpt-6-luna", effort: "low",
       sessions: ids, overlappingCommands: true, titlesPresent: true, watcherNeverAttached: true, completionObserved: true });
-    for (const id of ids) { await reconnect.request("session/close", { sessionId: id }); newSessions.delete(id); }
+    for (const id of ids) {
+      await reconnect.request("session/delete", { sessionId: id }); newSessions.delete(id);
+      await assert.rejects(reconnect.request("session/load", { sessionId: id, cwd: values.cwd, mcpServers: [] }), /deleted/);
+    }
+    const listed = await reconnect.request("session/list", {});
+    assert.ok(ids.every(id => !listed.sessions.some((s: any) => s.sessionId === id)));
+    checks.push({ phase: "real-chat-deletion", status: "passed", onlyDedicatedTestChats: true, refreshKeepsDeleted: true, reopeningRejected: true });
   }
   console.log(JSON.stringify({ checks }));
 } catch (error) {

@@ -40,12 +40,14 @@ class SessionSummary {
     this.queued = 0,
     this.known = false,
     this.projectless = false,
+    this.desktopSync = false,
   });
 
   final String id;
   final String agentId;
   final String cwd;
   final bool projectless;
+  final bool desktopSync;
   String? title;
   DateTime? updatedAt;
   String state;
@@ -67,6 +69,7 @@ class SessionSummary {
       queued: (m['queued'] as num?)?.toInt() ?? 0,
       known: m['known'] == true,
       projectless: m['projectless'] == true,
+      desktopSync: m['connection'] == 'desktop',
     );
   }
 
