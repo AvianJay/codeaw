@@ -2,7 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk";
 import type { AgentConfig } from "../config.js";
 import type { AgentInfo } from "./agent-process.js";
 
-/** A session transport; an ACP subprocess and a desktop follower share this contract. */
+/** Shared by ACP subprocesses, native AGY NDJSON and Codex desktop followers. */
 export interface AgentBackend {
   readonly id: string;
   readonly config: AgentConfig;

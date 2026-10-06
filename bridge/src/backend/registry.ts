@@ -4,6 +4,7 @@ import type { AgentConfig } from "../config.js";
 import { AgentProcess, type AgentHandlers, type AgentInfo } from "./agent-process.js";
 import type { AgentBackend } from "./backend.js";
 import { CodexDesktopBackend } from "./codex-desktop.js";
+import { AgyBackend } from "./agy.js";
 
 export class AgentRegistry {
   private readonly agents = new Map<string, AgentBackend>();
@@ -12,7 +13,7 @@ export class AgentRegistry {
     for (const [id, cfg] of Object.entries(configs)) {
       if (!cfg.enabled) continue;
       const desktop = cfg.desktopSync !== false && ((id === "codex" && process.platform === "win32") || cfg.desktopSync === true || typeof cfg.desktopSync === "object");
-      const Backend = desktop ? CodexDesktopBackend : AgentProcess;
+      const Backend = cfg.transport === "agy" ? AgyBackend : desktop ? CodexDesktopBackend : AgentProcess;
       this.agents.set(id, new Backend(id, cfg, handlers, path.join(dataDir, "logs"), startTimeoutMs));
     }
   }

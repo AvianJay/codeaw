@@ -2,7 +2,7 @@
 
 在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / Hermes Agent / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
 
-- 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
+- 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 或 AGY 官方 NDJSON 串流驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、用 `@` 提及專案檔案、瀏覽專案檔案、看 git diff。
 - **斷線不中斷**：手機斷線或 App 被關掉時，agent 照樣工作，權限請求會等你回來。重新連上後只補傳漏掉的部分；同一個對話可以同時開在多台裝置上。
 - **歷史快取**：重開 App 先還原已保存的聊天與清單，再同步新訊息；完整重同步期間保留畫面。大型工具輸出在展開時讀取完整內容，降低長聊天初次載入量。本機每台電腦最多保存 32 份快照、128 MiB，設定中可清除；圖片與檔案參照保留，讀取原始內容仍需連上 bridge。
@@ -12,7 +12,7 @@
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
 
 ```
-Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / dsh --profile acp / agy_acp_server
+Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP 或 NDJSON ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / dsh --profile acp / agy
       ▲              經 Tailscale                     │
       └──────── ntfy 推播（沒有任何裝置連著時）◀──────┘
 ```
@@ -29,7 +29,7 @@ npm i -g @agentclientprotocol/codex-acp           # Codex
 npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP）
 # Kimi Code 自帶 `kimi acp`
 # Hermes Agent 使用 `hermes acp`，安裝方式見下方
-# Antigravity 使用官方 ACP server，安裝方式見下方
+# Antigravity 使用官方 agy CLI，安裝方式見下方；亦保留獨立 ACP server 相容性
 ```
 
 安裝 bridge：
@@ -86,6 +86,8 @@ Windows 背景 bridge 與系統匣透過本機 WMI broker 隱藏啟動，獨立�
 | `workspaces` | 手機可以瀏覽、也可以在這些資料夾開新對話（已有 session 的資料夾一律允許） |
 | `filesystem.allowAllPaths` | 預設 `false`；在電腦上選擇允許瀏覽所有磁碟／資料夾後，手機可從 C:、D: 等磁碟開新對話 |
 | `agents.<id>.env` | 額外環境變數，例如給某個 agent 指定不同的 `ANTHROPIC_BASE_URL` |
+| `agents.<id>.transport: agy` | 使用 Antigravity CLI 的原生 NDJSON 串流；省略時使用 ACP |
+| `agents.<id>.geminiEnvFile` | 選擇讓 bridge 讀取 CC Switch 的 Gemini `.env`，只匯入 key、endpoint、預設 model |
 | `notifications.ntfy` | 推播設定，見下方 |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
 
@@ -161,6 +163,48 @@ agents:
 Harness 的 [ACP server](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/acp/acp/README.md) 支援列出、接續與關閉對話，但不回放既有訊息。經 bridge 進行的對話由 bridge 保留歷史；首次接續其他客戶端建立的 Harness 對話時，不會補傳舊訊息。
 
 ### Google Antigravity
+
+優先使用官方 [Antigravity CLI](https://antigravity.google/docs/cli/install)。Windows 可執行 `irm https://antigravity.google/cli/install.ps1 | iex`，確認 `agy --help` 可用。bridge 新建設定時會偵測 `agy`，不再自動加入 Gemini CLI；同時安裝兩種 Antigravity 時優先使用 CLI。既有設定可將 Gemini CLI 的項目換成：
+
+```yaml
+agents:
+  antigravity:
+    name: Antigravity CLI
+    command: agy
+    transport: agy
+    args: [--model, gemini-3.8-flash-low]
+    env: {}
+    enabled: true
+```
+
+bridge 將官方 [headless NDJSON](https://antigravity.google/docs/cli/headless/) 轉成手機使用的 ACP 訊息。每個聊天有獨立程序；串流文字、工具參數／結果、token 用量及原生 conversation ID 都會保留。關閉或重啟 bridge 後以同一 ID 續聊。模型／推理強度／Plan 設定作用於下一回合，重新啟動該聊天的 CLI 並接續原對話，不中斷正在執行的回合。模型清單讀取 `agy models`，亦可輸入 AGY 支援的自訂模型名稱。
+
+AGY headless 只接受文字及文字檔案參照；沒有 inline 圖片、即時權限批准、一般問題表單或回合中插話的控制介面。後續訊息會排到下一回合；需批准但本機規則未允許的工具由 AGY 拒絕。bridge 不會自動加入 `--dangerously-skip-permissions`，請在 AGY 的 `permissions.allow` 設定需要的規則。停止只終止該聊天的程序，其他聊天繼續。此 transport 只列出經 Codeaw 建立的聊天，既有 TUI 聊天請在 AGY 使用 `/resume`。
+
+**自訂 provider／CC Switch：** AGY 官方支援 Gemini-compatible API。在 `~/.gemini/antigravity-cli/settings.json` 加入 `"modelProvider": "gemini"`，並在上述 agent 的 `env` 提供 `GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`。endpoint 應是根網址，例如 `https://api.example.com`，AGY 自行加上 `/v1beta/...`。金鑰只在電腦提供給指定 endpoint，不需要手機保存；設定檔與 `.env` 請勿加入 Git。
+
+AGY 本身不讀 `.env`。要沿用 CC Switch 的 Gemini provider 切換，可在 agent 加入 `geminiEnvFile: ~/.gemini/.env`；bridge 只讀取 `GEMINI_API_KEY`、`GOOGLE_GEMINI_BASE_URL`、`GEMINI_MODEL`，每個新程序重新讀取，變更 provider 時於下一回合重啟續聊。agent 明確設定的 `env` 優先於 `.env`，`args` 的 `--model` 優先於 `.env` 的預設模型。官方 Google 登入需移除 AGY 的 `modelProvider`，此檔案轉接不會替你切換登入模式。CC Switch 3.20.4 的 AGY 原生整合仍是[未合併 PR](https://github.com/farion1231/cc-switch/pull/7413)；上述方式由 bridge 轉接，亦可指向 CC Switch Gemini local routing 的 endpoint。該版本的 Gemini 串流[有用量統計未記錄的回報](https://github.com/farion1231/cc-switch/issues/7738)，不代表請求失敗。
+
+**CPA 的 Flash Low：** 某些 CPA 僅公布 `gemini-3.8-flash-high` 路由，直接請求 `gemini-3.8-flash` 會找不到 provider。CPA 支援[模型名括號指定推理強度](https://help.router-for.me/configuration/thinking)，可在 AGY 設定中明確新增自訂模型，再將 agent `args` 的 `--model` 設為該 label：
+
+```json
+{
+  "modelProvider": "gemini",
+  "customModelsConfig": {
+    "customModels": {
+      "cpa-gemini-3.8-flash-low": {
+        "modelName": "gemini-3.8-flash-high(low)",
+        "apiProvider": "API_PROVIDER_GOOGLE",
+        "maxTokens": 1048576
+      }
+    }
+  }
+}
+```
+
+此自訂模型的 Low 由 CPA 的 `(low)` 後綴指定，AGY 不接受對該 label 另傳 `--effort`；手機只顯示該模型與模式選項。需要其他強度時可另外建立 Medium／High label。endpoint 仍使用 `GOOGLE_GEMINI_BASE_URL`，可透過 CC Switch 的 `.env` 切換；實際模型及強度仍需由 provider 支援。
+
+**獨立 ACP server：** 若需要官方 ACP transport，可以繼續使用以下安裝方式，設定中省略 `transport: agy`：
 
 從 [ACP registry 的官方 Antigravity 項目](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) 下載符合作業系統與 CPU 架構的 `distribution.binary` 壓縮檔並解壓縮。將解壓縮目錄加入 PATH；macOS／Linux 也需讓 `agy_acp_server.par` 有執行權限（`chmod +x agy_acp_server.par`）。這是獨立的 ACP server，無須安裝 `agy` CLI。
 

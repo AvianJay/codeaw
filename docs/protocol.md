@@ -1,8 +1,8 @@
 # codeaw bridge protocol
 
 The bridge is an **ACP v1 agent over WebSocket** (the WebSocket profile of the
-ACP "Streamable HTTP & WebSocket Transport" RFD) that fronts several real ACP
-agents running over stdio on the same machine. Every message is plain ACP v1
+ACP "Streamable HTTP & WebSocket Transport" RFD) that fronts local ACP stdio
+agents and the native Antigravity CLI NDJSON adapter. Every client message is plain ACP v1
 JSON-RPC; everything codeaw adds lives in ACP extension points:
 
 - `_meta.codeaw` objects on standard requests, responses and notifications
@@ -51,6 +51,21 @@ revoked with `codeaw-bridge devices`.
 
 External session id = `<agentId>:<agent's own session id>`, e.g.
 `claude:7fd23c2b-494b-44e5-a5d3-c7602ca708fd`. Treat it as opaque.
+
+For `transport: agy`, the suffix is a stable bridge UUID. The adapter stores its
+mapping to AGY's `conversation_id` under `data/agy/<agentId>/`; every subsequent
+process uses `--conversation` with that native ID. Each session has its own
+NDJSON subprocess, settings and working directory. Bridge history supplies replay.
+`step_update` response deltas map to ACP message chunks; tool steps map to tool
+calls/updates; `result.usage` maps to cumulative ACP usage in the prompt response.
+
+AGY advertises text/embedded context and resume/close, with `steering: false`.
+Inline images, interactive permissions and elicitation are unsupported by its
+headless protocol. File resource links remain explicit text references; other
+non-text content is rejected before invoking the CLI. Mid-turn prompts queue.
+Model, mode and supported effort changes apply to the next turn by restarting
+only that session with its native ID. Cancel terminates only its process tree.
+Permission policy is inherited from local AGY settings; no approval bypass is added.
 
 ## initialize
 

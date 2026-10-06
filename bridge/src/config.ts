@@ -11,6 +11,10 @@ const AgentConfigSchema = z.object({
   command: z.string(),
   args: z.array(z.string()).default([]),
   env: z.record(z.string(), z.string()).default({}),
+  /** AGY uses NDJSON rather than ACP; omitted for ordinary ACP adapters. */
+  transport: z.enum(["acp", "agy"]).optional(),
+  /** Opt in to CC Switch's Gemini provider file. Only Gemini variables are read. */
+  geminiEnvFile: z.string().optional(),
   /** Working directory of the agent process itself (sessions carry their own cwd). */
   cwd: z.string().optional(),
   enabled: z.boolean().default(true),
@@ -95,13 +99,13 @@ export function loadConfig(file = defaultConfigFile()): LoadedConfig {
   return { config, file, home, dataDir };
 }
 
-/** Known ACP agents and how to launch them. Only the installed ones end up in a fresh config. */
+/** Known agents and how to launch them. Only installed ones enter a fresh config. */
 export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig }> = [
   { id: "claude", probe: "claude-agent-acp", agent: { name: "Claude Code", command: "claude-agent-acp", args: [], env: {}, enabled: true } },
   { id: "codex", probe: "codex-acp", agent: { name: "Codex", command: "codex-acp", args: [], env: {}, enabled: true } },
   { id: "kimi", probe: "kimi", agent: { name: "Kimi Code", command: "kimi", args: ["acp"], env: {}, enabled: true } },
   { id: "hermes", probe: "hermes", agent: { name: "Hermes Agent", command: "hermes", args: ["acp"], env: {}, enabled: true } },
-  { id: "gemini", probe: "gemini", agent: { name: "Gemini CLI", command: "gemini", args: ["--experimental-acp"], env: {}, enabled: true } },
+  { id: "antigravity", probe: "agy", agent: { name: "Antigravity CLI", command: "agy", args: [], env: {}, enabled: true, transport: "agy" } },
   { id: "deepseek", probe: "dsh", agent: { name: "DeepSeek Harness", command: "dsh", args: ["--profile", "acp"], env: {}, enabled: true } },
   {
     id: "antigravity",
@@ -119,6 +123,8 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
 export function detectAgents(): Record<string, AgentConfig> {
   const found: Record<string, AgentConfig> = {};
   for (const entry of KNOWN_AGENTS) {
+    // Prefer the CLI when both Antigravity transports are installed.
+    if (found[entry.id]) continue;
     const command = resolveCommand(entry.probe);
     if (command) found[entry.id] = { ...entry.agent, command };
   }

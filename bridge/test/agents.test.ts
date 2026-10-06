@@ -57,6 +57,17 @@ describe("ACP registry", () => {
 });
 
 describe("agent installation", () => {
+  it("changes an AGY CLI entry back to ACP when the official ACP adapter is installed", () => {
+    const root = home(); const file = path.join(root, "config.yaml");
+    fs.writeFileSync(file, YAML.stringify({ agents: { antigravity: { name: "My AGY", command: "agy", args: [], transport: "agy", env: { CUSTOM: "keep" }, enabled: true } } }));
+    registerInstalledAgent(file, { id: "antigravity", name: "Antigravity ACP", version: "1.0.0", directory: root, config: { name: "Antigravity ACP", command: "agy_acp_server.exe", args: [], env: {}, enabled: true } });
+    const updated = loadConfig(file).config.agents.antigravity;
+    expect(updated.transport).toBeUndefined();
+    expect(updated.command).toBe("agy_acp_server.exe");
+    expect(updated.name).toBe("My AGY");
+    expect(updated.env.CUSTOM).toBe("keep");
+  });
+
   it("handles macOS alias paths while retaining archive containment checks", async () => {
     const root = home();
     const alias = path.join(home(), "alias");
