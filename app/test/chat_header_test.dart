@@ -86,7 +86,7 @@ void main() {
             findsOneWidget,
           );
           expect(
-            find.descendant(of: bars, matching: find.text('5hr: $five')),
+            find.descendant(of: bars, matching: find.text('5小時: $five')),
             findsOneWidget,
           );
           expect(

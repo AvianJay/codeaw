@@ -16,6 +16,7 @@ interface DesktopSession {
   configOptions?: acp.SessionConfigOption[];
   connected: boolean;
   attaching?: Promise<void>;
+  loadingHistory?: Promise<void>;
   snapshotWaiters: Set<{ revision: number; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>;
   prompts: Set<{ turnId?: string; clientUserMessageId: string; before: Set<string>; resolve: (response: acp.PromptResponse) => void; reject: (error: Error) => void }>;
   requests: Map<string, AbortController>;
@@ -179,14 +180,19 @@ export class CodexDesktopBackend implements AgentBackend {
           await snapshot;
           const state = session.conversation;
           const incomplete = state?.turnHistory?.kind === "canonical" ? state.turnHistory.history?.isComplete === false : state?.turnsPagination?.hasLoadedOldest === false;
-          if (incomplete) {
-            const response = await this.ipc.request("thread-follower-load-complete-history", { conversationId: session.id }, { targetClientId: session.owner, timeoutMs: 60000 });
-            const result = response.result?.result ?? response.result;
-            if (typeof result?.revision === "number") await this.waitForRevision(session, result.revision);
-          }
           session.connected = true;
           this.ipc.setReconnectWanted(true);
           this.publishState(session);
+          // Show the current snapshot immediately; older turns can arrive afterwards.
+          if (incomplete && !session.loadingHistory) {
+            session.loadingHistory = (async () => {
+              const response = await this.ipc.request("thread-follower-load-complete-history", { conversationId: session.id }, { targetClientId: session.owner, timeoutMs: 60000 });
+              const result = response.result?.result ?? response.result;
+              if (typeof result?.revision === "number") await this.waitForRevision(session, result.revision);
+            })().catch(() => {
+              this.handlers.onSessionError?.(this.id, session.id, "Older desktop history could not be loaded; reconnect to retry");
+            }).finally(() => { session.loadingHistory = undefined; });
+          }
         } catch (error) {
           this.rejectWaiting(session, new Error("Codex desktop synchronization failed"));
           session.connected = false;

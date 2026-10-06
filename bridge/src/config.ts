@@ -38,6 +38,17 @@ const NtfySchema = z.object({
 });
 export type NtfyConfig = z.infer<typeof NtfySchema>;
 
+const LiveActivitySchema = z.object({
+  teamId: z.string().regex(/^[A-Z0-9]{10}$/),
+  keyId: z.string().regex(/^[A-Z0-9]{10}$/),
+  privateKeyPath: z.string().min(1),
+  bundleId: z.string().regex(/^[A-Za-z0-9.-]+$/).default("tw.avianjay.codeaw"),
+  environment: z.enum(["production", "sandbox"]).default("production"),
+  /** Allow project names / command and summary excerpts to pass through Apple APNs. */
+  includeDetails: z.boolean().default(false),
+});
+export type LiveActivityConfig = z.infer<typeof LiveActivitySchema>;
+
 export const ConfigSchema = z.object({
   listen: z
     .object({
@@ -51,7 +62,7 @@ export const ConfigSchema = z.object({
   /** Opt in on the PC: paired devices can access any path this account can access. */
   filesystem: z.object({ allowAllPaths: z.boolean().default(false) }).default({ allowAllPaths: false }),
   agents: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), AgentConfigSchema),
-  notifications: z.object({ ntfy: NtfySchema.optional() }).default({}),
+  notifications: z.object({ ntfy: NtfySchema.optional(), liveActivity: LiveActivitySchema.optional() }).default({}),
   /** Release an idle agent-side session (frees e.g. claude.exe) after this many minutes. */
   idleSessionCloseMinutes: z.number().min(1).default(30),
   /** Stop an agent process with no live sessions after this many minutes. */

@@ -76,6 +76,15 @@ class ToolItem extends TimelineItem {
   final meta = <String, dynamic>{};
   int statusRevision = 0;
   int lifecycleRevision = 0;
+  int? deferredSeq;
+  int hydratedThroughSeq = 0;
+  bool deferredDiff = false;
+  int? deferredExitCode;
+  bool loadingDetails = false;
+  String? detailError;
+
+  bool get detailsDeferred => deferredSeq != null;
+
 
   SubagentInfo? get subagent => SubagentInfo.fromTool(name: name, title: title, input: rawInput, output: rawOutput, metadata: meta);
   McpToolRef? get mcp => mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: meta);
@@ -113,6 +122,15 @@ class ToolItem extends TimelineItem {
     final l = u['locations'];
     if (l is List) locations = l.whereType<Map<String, dynamic>>().toList();
     final m = u['_meta'];
+    final deferred = m is Map ? ((m['codeaw'] as Map?)?['deferredTool']) : null;
+    if (deferred is Map) {
+      deferredSeq = (deferred['seq'] as num?)?.toInt();
+      deferredDiff = deferred['hasDiff'] == true;
+      deferredExitCode = (deferred['exitCode'] as num?)?.toInt();
+      content = null;
+      rawOutput = null;
+      terminalOutput = '';
+    }
     parentToolCallId = subagentParentId(m) ?? parentToolCallId;
     if (m is Map) {
       m.forEach((key, value) {
@@ -138,7 +156,7 @@ class ToolItem extends TimelineItem {
     if (exit is Map && exit['exit_code'] is num) return (exit['exit_code'] as num).toInt();
     final raw = rawOutput;
     if (raw is Map && raw['exit_code'] is num) return (raw['exit_code'] as num).toInt();
-    return null;
+    return deferredExitCode;
   }
 
   bool get hasTerminal => terminalOutput.isNotEmpty || (content ?? const []).any((c) => c['type'] == 'terminal');
@@ -473,6 +491,306 @@ class Timeline extends ChangeNotifier {
     _hierarchyDirty = _structureChanged = true;
   }
 
+  /// Commit a complete replay without making the visible list empty in between.
+  void replaceWith(Timeline source, {bool preserveUnconfirmed = true}) {
+    final uncertain = preserveUnconfirmed
+        ? items
+              .whereType<MessageItem>()
+              .where((m) => m.optimistic && !source._byKey.containsKey(m.key))
+              .toList()
+        : <MessageItem>[];
+    items
+      ..clear()
+      ..addAll(source.items)
+      ..addAll(uncertain);
+    _byKey
+      ..clear()
+      ..addAll(source._byKey);
+    for (final item in uncertain) {
+      _byKey[item.key] = item;
+    }
+    _dirty.clear();
+    _agentStates
+      ..clear()
+      ..addAll(source._agentStates);
+    _revision = source._revision;
+    _anon = source._anon;
+    plan = source.plan;
+    commands = source.commands;
+    modeId = source.modeId;
+    configOptions = source.configOptions;
+    modes = source.modes;
+    usage = source.usage;
+    title = source.title;
+    state = source.state;
+    queued = source.queued;
+    turnStartedAt = source.turnStartedAt;
+    currentTurn = source.currentTurn;
+    _activity = source._activity;
+    _activityAt = source._activityAt;
+    _activeTools
+      ..clear()
+      ..addAll(source._activeTools);
+    _hierarchyDirty = _structureChanged = _snapshotChanged = true;
+    finishReplay();
+    flush();
+  }
+
+  /// A reduced, versioned snapshot: streaming chunks are already folded, with
+  /// turn references and collaboration ordering retained for offline display.
+  Map<String, dynamic> toSnapshot() {
+    Map<String, dynamic> turn(TurnSummaryItem t) => {
+      'key': t.key,
+      'startedAt': t.startedAt.millisecondsSinceEpoch,
+      'endedAt': t.endedAt?.millisecondsSinceEpoch,
+      'prompt': t.prompt?.key,
+      'messages': t.messages.map((m) => m.key).toList(),
+      'steered': t.steeredPrompts.map((m) => m.key).toList(),
+      'narrow': t._narrowCharacters,
+      'wide': t._wideCharacters,
+    };
+    return {
+      'version': 1,
+      'items': [
+        for (final i in items)
+          {
+            'key': i.key,
+            'parent': i.parentToolCallId,
+            'revision': i.activityRevision,
+            ...switch (i) {
+              MessageItem m => {
+                'type': 'message',
+                'role': m.role.name,
+                'mid': m.mid,
+                'parts': m.parts,
+                'promptId': m.promptId,
+                'queued': m.queued,
+                'steered': m.steered,
+                'receipt': m.receipt,
+                'optimistic': m.optimistic,
+                'dequeued': m.dequeued,
+              },
+              ToolItem t => {
+                'type': 'tool',
+                'id': t.toolCallId,
+                'title': t.title,
+                'kind': t.kind,
+                'status': t.status,
+                'name': t.name,
+                'content': t.content,
+                'locations': t.locations,
+                'rawInput': t.rawInput,
+                'rawOutput': t.rawOutput,
+                'terminalOutput': t.terminalOutput,
+                'terminalId': t.terminalId,
+                'meta': t.meta,
+                'statusRevision': t.statusRevision,
+                'lifecycleRevision': t.lifecycleRevision,
+                'deferredSeq': t.deferredSeq,
+                'hydratedThroughSeq': t.hydratedThroughSeq,
+                'deferredDiff': t.deferredDiff,
+                'deferredExitCode': t.deferredExitCode,
+              },
+              PermissionItem p => {
+                'type': 'permission',
+                'id': p.requestId,
+                'toolCall': p.toolCall,
+                'options': p.options,
+                'outcome': p.outcome,
+                'optionName': p.optionName,
+                'by': p.by,
+              },
+              ElicitationItem e => {
+                'type': 'elicitation',
+                'id': e.requestId,
+                'request': e.request,
+                'action': e.action,
+                'by': e.by,
+              },
+              NoticeItem n => {
+                'type': 'notice',
+                'severity': n.severity,
+                'title': n.title,
+                'description': n.description,
+              },
+              ErrorItem e => {'type': 'error', 'message': e.message},
+              StopItem s => {'type': 'stop', 'reason': s.stopReason},
+              TurnSummaryItem _ => {'type': 'turn'},
+              _ => throw StateError('Unknown timeline item'),
+            },
+          },
+      ],
+      'turns': [
+        for (final t in items.whereType<TurnSummaryItem>()) turn(t),
+        if (currentTurn != null && !items.contains(currentTurn))
+          turn(currentTurn!),
+      ],
+      'currentTurn': currentTurn?.key,
+      'agentStates': {
+        for (final e in _agentStates.entries)
+          e.key: {'revision': e.value.revision, 'state': e.value.state},
+      },
+      'revision': _revision,
+      'anon': _anon,
+      'plan': plan,
+      'commands': commands,
+      'modeId': modeId,
+      'configOptions': configOptions,
+      'modes': modes,
+      'usage': usage,
+      'title': title,
+      'state': state,
+      'queued': queued,
+      'turnStartedAt': turnStartedAt?.millisecondsSinceEpoch,
+      'activity': _activity.name,
+      'activityAt': _activityAt?.millisecondsSinceEpoch,
+      'activeTools': {
+        for (final e in _activeTools.entries)
+          e.key.key: e.value.millisecondsSinceEpoch,
+      },
+    };
+  }
+
+  factory Timeline.fromSnapshot(Map<String, dynamic> s) {
+    if (s['version'] != 1) {
+      throw const FormatException('Unsupported history cache');
+    }
+    final timeline = Timeline();
+    List<Map<String, dynamic>> maps(dynamic v) => (v as List? ?? const [])
+        .map((m) => Map<String, dynamic>.from(m as Map))
+        .toList();
+    Map<String, dynamic>? map(dynamic v) =>
+        v == null ? null : Map<String, dynamic>.from(v as Map);
+    DateTime? time(dynamic v) => v == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch((v as num).toInt(), isUtc: true);
+    final rows = maps(s['items']);
+    for (final j in rows) {
+      final key = j['key'] as String;
+      final TimelineItem item;
+      switch (j['type']) {
+        case 'message':
+          item =
+              MessageItem(
+                  key,
+                  MessageRole.values.byName(j['role'] as String),
+                  j['mid'] as String,
+                )
+                ..parts.addAll(maps(j['parts']))
+                ..promptId = j['promptId'] as String?
+                ..queued = j['queued'] == true
+                ..steered = j['steered'] == true
+                ..receipt = j['receipt'] as String?
+                ..optimistic = j['optimistic'] == true
+                ..dequeued = j['dequeued'] as String?;
+        case 'tool':
+          item = ToolItem(key, j['id'] as String)
+            ..title = j['title'] as String?
+            ..kind = j['kind'] as String?
+            ..status = j['status'] as String?
+            ..name = j['name'] as String?
+            ..content = j['content'] == null ? null : maps(j['content'])
+            ..locations = j['locations'] == null ? null : maps(j['locations'])
+            ..rawInput = j['rawInput']
+            ..rawOutput = j['rawOutput']
+            ..terminalOutput = j['terminalOutput'] as String? ?? ''
+            ..terminalId = j['terminalId'] as String?
+            ..meta.addAll(map(j['meta']) ?? const {})
+            ..statusRevision = (j['statusRevision'] as num?)?.toInt() ?? 0
+            ..lifecycleRevision = (j['lifecycleRevision'] as num?)?.toInt() ?? 0
+            ..deferredSeq = (j['deferredSeq'] as num?)?.toInt()
+            ..hydratedThroughSeq = (j['hydratedThroughSeq'] as num?)?.toInt() ?? 0
+            ..deferredDiff = j['deferredDiff'] == true
+            ..deferredExitCode = (j['deferredExitCode'] as num?)?.toInt();
+        case 'permission':
+          item = PermissionItem(key, j['id'] as String)
+            ..toolCall = map(j['toolCall'])
+            ..options = maps(j['options'])
+            ..outcome = map(j['outcome'])
+            ..optionName = j['optionName'] as String?
+            ..by = j['by'] as String?;
+        case 'elicitation':
+          item = ElicitationItem(key, j['id'] as String)
+            ..request = map(j['request'])
+            ..action = j['action'] as String?
+            ..by = j['by'] as String?;
+        case 'notice':
+          item = NoticeItem(
+            key,
+            j['severity'] as String,
+            j['title'] as String,
+            j['description'] as String?,
+          );
+        case 'error':
+          item = ErrorItem(key, j['message'] as String);
+        case 'stop':
+          item = StopItem(key, j['reason'] as String);
+        case 'turn':
+          continue; // Resolve references after all messages exist.
+        default:
+          throw const FormatException('Invalid history item');
+      }
+      item.parentToolCallId = j['parent'] as String?;
+      item.activityRevision = (j['revision'] as num?)?.toInt() ?? 0;
+      timeline._byKey[key] = item;
+    }
+    MessageItem? message(dynamic key) => timeline._byKey[key] as MessageItem?;
+    for (final j in maps(s['turns'])) {
+      final t =
+          TurnSummaryItem(
+              j['key'] as String,
+              startedAt: time(j['startedAt'])!,
+              prompt: message(j['prompt']),
+            )
+            ..endedAt = time(j['endedAt'])
+            ..messages.addAll(
+              (j['messages'] as List).map(message).whereType<MessageItem>(),
+            )
+            ..steeredPrompts.addAll(
+              (j['steered'] as List).map(message).whereType<MessageItem>(),
+            )
+            .._narrowCharacters = (j['narrow'] as num).toInt()
+            .._wideCharacters = (j['wide'] as num).toInt();
+      timeline._byKey[t.key] = t;
+    }
+    for (final j in rows) {
+      timeline.items.add(timeline._byKey[j['key']]!);
+    }
+    for (final e in (map(s['agentStates']) ?? const {}).entries) {
+      final value = e.value as Map;
+      timeline._agentStates[e.key] = (
+        revision: (value['revision'] as num).toInt(),
+        state: value['state'] as Map,
+      );
+    }
+    timeline
+      .._revision = (s['revision'] as num).toInt()
+      .._anon = (s['anon'] as num).toInt()
+      ..plan = s['plan'] == null ? null : maps(s['plan'])
+      ..commands = maps(s['commands'])
+      ..modeId = s['modeId'] as String?
+      ..configOptions = s['configOptions'] == null
+          ? null
+          : maps(s['configOptions'])
+      ..modes = map(s['modes'])
+      ..usage = map(s['usage'])
+      ..title = s['title'] as String?
+      ..state = s['state'] as String? ?? 'idle'
+      ..queued = (s['queued'] as num?)?.toInt() ?? 0
+      ..turnStartedAt = time(s['turnStartedAt'])
+      ..currentTurn = timeline._byKey[s['currentTurn']] as TurnSummaryItem?
+      .._activity = TurnActivity.values.byName(s['activity'] as String)
+      .._activityAt = time(s['activityAt'])
+      .._hierarchyDirty = true;
+    for (final e in (map(s['activeTools']) ?? const {}).entries) {
+      final tool = timeline._byKey[e.key];
+      if (tool is ToolItem) timeline._activeTools[tool] = time(e.value)!;
+    }
+    return timeline;
+  }
+
+  Timeline();
+
   T _upsert<T extends TimelineItem>(String key, T Function() make) {
     final existing = _byKey[key];
     if (existing is T) return existing;
@@ -572,6 +890,8 @@ class Timeline extends ChangeNotifier {
         final before = (activeTool, activeTool?.title, activeTool?.kind, activity);
         final id = '${u['toolCallId']}';
         final item = _upsert('tool:$id', () => ToolItem('tool:$id', id));
+        // Hydration may arrive ahead of pending WebSocket notifications.
+        if (revision <= item.hydratedThroughSeq) return;
         final oldParent = item.parentToolCallId;
         final wasSubagent = item.subagent != null;
         item.merge(u);

@@ -98,7 +98,15 @@ export class FrontendConnection implements ClientHandle {
       .onRequest("_codeaw/terminal/close", passthrough, (ctx) => deps.terminals.close(this.deviceId, ctx.params.terminalId))
       .onRequest("_codeaw/terminal/detach", passthrough, (ctx) => deps.terminals.detach(this.deviceId, this, ctx.params.terminalId))
       .onRequest("_codeaw/session/reimport", passthrough, (ctx) => this.flushed(manager.reimport(String(ctx.params.sessionId))))
+      .onRequest("_codeaw/history/tool", passthrough, (ctx) => manager.toolHistory(ctx.params))
       .onRequest("_codeaw/notify/info", passthrough, () => deps.notifier.info())
+      .onRequest("_codeaw/live_activity/info", passthrough, () => manager.liveActivity?.info() ?? { enabled: false, ready: false })
+      .onRequest("_codeaw/activity/list", passthrough, () => ({ activities: manager.activitySnapshots() }))
+      .onRequest("_codeaw/live_activity/register", passthrough, (ctx) => {
+        try { return manager.liveActivity?.register(this.deviceId, ctx.params) ?? { registered: false, enabled: false }; }
+        catch (error) { throw acp.RequestError.invalidParams(undefined, error instanceof Error ? error.message : "Live Activity registration failed"); }
+      })
+      .onRequest("_codeaw/live_activity/unregister", passthrough, (ctx) => manager.liveActivity?.unregister(this.deviceId, ctx.params.activityId) ?? {})
       .onRequest("_codeaw/notify/test", passthrough, async () => ({
         sent: await deps.notifier.send({ kind: "turn_end", sessionId: "test:test", agentName: "codeaw 測試通知" }),
       }));

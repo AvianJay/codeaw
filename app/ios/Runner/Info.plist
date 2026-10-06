@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -50,8 +52,6 @@
 	<string>選擇圖片傳給 agent。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>連線至你的電腦上的 codeaw bridge。</string>
-	<key>NSSupportsLiveActivities</key>
-	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- Native bridges use HTTP/WebSocket over the encrypted Tailscale tunnel. -->

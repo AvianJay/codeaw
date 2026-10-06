@@ -22,11 +22,8 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
-| `POST /api/uploads?name=<file name>` | store the request body (≤ 50 MB) for an agent to read; returns `{path, uri, name, size, mimeType?}` | Bearer |
-
-Uploads go to `<dataDir>/uploads/<id>/<file name>` and are deleted after 30
-days. `fs/read` and `fs/raw` may read them; they are never listed as
-workspaces. The app sends an upload as a `resource_link` with that `uri`.
+| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload session attachment bytes, at most 512 MiB; HTTP 201 | Bearer |
+| `POST /api/uploads?name=<filename>` | upload bridge-scoped attachment bytes, at most 512 MiB; HTTP 200 | Bearer |
 
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.
@@ -98,15 +95,19 @@ Response: the agent's `NewSessionResponse` with `sessionId` rewritten and
 
 ### `session/load` (attach + replay)
 
-Params: standard plus optional `_meta.codeaw.afterSeq` and `_meta.codeaw.epoch`.
+Params: standard plus optional `_meta.codeaw.afterSeq`, `_meta.codeaw.epoch`,
+and `_meta.codeaw.lazyHistory: true`.
 
 1. The bridge first sends `_codeaw/replay` `{sessionId, mode: "full"|"delta", epoch}`.
    - `delta` when the client passed `afterSeq` and the same `epoch`: only log
-     entries with `seq > afterSeq` follow, unmodified.
-   - `full` otherwise: the client must clear its timeline; a **compacted**
+     entries with `seq > afterSeq` follow in log order, with the negotiated
+     deferred-output projection when `lazyHistory` is enabled.
+   - `full` otherwise: the client stages a replacement timeline; a **compacted**
      history follows (message chunks merged, tool calls folded into their final
      state, terminal output concatenated, snapshot-type updates reduced to the
      last one).
+     Keep the previous visible history and cursor until the load response or a
+     matching `mode: "complete"` boundary arrives; discard an interrupted replacement.
 2. Replayed entries are sent as `session/update` / `_codeaw/event`
    notifications carrying their `seq` (see below).
 3. The response is sent after the replay:
@@ -134,6 +135,35 @@ replay. Such a replay ends with `_codeaw/replay` `{mode: "complete", epoch,
 lastSeq}`; clients clear their replay flag and advance the cursor at this
 boundary without waiting for a load response. Duplicate/replayed text is not
 appended twice.
+
+Desktop attach returns the owner's current snapshot immediately. If older turns
+are incomplete, the bridge requests them in the background and delivers the
+authoritative replacement when ready instead of blocking the initial load.
+
+### Deferred tool history and local cache
+
+Clients opting into `lazyHistory` receive transport projections for replayed tool
+outputs over 16 KiB. Inputs, title, status, locations, parent attribution and
+lifecycle revisions remain inline; bulky content, raw output and terminal bytes
+are replaced by `update._meta.codeaw.deferredTool =
+{seq, bytes, hasDiff, exitCode?}`. Collaboration identity/lifecycle reports remain
+inline. Ordinary live updates and the durable log are unchanged. Clients that
+omit this option still receive full output, including on older bridges.
+
+Authenticated `_codeaw/history/tool` with `{sessionId, epoch, toolCallId}` returns
+`{epoch, seq, t, update}` containing the exact folded output from the current log.
+Stale epochs and missing tools are rejected. A hydrated tool can be ahead of
+pending stream notifications; ignore already-folded updates for that tool through
+the returned seq, without advancing the session cursor past unrelated entries.
+
+The app persists complete timeline snapshots and reconnect cursors by paired host.
+Native platforms use app-private compressed files; Web uses IndexedDB. It restores
+history and the session list before network attachment, then requests delta replay.
+Writes are debounced for two seconds and flushed on background/eviction. A host
+cache is bounded to 32 snapshots (including the session list) and 128 MiB; older
+cache entries may be evicted. Image/file references are retained, but fetching
+their bytes and deferred tool output requires the bridge. Forgetting a pairing or
+the Settings cache control removes its local cache; bridge history is unaffected.
 
 Desktop turns can start outside codeaw, so state events may refer to native
 turn ids. Desktop-origin messages are echoed from the desktop stream rather
@@ -398,6 +428,38 @@ agent's provider; missing windows stay unknown rather than borrowing another
 provider's value. Quota colors reflect remaining amount: green >=50, amber
 20–49.9, red <20, gray unknown.
 
+### File uploads
+
+`POST /api/uploads?sessionId=<qualified-id>&name=<encoded-filename>` accepts raw
+bytes with `Content-Type: application/octet-stream` and the same Bearer auth as
+ACP. A known session cwd is required. Maximum size is 512 MiB per file; invalid
+names, oversized bodies and upload directory links are rejected. Bytes are
+saved to a unique filename in `<cwd>/.codeaw-uploads/` without overwriting files.
+Success returns HTTP 201 with `{name, path, size, sha256, block}`. `block` is an
+ACP `resource_link` with a `file:` URI and local path description; include it in
+`session/prompt`. Errors return `{error}` with 400/401/403/413 as appropriate.
+Files persist on the PC until explicitly removed.
+
+The bridge writes and hashes bounded chunks directly to disk and removes its
+new file if transfer/write fails. Native pickers stream the source file; Web
+pickers submit their browser Blob without creating a whole-file Dart byte copy.
+The request deadline is one hour, with a two-minute idle timeout on the bridge.
+
+Clients can report bytes handed to the upload transport while the request is
+in flight. Reaching 100% is not a storage acknowledgement: only the HTTP 201
+response confirms success. Until then, clients keep the upload pending and do
+not attach its resource or send a prompt referencing it. Native clients flush
+bounded chunks with transport backpressure; Web clients use XMLHttpRequest
+upload progress events. Both allow up to one hour for an active transfer.
+
+For compatibility with clients that omit `sessionId`, the same endpoint returns
+HTTP 200 `{path, uri, name, size, mimeType?}` and saves under
+`<dataDir>/uploads/<id>/<name>`. These files have 30-day retention and are readable
+through authenticated `fs/read` and `fs/raw`, but are not offered as workspaces.
+Both variants share the 512 MiB cap, streaming writes and transfer deadlines.
+Supplying an invalid/unknown `sessionId` is an error and never falls back to the
+bridge-scoped route. Storage errors remove partial files and return HTTP 500.
+
 ### Interactive terminals
 
 Terminals are separate from ACP agent sessions. `open` starts an interactive
@@ -432,7 +494,7 @@ releases use Bun's built-in PTY support.
 
 | direction | method | params |
 |---|---|---|
-| bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?}` — sent to **all** connections, attached or not |
+| bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?, turnPromptId?, turnStartedAt?, completedTurn?, work?}` — sent to **all** connections, attached or not |
 | bridge → client | `_codeaw/replay` | see `session/load` |
 | bridge → client | `_codeaw/event` | see event log |
 | bridge → client | `_codeaw/terminal/event` | see interactive terminals |
@@ -440,6 +502,47 @@ releases use Bun's built-in PTY support.
 | client → bridge | `_codeaw/session/detach` | `{sessionId}` — stop pushing this session's updates/requests to this connection |
 
 ## Push notifications
+
+### Live Activity extensions
+
+`work` is `{project, phase, summary, updatedAt}`. `phase` is `thinking`,
+`command`, `tool`, `responding`, `attention`, `completed`, `cancelled`, `error`
+or `disconnected` (keeps the turn identity while its desktop owner is offline;
+it is not treated as completion).
+`summary` is a bounded plain-text excerpt (180 Unicode code points) of a command
+or a summary/progress message already supplied by the agent. `project` is the
+working-directory name. Work changes are coalesced for 500 ms for socket clients.
+Turn/completion timestamps are Unix milliseconds and retain their existing
+protocol meanings. Old native turns and nested subagent text do not replace
+the current parent-turn activity.
+
+Authenticated requests:
+
+| Method | Params | Result |
+| --- | --- | --- |
+| `_codeaw/activity/list` | `{}` | `{activities: [...]}` current work/turn snapshots without attaching to chat replay |
+| `_codeaw/live_activity/info` | `{}` | `{enabled, ready, environment?, includeDetails?, error?}` no key or token |
+| `_codeaw/live_activity/register` | `{activityId, sessionId, turnId, pushToken, includeDetails?}` | `{registered, ...info}`; binds to the authenticated device, accepts only its current/completed turn |
+| `_codeaw/live_activity/unregister` | `{activityId}` | `{}`; can remove only the requesting device's registration |
+
+The bridge's optional `notifications.liveActivity` configuration holds APNs
+team/key/bundle/environment values and a **PC-local** private-key path. It sends
+HTTP/2 ActivityKit updates with the app bundle's `.push-type.liveactivity` topic.
+Content state fields are `{title?, backgroundUpdates?, project, agent, state, phase, summary, startedAt,
+endedAt?, updatedAt}`, with Unix **milliseconds** for its three time fields.
+Only APNs `timestamp`, `stale-date` and `dismissal-date` are Unix seconds.
+Details require consent in both PC config and phone settings. Push updates are
+coalesced for 15 seconds, use 120-second stale dates and 60-second heartbeats;
+end events retain the final display for 60 seconds. Registrations survive socket
+disconnects but are in memory and must be renewed after bridge restart.
+See [iOS Live Activities](live-activities.md) for signing/device prerequisites.
+`title` is the chat title (falling back to project). Both are redacted when details
+are hidden. `backgroundUpdates` is true on APNs payloads and on local updates only
+after that activity's token was registered successfully. The app tracks all running
+snapshots and requests multiple activities; ActivityKit controls the device limit.
+Registrations are limited to 16 per paired device and 64 across the bridge.
+
+### ntfy
 
 When an event needs attention (permission/elicitation request, turn finished,
 error) and **no client is connected at all**, the bridge waits

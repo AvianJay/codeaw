@@ -10,7 +10,7 @@ import type { DeviceStore } from "./auth.js";
 import { mimeFor, type PathGuard } from "./ext.js";
 import { FrontendConnection, type FrontendDeps } from "./frontend.js";
 import type { SessionStore } from "../session/store.js";
-import { UploadTooLargeError, type UploadStore } from "./uploads.js";
+import { receiveUpload, UploadError, UploadTooLargeError, type UploadStore } from "./uploads.js";
 import { findWebRoot, serveWeb } from "./web.js";
 
 const log = logger("http");
@@ -130,18 +130,33 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
         return sendFile(res, file, mimeFor(file) ?? "application/octet-stream");
       }
       if (req.method === "POST" && url.pathname === "/api/uploads") {
+        if (url.searchParams.has("sessionId")) {
+          try {
+            const cwd = deps.guard.directory(deps.manager.uploadCwd(url.searchParams.get("sessionId")));
+            return sendJson(res, 201, await receiveUpload(req, cwd, url.searchParams.get("name")));
+          } catch (error) {
+            req.resume();
+            if (error instanceof UploadError) return sendJson(res, error.status, { error: error.message });
+            if (error instanceof acp.RequestError) return sendJson(res, 400, { error: error.message });
+            throw error;
+          }
+        }
         const tooLarge = () => {
           sendJson(res, 413, { error: new UploadTooLargeError(deps.uploads.limit).message });
           req.resume();
         };
         if (Number(req.headers["content-length"]) > deps.uploads.limit) return tooLarge();
+        req.setTimeout(120_000, () => req.destroy(new UploadError(408, "Upload stalled for two minutes")));
         try {
           const file = await deps.uploads.save(url.searchParams.get("name"), req.headers["content-type"], req);
           log.info(`${device.name} uploaded ${file.name} (${file.size} bytes)`);
           return sendJson(res, 200, file);
         } catch (err) {
+          req.resume();
           if (err instanceof UploadTooLargeError) return tooLarge();
           throw err;
+        } finally {
+          req.setTimeout(0);
         }
       }
       return sendJson(res, 404, { error: "Not found" });

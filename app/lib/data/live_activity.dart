@@ -1,318 +1,357 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bridge_client.dart';
-import 'models.dart';
-import 'session_controller.dart';
-import 'sessions_model.dart';
-import 'timeline.dart';
 
-/// What the system offers for live progress on this device.
-class LiveActivitySupport {
-  const LiveActivitySupport({this.available = false, this.allowed = false, this.promoted});
+typedef NativeActivityCall =
+    Future<dynamic> Function(String, Map<String, dynamic>?);
 
-  factory LiveActivitySupport.fromJson(Map<Object?, Object?> j) =>
-      LiveActivitySupport(available: j['available'] == true, allowed: j['allowed'] == true, promoted: j['promoted'] as bool?);
-
-  /// Android, or iOS 16.2 and later.
-  final bool available;
-
-  /// Notifications (Android) or Live Activities (iOS) are allowed in system settings.
-  final bool allowed;
-
-  /// Android 16 and later: whether the notification may be promoted to a Live Update.
-  final bool? promoted;
-}
-
-/// The native side: a foreground service with a progress notification (a Live Update on
-/// Android 16+), or an iOS Live Activity. Neither may be started from the background, so
-/// native code starts it from the armed content as the app leaves the foreground.
-class LiveActivityChannel {
-  const LiveActivityChannel();
+/// Owns iOS Live Activities across chat navigation; chat attachment is not required
+/// for work updates. APNs subscriptions remain on the bridge after socket suspension.
+class LiveActivityController extends ChangeNotifier {
+  LiveActivityController({
+    NativeActivityCall? nativeCall,
+    bool? platformSupported,
+  }) : _call =
+           nativeCall ??
+           ((method, params) => _channel.invokeMethod(method, params)),
+       supported =
+           platformSupported ??
+           (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS);
 
   static const _channel = MethodChannel('codeaw/live_activity');
-
-  bool get platformSupported => !kIsWeb && (defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS);
-
-  Future<LiveActivitySupport> support() async {
-    final r = await _channel.invokeMapMethod<Object?, Object?>('support');
-    return r == null ? const LiveActivitySupport() : LiveActivitySupport.fromJson(r);
-  }
-
-  /// Arms [content] while the app is visible and updates what is shown while it is not;
-  /// `null` disarms and removes it.
-  Future<void> show(Map<String, Object?>? content) => _channel.invokeMethod<void>('show', content);
-
-  /// The system page where notifications, Live Updates or Live Activities are allowed.
-  Future<void> openSettings() => _channel.invokeMethod<void>('openSettings');
-}
-
-/// Mirrors one running conversation into the system's live progress UI while the app is in
-/// the background: a notification that Android 16 promotes to a Live Update, or an iOS Live
-/// Activity on the Lock Screen and in the Dynamic Island.
-///
-/// The conversation is the one on screen when the app is left, or else the only one running.
-/// It is followed until its turn, and anything queued behind it, is over or the app comes
-/// back; no other conversation is picked up in the meantime.
-class LiveActivityTracker extends ChangeNotifier {
-  LiveActivityTracker({this.channel = const LiveActivityChannel()});
-
-  final LiveActivityChannel channel;
-  bool enabled = false;
-  LiveActivitySupport support = const LiveActivitySupport();
-
-  static const _prefsKey = 'codeaw.liveActivity.enabled';
-  static const _minInterval = Duration(seconds: 1);
-  // The bridge reports idle for a moment before it starts the next queued prompt.
-  static const _queueGrace = Duration(seconds: 10);
-
+  final NativeActivityCall _call;
+  bool supported;
+  bool authorized = true;
+  bool enabled = true;
+  bool showDetails = true;
+  bool remoteEnabled = false;
+  bool remoteReady = false;
+  bool remoteDetails = false;
+  bool get pushRegistered => _registered.isNotEmpty;
+  String? error;
   BridgeClient? _client;
-  SessionsModel? _sessions;
-  SessionHub? _hub;
-  StreamSubscription<SessionMessage>? _messages;
-  SessionController? _watched;
-  String? _target;
-  String? _viewing;
-  bool _visible = true;
-  String? _tracked;
-  Timer? _queueTimer;
-  bool _queueExpired = false;
-  Map<String, Object?>? _pending;
-  String? _shown;
-  Timer? _cooldown;
+  String? _hostKey;
+  final _followed = <String>{};
+  final _snapshots = <String, Map<String, dynamic>>{};
+  final _tokens = <String, Map<String, dynamic>>{};
+  final _registered = <String, String>{};
+  StreamSubscription<Map<String, dynamic>>? _activitySub;
+  StreamSubscription<void>? _connectedSub;
+  Future<void> _serial = Future.value();
   bool _disposed = false;
+  bool foreground = true;
+  Timer? _heartbeat;
+  Future<void>? _refreshing;
+  int _generation = 0;
 
-  bool get available => channel.platformSupported && support.available;
-
-  Future<void> load() async {
-    if (!channel.platformSupported) return;
-    try {
-      enabled = (await SharedPreferences.getInstance()).getBool(_prefsKey) ?? false;
-    } catch (_) {}
-    try {
-      // Nothing armed by an earlier run of the engine.
-      await channel.show(null);
-    } catch (_) {}
-    await refreshSupport();
-  }
-
-  Future<void> refreshSupport() async {
-    if (!channel.platformSupported) return;
-    try {
-      final next = await channel.support();
-      if (_disposed) return;
-      support = next;
-      notifyListeners();
-      _sync();
-    } catch (_) {}
-  }
-
-  Future<void> setEnabled(bool value) async {
-    if (enabled == value) return;
-    enabled = value;
-    notifyListeners();
-    _sync();
-    try {
-      await (await SharedPreferences.getInstance()).setBool(_prefsKey, value);
-    } catch (_) {}
-  }
-
-  void bind(BridgeClient client, SessionsModel sessions, SessionHub hub) {
-    unbind();
-    _client = client..addListener(_sync);
-    _sessions = sessions..addListener(_sync);
-    _hub = hub;
-    // The conversation may be opened on this device after it became the target.
-    _messages = client.messages.listen((m) {
-      if (_watched == null && m.sessionId == _target && hub.peek(_target!) != null) _sync();
+  Future<void> initialize() async {
+    if (!supported) return;
+    final prefs = await SharedPreferences.getInstance();
+    enabled = prefs.getBool('codeaw.liveActivity.enabled') ?? true;
+    showDetails = prefs.getBool('codeaw.liveActivity.details') ?? true;
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'token' && call.arguments is Map) {
+        await _register(Map<String, dynamic>.from(call.arguments as Map));
+      } else if (call.method == 'ended' && call.arguments is Map) {
+        final args = Map<String, dynamic>.from(call.arguments as Map);
+        if (args['hostKey'] == _hostKey) {
+          final id = '${args['activityId']}';
+          _tokens.remove(id);
+          _registered.remove(id);
+          await _unregister(id);
+          _changed();
+        }
+      }
     });
-    _sync();
+    try {
+      final info = await _call('status', null) as Map;
+      supported = info['supported'] == true;
+      authorized = info['authorized'] == true;
+    } catch (_) {
+      error = '無法啟用即時動態，請確認 iOS 版本與簽名保留 Widget extension';
+    }
+    _changed();
+  }
+
+  void bind(BridgeClient client) {
+    unbind();
+    _client = client;
+    _hostKey = client.host.deviceId;
+    _activitySub = client.activity.listen(accept);
+    _connectedSub = client.connected.listen((_) {
+      _registered.clear();
+      unawaited(refresh());
+    });
+    if (client.isOnline) unawaited(refresh());
+  }
+
+  void follow(String sessionId) {
+    if (!supported) return;
+    _followed.add(sessionId);
+    final known = _snapshots[sessionId];
+    if (known != null) accept(known);
+    if (_client?.isOnline ?? false) unawaited(refresh());
+  }
+
+  Future<void> refresh() {
+    final current = _refreshing;
+    if (current != null) return current;
+    final operation = _refresh();
+    _refreshing = operation;
+    unawaited(
+      operation.whenComplete(() {
+        if (identical(_refreshing, operation)) _refreshing = null;
+      }),
+    );
+    return operation;
+  }
+
+  Future<void> _refresh() async {
+    final client = _client;
+    final generation = _generation;
+    if (!supported || client == null || !client.isOnline) return;
+    try {
+      final info = await client.request('_codeaw/live_activity/info') as Map;
+      if (generation != _generation || _disposed) return;
+      remoteEnabled = info['enabled'] == true;
+      remoteReady = info['ready'] == true;
+      remoteDetails = info['includeDetails'] == true;
+      error = info['error'] as String?;
+      final native = await _call('status', null) as Map;
+      if (generation != _generation || _disposed) return;
+      authorized = native['authorized'] == true;
+      for (final raw
+          in (native['activities'] as List? ?? const []).whereType<Map>()) {
+        if (raw['hostKey'] == _hostKey) _followed.add('${raw['sessionId']}');
+      }
+      for (final raw
+          in (native['tokens'] as List? ?? const []).whereType<Map>()) {
+        final token = Map<String, dynamic>.from(raw);
+        if (token['hostKey'] != _hostKey) continue;
+        _followed.add('${token['sessionId']}');
+        await _register(token);
+      }
+      final list = await client.request('_codeaw/activity/list') as Map;
+      if (generation != _generation || _disposed) return;
+      for (final raw
+          in (list['activities'] as List? ?? const []).whereType<Map>()) {
+        accept(Map<String, dynamic>.from(raw));
+      }
+      _changed();
+    } catch (_) {
+      // An older bridge still works for chat; explain the feature's prerequisite.
+      if (generation == _generation) {
+        error = '即時動態需要更新版 bridge；重連後會再嘗試';
+        _changed();
+      }
+    }
+  }
+
+  void accept(Map<String, dynamic> snapshot) {
+    final id = snapshot['sessionId'];
+    if (id is! String) return;
+    _snapshots[id] = snapshot;
+    if (snapshot['work'] is Map &&
+        snapshot['state'] != 'idle' &&
+        snapshot['deleted'] != true) {
+      // Track concurrent work across the paired bridge, even without opening each chat.
+      _followed.add(id);
+    }
+    _scheduleHeartbeat();
+    if (!supported || !enabled || !_followed.contains(id)) return;
+    final hostKey = _hostKey;
+    final generation = _generation;
+    final work = snapshot['work'] as Map?;
+    if (work == null && snapshot['deleted'] != true) return;
+    final completed = snapshot['completedTurn'] as Map?;
+    final idle = snapshot['state'] == 'idle' || snapshot['deleted'] == true;
+    final turnId = idle ? (completed?['promptId']) : snapshot['turnPromptId'];
+    if (turnId == null && snapshot['deleted'] != true) return;
+    final params = <String, dynamic>{
+      'hostKey': hostKey,
+      'sessionId': id,
+      'turnId': turnId,
+      'title': showDetails
+          ? (snapshot['title'] ?? work?['project'] ?? '聊天')
+          : 'Codeaw',
+      'project': showDetails ? (work?['project'] ?? '專案') : 'Codeaw',
+      'agent': snapshot['agentId'] ?? '',
+      'state': idle ? 'idle' : snapshot['state'],
+      'phase': work?['phase'] ?? 'completed',
+      'summary': showDetails
+          ? (work?['summary'] ?? '')
+          : work?['phase'] == 'error'
+          ? '執行失敗'
+          : work?['phase'] == 'cancelled'
+          ? '已停止'
+          : work?['phase'] == 'disconnected'
+          ? '等待重新同步'
+          : idle
+          ? '已完成'
+          : snapshot['state'] == 'requires_action'
+          ? '等待你的回覆'
+          : 'AI 正在工作…',
+      'startedAt': snapshot['turnStartedAt'] ?? completed?['startedAt'],
+      'endedAt': completed?['endedAt'],
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      'usePush': remoteReady,
+      'backgroundUpdates': _tokens.entries.any(
+        (entry) =>
+            _registered.containsKey(entry.key) &&
+            entry.value['sessionId'] == id &&
+            entry.value['turnId'] == turnId,
+      ),
+    };
+    _serial = _serial.then((_) async {
+      if (_disposed || generation != _generation || !enabled) return;
+      try {
+        final result = await _call('sync', params) as Map?;
+        if (result?['error'] is String) {
+          error = result!['error'] as String;
+          _changed();
+        }
+        for (final raw
+            in (result?['tokens'] as List? ?? const []).whereType<Map>()) {
+          await _register(Map<String, dynamic>.from(raw));
+        }
+      } catch (_) {
+        error = '即時動態無法更新，請檢查 iOS 設定中的「即時動態」';
+        _changed();
+      }
+    });
+  }
+
+  void _scheduleHeartbeat() {
+    final running =
+        supported &&
+        enabled &&
+        _snapshots.entries.any(
+          (entry) =>
+              _followed.contains(entry.key) &&
+              entry.value['work'] is Map &&
+              entry.value['state'] != 'idle' &&
+              entry.value['deleted'] != true,
+        );
+    if (!running) {
+      _heartbeat?.cancel();
+      _heartbeat = null;
+    } else {
+      _heartbeat ??= Timer.periodic(const Duration(seconds: 60), (_) {
+        if (foreground && (_client?.isOnline ?? false)) unawaited(refresh());
+      });
+    }
+  }
+
+  Future<void> _register(Map<String, dynamic> token) async {
+    final client = _client;
+    if (!enabled || client == null || token['hostKey'] != _hostKey) return;
+    final id = '${token['activityId']}';
+    _tokens[id] = token;
+    final identity = '${token['pushToken']}:$showDetails';
+    if (!remoteEnabled || !client.isOnline || _registered[id] == identity) {
+      return;
+    }
+    try {
+      final result =
+          await client.request('_codeaw/live_activity/register', {
+                ...token,
+                'includeDetails': showDetails,
+              })
+              as Map;
+      if (identical(client, _client) && result['registered'] == true) {
+        _registered[id] = identity;
+        final snapshot = _snapshots[token['sessionId']];
+        if (snapshot != null) accept(snapshot);
+        _changed();
+      }
+    } catch (_) {
+      /* A finished or dismissed turn no longer needs registration. */
+    }
+  }
+
+  Future<void> _unregister(String id) async {
+    try {
+      await _client?.request('_codeaw/live_activity/unregister', {
+        'activityId': id,
+      });
+    } catch (_) {}
+  }
+
+  Future<void> configure({bool? enabled, bool? showDetails}) async {
+    this.enabled = enabled ?? this.enabled;
+    this.showDetails = showDetails ?? this.showDetails;
+    _scheduleHeartbeat();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('codeaw.liveActivity.enabled', this.enabled);
+    await prefs.setBool('codeaw.liveActivity.details', this.showDetails);
+    if (!this.enabled) {
+      for (final id in _tokens.keys.toList()) {
+        await _unregister(id);
+      }
+      _tokens.clear();
+      _registered.clear();
+      if (supported) await _call('endAll', {'hostKey': _hostKey});
+    } else {
+      for (final token in _tokens.values.toList()) {
+        await _register(token);
+      }
+      for (final snapshot in _snapshots.values.toList()) {
+        accept(snapshot);
+      }
+      await _serial;
+      await refresh();
+    }
+    _changed();
   }
 
   void unbind() {
-    _client?.removeListener(_sync);
-    _sessions?.removeListener(_sync);
-    _messages?.cancel();
-    _messages = null;
-    _client = null;
-    _sessions = null;
-    _hub = null;
-    _tracked = null;
-    _sync();
-  }
-
-  /// The conversation on screen, if any.
-  set viewing(String? sessionId) {
-    if (_viewing == sessionId) return;
-    _viewing = sessionId;
-    _sync();
-  }
-
-  /// Whether the app is on screen; inactive counts (a system dialog, Control Center).
-  set visible(bool value) {
-    if (_visible == value) return;
-    _visible = value;
-    _tracked = value ? null : _pick();
-    _resetQueue();
-    _sync();
-    // Live Activities or Live Updates may have been switched in Settings meanwhile.
-    if (value) unawaited(refreshSupport());
-  }
-
-  void _sync() {
-    if (_disposed) return;
-    var id = enabled && available ? (_visible ? _pick() : _tracked) : null;
-    if (id != null) {
-      if (_running(id)) {
-        _resetQueue();
-      } else if (!_startingNext(id)) {
-        id = null;
+    final old = _client;
+    final key = _hostKey;
+    for (final id in _tokens.keys) {
+      if (old?.isOnline ?? false) {
+        unawaited(
+          old!
+              .request('_codeaw/live_activity/unregister', {'activityId': id})
+              .catchError((Object _) => null),
+        );
       }
     }
-    if (id == null && !_visible) _tracked = null;
-    _target = id;
-    _watch(id);
-    _send(id == null ? null : _content(id));
-  }
-
-  /// The conversation on screen if it is running, otherwise the only running one.
-  String? _pick() {
-    final viewing = _viewing;
-    if (viewing != null && _running(viewing)) return viewing;
-    String? only;
-    for (final s in _sessions?.sessions ?? const <SessionSummary>[]) {
-      if (!_running(s.id)) continue;
-      if (only != null) return null;
-      only = s.id;
+    if (supported && key != null) {
+      _serial = _serial.then((_) async {
+        try {
+          await _call('endAll', {'hostKey': key});
+        } catch (_) {}
+      });
     }
-    return only;
+    _generation++;
+    _refreshing = null;
+    _activitySub?.cancel();
+    _connectedSub?.cancel();
+    _heartbeat?.cancel();
+    _heartbeat = null;
+    _client = null;
+    _hostKey = null;
+    _followed.clear();
+    _snapshots.clear();
+    _tokens.clear();
+    _registered.clear();
+    remoteEnabled = remoteReady = remoteDetails = false;
+    error = null;
   }
 
-  ({String state, int queued}) _status(String id) {
-    final c = _hub?.peek(id);
-    if (c != null && c.attached) return (state: c.timeline.state, queued: c.timeline.queued);
-    final s = _sessions?.byId(id);
-    return (state: s?.state ?? c?.timeline.state ?? 'idle', queued: s?.queued ?? 0);
-  }
-
-  bool _running(String id) => switch (_status(id).state) {
-        'running' || 'requires_action' => true,
-        _ => false,
-      };
-
-  /// Idle with prompts still queued. Unless something holds the queue, this only lasts
-  /// until the bridge starts the next one.
-  bool _startingNext(String id) {
-    if (_status(id).queued == 0 || _queueExpired) return false;
-    _queueTimer ??= Timer(_queueGrace, () {
-      _queueExpired = true;
-      _sync();
-    });
-    return true;
-  }
-
-  void _resetQueue() {
-    _queueTimer?.cancel();
-    _queueTimer = null;
-    _queueExpired = false;
-  }
-
-  /// Follows the open controller of [id] for its activity, plan and pending requests.
-  void _watch(String? id) {
-    final c = id == null ? null : _hub?.peek(id);
-    if (identical(c, _watched)) return;
-    _watched?.removeListener(_sync);
-    _watched?.timeline.removeListener(_sync);
-    _watched = c;
-    c?.addListener(_sync);
-    c?.timeline.addListener(_sync);
-  }
-
-  Map<String, Object?> _content(String id) {
-    final c = _hub?.peek(id);
-    final timeline = c?.timeline;
-    final summary = _sessions?.byId(id);
-    final agentId = summary?.agentId ?? id.split(':').first;
-    final agent = _client?.agent(agentId)?.name ?? agentId;
-    final title = _text(timeline?.title) ?? _text(summary?.title) ?? _text(folderName(summary?.cwd ?? c?.cwd ?? '')) ?? agent;
-    final request = c?.pending.values.firstOrNull;
-    final (phase, detail) = _client?.isOnline != true
-        ? ('offline', '連線中斷，重新連線中…')
-        : switch (_status(id).state) {
-            'requires_action' => ('approval', request == null ? '需要你的批准' : '${request.isPermission ? '需要你的批准' : '需要你的回覆'}：${request.title}'),
-            'running' => ('running', _doing(timeline)),
-            _ => ('running', '準備處理下一則排隊訊息…'),
-          };
-    return {
-      'sessionId': id,
-      'link': 'codeaw://session/${Uri.encodeComponent(id)}',
-      'agent': agent,
-      'title': _clip(title, 100),
-      'phase': phase,
-      'detail': _clip(detail, 200),
-      'startedAt': timeline?.turnStartedAt?.millisecondsSinceEpoch,
-      // ACP plan entry statuses: pending, in_progress, completed.
-      'steps': [for (final e in timeline?.plan ?? const <Map<String, dynamic>>[]) '${e['status'] ?? 'pending'}'],
-    };
-  }
-
-  /// The working indicator's wording, with the tool's own title when there is one.
-  static String _doing(Timeline? t) {
-    final tool = t?.activeTool;
-    return switch (t?.activity) {
-      null => '執行中…',
-      TurnActivity.thinking => '思考中…',
-      TurnActivity.responding => '回覆中…',
-      TurnActivity.tool when _text(tool?.title) != null => _text(tool!.displayTitle)!,
-      TurnActivity.tool when tool?.mcp != null => '使用 MCP 工具中…',
-      TurnActivity.tool => switch (tool?.kind) {
-          'read' => '讀取檔案中…',
-          'edit' => '修改檔案中…',
-          'execute' => '執行指令中…',
-          'search' => '搜尋中…',
-          'fetch' => '取得資料中…',
-          'think' => '思考中…',
-          _ => '使用工具中…',
-        },
-    };
-  }
-
-  static String? _text(String? s) {
-    final t = s?.replaceAll(RegExp(r'\s+'), ' ').trim();
-    return t == null || t.isEmpty ? null : t;
-  }
-
-  static String _clip(String s, int max) => s.runes.length <= max ? s : '${String.fromCharCodes(s.runes.take(max - 1))}…';
-
-  /// Sends at most one update per [_minInterval]; removal is sent right away.
-  void _send(Map<String, Object?>? content) {
-    _pending = content;
-    if (content == null || _cooldown == null) _flush();
-  }
-
-  void _flush() {
-    final content = _pending;
-    final key = content == null ? null : jsonEncode(content);
-    if (key == _shown) return;
-    _shown = key;
-    unawaited(channel.show(content).catchError((Object _) {}));
-    _cooldown?.cancel();
-    _cooldown = Timer(_minInterval, () {
-      _cooldown = null;
-      _flush();
-    });
+  Future<void> get settled => _serial;
+  void _changed() {
+    if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
     unbind();
     _disposed = true;
-    _queueTimer?.cancel();
-    _cooldown?.cancel();
     super.dispose();
   }
 }

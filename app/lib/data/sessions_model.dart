@@ -5,15 +5,23 @@ import 'package:flutter/foundation.dart';
 import '../acp/jsonrpc.dart';
 import 'bridge_client.dart';
 import 'models.dart';
+import 'history_cache.dart';
 
 /// The session list across all agents, kept fresh by `_codeaw/activity` notifications.
 class SessionsModel extends ChangeNotifier {
-  SessionsModel(this.client) {
+  SessionsModel(this.client, {HistoryCache? cache})
+    : cache = cache ?? HistoryCache(client.host) {
     _activitySub = client.activity.listen(_onActivity);
     _connSub = client.connected.listen((_) => unawaited(refresh()));
+    unawaited(restore());
   }
 
   final BridgeClient client;
+  final HistoryCache cache;
+  static const _cacheId = '__session_list__';
+  Timer? _cacheTimer;
+  bool _cacheReady = false;
+  int _revision = 0;
   List<SessionSummary> sessions = [];
   bool loading = false;
   String? error;
@@ -25,14 +33,79 @@ class SessionsModel extends ChangeNotifier {
   Timer? _refreshDebounce;
   bool _disposed = false;
 
+  Future<void> restore() async {
+    final revision = _revision;
+    final saved = await cache.read(_cacheId);
+    if (_disposed ||
+        sessions.isNotEmpty ||
+        saved == null ||
+        revision != _revision) {
+      return;
+    }
+    try {
+      sessions = (saved['sessions'] as List)
+          .map(
+            (s) => SessionSummary.fromJson(Map<String, dynamic>.from(s as Map)),
+          )
+          .toList();
+      _cacheReady = true;
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> persist() {
+    _cacheTimer?.cancel();
+    _cacheTimer = null;
+    return !_cacheReady
+        ? Future.value()
+        : cache.write(_cacheId, {
+            'sessions': [
+              for (final s in sessions)
+                {
+                  'sessionId': s.id,
+                  'cwd': s.cwd,
+                  'title': s.title,
+                  'updatedAt': s.updatedAt?.toIso8601String(),
+                  '_meta': {
+                    'codeaw': {
+                      'agentId': s.agentId,
+                      'state': s.state,
+                      'pending': s.pending,
+                      'queued': s.queued,
+                      'known': s.known,
+                    },
+                  },
+                },
+            ],
+          });
+  }
+
+  void discardPendingCache() {
+    _cacheTimer?.cancel();
+    _cacheTimer = null;
+    _cacheReady = false;
+    _revision++;
+  }
+
+  void _saveSoon() {
+    _revision++;
+    _cacheReady = true;
+    _cacheTimer ??= Timer(const Duration(seconds: 2), () {
+      _cacheTimer = null;
+      unawaited(persist());
+    });
+  }
+
   Future<void> refresh() async {
     if (_disposed || !client.isOnline) return;
     loading = true;
     notifyListeners();
     try {
-      final r = await client.request('session/list', {}) as Map<String, dynamic>;
+      final r =
+          await client.request('session/list', {}) as Map<String, dynamic>;
       if (_disposed) return;
       sessions = _parse(r);
+      _saveSoon();
       error = null;
     } on RpcError catch (e) {
       error = e.detail;
@@ -48,11 +121,14 @@ class SessionsModel extends ChangeNotifier {
     loading = true;
     notifyListeners();
     try {
-      final r = await client.request('session/list', {'cursor': cursor}) as Map<String, dynamic>;
+      final r =
+          await client.request('session/list', {'cursor': cursor})
+              as Map<String, dynamic>;
       if (_disposed) return;
       final more = _parse(r);
       final known = sessions.map((s) => s.id).toSet();
       sessions = [...sessions, ...more.where((s) => !known.contains(s.id))];
+      _saveSoon();
     } on RpcError catch (e) {
       error = e.detail;
     } finally {
@@ -63,9 +139,17 @@ class SessionsModel extends ChangeNotifier {
 
   List<SessionSummary> _parse(Map<String, dynamic> r) {
     _nextCursor = r['nextCursor'] as String?;
-    final errs = ((r['_meta'] as Map?)?['codeaw'] as Map?)?['errors'] as List? ?? const [];
-    agentErrors = [for (final e in errs.whereType<Map>()) '${client.agent('${e['agentId']}')?.name ?? e['agentId']}：${e['message']}'];
-    return (r['sessions'] as List? ?? const []).whereType<Map<String, dynamic>>().map(SessionSummary.fromJson).toList();
+    final errs =
+        ((r['_meta'] as Map?)?['codeaw'] as Map?)?['errors'] as List? ??
+        const [];
+    agentErrors = [
+      for (final e in errs.whereType<Map>())
+        '${client.agent('${e['agentId']}')?.name ?? e['agentId']}：${e['message']}',
+    ];
+    return (r['sessions'] as List? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(SessionSummary.fromJson)
+        .toList();
   }
 
   SessionSummary? byId(String id) {
@@ -80,6 +164,7 @@ class SessionsModel extends ChangeNotifier {
     if (id == null) return;
     if (a['deleted'] == true) {
       sessions = sessions.where((s) => s.id != id).toList();
+      _saveSoon();
       notifyListeners();
       return;
     }
@@ -87,7 +172,10 @@ class SessionsModel extends ChangeNotifier {
     if (s == null) {
       // A session created elsewhere: pick it up on the next (debounced) list.
       _refreshDebounce?.cancel();
-      _refreshDebounce = Timer(const Duration(seconds: 1), () => unawaited(refresh()));
+      _refreshDebounce = Timer(
+        const Duration(seconds: 1),
+        () => unawaited(refresh()),
+      );
       return;
     }
     s.state = a['state'] as String? ?? s.state;
@@ -97,12 +185,18 @@ class SessionsModel extends ChangeNotifier {
     final updated = DateTime.tryParse(a['updatedAt'] as String? ?? '');
     if (updated != null) s.updatedAt = updated;
     s.known = true;
-    sessions.sort((x, y) => (y.updatedAt ?? DateTime(0)).compareTo(x.updatedAt ?? DateTime(0)));
+    _saveSoon();
+    sessions.sort(
+      (x, y) =>
+          (y.updatedAt ?? DateTime(0)).compareTo(x.updatedAt ?? DateTime(0)),
+    );
     notifyListeners();
   }
 
   @override
   void dispose() {
+    if (_cacheTimer != null) unawaited(persist());
+    _cacheTimer?.cancel();
     _disposed = true;
     _activitySub?.cancel();
     _connSub?.cancel();

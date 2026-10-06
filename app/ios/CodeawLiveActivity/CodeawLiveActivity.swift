@@ -3,139 +3,125 @@ import SwiftUI
 import WidgetKit
 
 @main
-struct CodeawWidgets: WidgetBundle {
-  var body: some Widget {
-    CodeawLiveActivity()
-  }
+struct CodeawActivityBundle: WidgetBundle {
+  var body: some Widget { CodeawLiveActivity() }
 }
 
-/// A conversation tracked in the background, on the Lock Screen and in the Dynamic Island.
 struct CodeawLiveActivity: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: CodeawActivityAttributes.self) { context in
-      LockScreenView(context: context)
-        .widgetURL(URL(string: context.attributes.link))
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: symbol(context)).font(.title3).foregroundStyle(tint(context))
+          .frame(width: 34, height: 34).background(tint(context).opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
+        VStack(alignment: .leading, spacing: 6) {
+          HStack {
+            Text(chatTitle(context.state)).font(.headline).lineLimit(1).privacySensitive()
+            Spacer(minLength: 8)
+            elapsed(context.state).font(.subheadline).frame(maxWidth: 76, alignment: .trailing)
+          }
+          HStack(spacing: 5) {
+            Circle().fill(tint(context)).frame(width: 5, height: 5)
+            Text("\(context.state.project) · \(agentName(context.state.agent)) · \(label(context))")
+              .font(.caption).foregroundStyle(.secondary).lineLimit(1).privacySensitive()
+          }
+          Text(context.isStale ? "打開 Codeaw 同步最新狀態" : context.state.summary)
+            .font(context.state.phase == "command" ? .system(.caption, design: .monospaced) : .caption)
+            .lineLimit(2).privacySensitive()
+          if context.state.backgroundUpdates != true && context.state.endedAt == nil {
+            lastSync(context.state)
+          }
+        }
+      }
+      .padding(14)
+      .activityBackgroundTint(Color(red: 0.06, green: 0.08, blue: 0.12))
+      .activitySystemActionForegroundColor(.white)
+      .foregroundStyle(.white)
+      .widgetURL(sessionURL(context.attributes.sessionId))
     } dynamicIsland: { context in
-      let status = Status(context)
-      return DynamicIsland {
+      DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          Label(context.attributes.agent, systemImage: status.symbol)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(status.tint)
-            .lineLimit(1)
+          Label(chatTitle(context.state), systemImage: "text.bubble.fill").font(.caption).lineLimit(1).privacySensitive()
         }
         DynamicIslandExpandedRegion(.trailing) {
-          Elapsed(state: context.state, width: 64)
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          elapsed(context.state).font(.caption).frame(maxWidth: 76)
         }
         DynamicIslandExpandedRegion(.bottom) {
-          VStack(alignment: .leading, spacing: 6) {
-            Text(context.state.title).font(.headline).lineLimit(1)
-            Text(status.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-            Steps(state: context.state, tint: status.tint)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
+          VStack(alignment: .leading, spacing: 5) {
+            Label(label(context), systemImage: symbol(context)).font(.caption).foregroundStyle(tint(context))
+            Text(context.isStale ? "打開 Codeaw 同步最新狀態" : context.state.summary)
+              .font(context.state.phase == "command" ? .system(.caption, design: .monospaced) : .caption)
+              .lineLimit(2).privacySensitive()
+            if context.state.backgroundUpdates != true && context.state.endedAt == nil {
+              lastSync(context.state)
+            }
+          }.frame(maxWidth: .infinity, alignment: .leading)
         }
       } compactLeading: {
-        Image(systemName: status.symbol).foregroundStyle(status.tint)
+        Image(systemName: symbol(context)).foregroundStyle(tint(context))
       } compactTrailing: {
-        if context.state.phase == "approval" {
-          Text("待批准").font(.caption2).foregroundStyle(status.tint)
-        } else if context.state.total > 0 {
-          Text("\(context.state.done)/\(context.state.total)").font(.caption2.monospacedDigit())
-        } else if !context.isStale {
-          Elapsed(state: context.state, width: 44).font(.caption2)
-        }
+        elapsed(context.state).font(.caption2).frame(width: 48)
       } minimal: {
-        Image(systemName: status.symbol).foregroundStyle(status.tint)
+        Image(systemName: symbol(context)).foregroundStyle(tint(context))
       }
-      .widgetURL(URL(string: context.attributes.link))
-      .keylineTint(status.tint)
+      .widgetURL(sessionURL(context.attributes.sessionId))
+      .keylineTint(tint(context))
     }
   }
-}
 
-private struct Status {
-  let symbol: String
-  let tint: Color
-  let detail: String
-
-  init(_ context: ActivityViewContext<CodeawActivityAttributes>) {
-    // Stale: iOS suspended the app, so this is the last state it saw.
-    if context.isStale {
-      symbol = "pause.circle.fill"
-      tint = .gray
-      detail = "App 在背景已暫停更新，點一下查看最新進度"
-      return
+  @ViewBuilder
+  private func elapsed(_ state: CodeawActivityAttributes.ContentState) -> some View {
+    let start = Date(timeIntervalSince1970: state.startedAt / 1000)
+    if let ended = state.endedAt {
+      let seconds = max(0, Int((ended - state.startedAt) / 1000))
+      Text(String(format: "%d:%02d", seconds / 60, seconds % 60)).monospacedDigit()
+    } else {
+      // The system animates this timer while the app is suspended; no polling required.
+      Text(timerInterval: start...max(start, start.addingTimeInterval(8 * 3600)), countsDown: false)
+        .monospacedDigit().minimumScaleFactor(0.7)
     }
+  }
+
+  private func chatTitle(_ state: CodeawActivityAttributes.ContentState) -> String {
+    let title = state.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return title.isEmpty ? state.project : title
+  }
+
+  private func lastSync(_ state: CodeawActivityAttributes.ContentState) -> some View {
+    HStack(spacing: 3) {
+      Text("本機同步 · 上次")
+      Text(Date(timeIntervalSince1970: state.updatedAt / 1000), style: .time)
+    }.font(.caption2).foregroundStyle(.secondary)
+  }
+
+  private func symbol(_ context: ActivityViewContext<CodeawActivityAttributes>) -> String {
+    if context.isStale { return "wifi.slash" }
+    return ["thinking": "sparkles", "command": "terminal.fill", "tool": "wrench.and.screwdriver.fill",
+      "responding": "text.bubble.fill", "attention": "hand.raised.fill", "completed": "checkmark.circle.fill",
+      "cancelled": "stop.circle.fill", "error": "exclamationmark.triangle.fill", "disconnected": "wifi.slash"][context.state.phase] ?? "sparkles"
+  }
+
+  private func label(_ context: ActivityViewContext<CodeawActivityAttributes>) -> String {
+    if context.isStale { return "狀態待同步" }
+    return ["thinking": "思考中", "command": "執行指令", "tool": "使用工具", "responding": "正在回覆",
+      "attention": "需要你的回覆", "completed": "已完成", "cancelled": "已停止", "error": "執行失敗", "disconnected": "桌面已離線"][context.state.phase] ?? "工作中"
+  }
+
+  private func tint(_ context: ActivityViewContext<CodeawActivityAttributes>) -> Color {
+    if context.isStale { return .gray }
     switch context.state.phase {
-    case "approval":
-      symbol = "hand.raised.fill"
-      tint = .orange
-    case "offline":
-      symbol = "wifi.slash"
-      tint = .gray
-    default:
-      symbol = "terminal.fill"
-      tint = Color(red: 0.059, green: 0.616, blue: 0.541)
-    }
-    detail = context.state.detail
-  }
-}
-
-private struct LockScreenView: View {
-  let context: ActivityViewContext<CodeawActivityAttributes>
-
-  var body: some View {
-    let status = Status(context)
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 6) {
-        Image(systemName: status.symbol).foregroundStyle(status.tint)
-        Text(context.attributes.agent)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-        Spacer(minLength: 8)
-        Elapsed(state: context.state, width: 72)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
-      Text(context.state.title).font(.headline).lineLimit(1)
-      Text(status.detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-      Steps(state: context.state, tint: status.tint)
-    }
-    .padding(16)
-  }
-}
-
-/// Time spent on the turn, kept ticking by the system without app updates.
-private struct Elapsed: View {
-  let state: CodeawActivityAttributes.ContentState
-  let width: CGFloat
-
-  var body: some View {
-    if let startedAt = state.startedAt {
-      // Timer text is laid out at its widest; keep it from crowding the rest.
-      Text(startedAt, style: .timer)
-        .monospacedDigit()
-        .multilineTextAlignment(.trailing)
-        .frame(maxWidth: width, alignment: .trailing)
+    case "attention": return .orange
+    case "error": return .red
+    case "completed": return .green
+    case "cancelled", "disconnected": return .gray
+    default: return .cyan
     }
   }
-}
 
-/// Progress through the agent's plan, when it has one.
-private struct Steps: View {
-  let state: CodeawActivityAttributes.ContentState
-  let tint: Color
+  private func agentName(_ value: String) -> String {
+    ["codex": "Codex", "claude": "Claude", "gemini": "Gemini", "antigravity": "Antigravity"][value] ?? value.capitalized
+  }
 
-  var body: some View {
-    if state.total > 0 {
-      HStack(spacing: 8) {
-        ProgressView(value: Double(state.done), total: Double(state.total)).tint(tint)
-        Text("\(state.done)/\(state.total)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-      }
-    }
+  private func sessionURL(_ id: String) -> URL? {
+    URL(string: "codeaw://session/" + (id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id))
   }
 }

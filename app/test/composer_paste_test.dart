@@ -69,23 +69,48 @@ class _Client extends BridgeClient {
     ];
   }
   final prompts = <Map<String, dynamic>>[];
-  final uploads = <({String name, Uint8List bytes})>[];
+  final uploads = <({String sessionId, String name, Uint8List bytes})>[];
   bool failPrompt = false;
   Completer<dynamic>? pendingPrompt;
+  Future<Map<String, dynamic>> Function(
+    String name,
+    Uint8List bytes,
+    UploadProgressCallback? progress,
+  )?
+  onUpload;
 
   @override
-  Future<UploadedFile> upload(
+  Future<Map<String, dynamic>> uploadPickedFile(
+    String sessionId,
+    XFile file, {
+    UploadProgressCallback? onProgress,
+  }) async {
+    final data = <int>[];
+    await for (final chunk in file.openRead()) {
+      data.addAll(chunk);
+    }
+    return uploadFile(
+      sessionId,
+      file.name,
+      Uint8List.fromList(data),
+      onProgress: onProgress,
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> uploadFile(
+    String sessionId,
     String name,
     Uint8List bytes, {
-    String? mimeType,
+    UploadProgressCallback? onProgress,
   }) async {
-    uploads.add((name: name, bytes: bytes));
-    return UploadedFile(
-      path: '/workspace/$name',
-      uri: 'file:///workspace/$name',
-      name: name,
-      size: bytes.length,
-    );
+    uploads.add((sessionId: sessionId, name: name, bytes: bytes));
+    if (onUpload != null) return onUpload!(name, bytes, onProgress);
+    return {
+      'type': 'resource_link',
+      'name': name,
+      'uri': 'file:///workspace/$name',
+    };
   }
 
   @override
@@ -139,9 +164,7 @@ Future<({SessionController controller, _Client client})> _show(
     controller.dispose();
     client.dispose();
   });
-  await tester.pumpWidget(
-    _app(controller, clipboard, pickFiles: pickFiles),
-  );
+  await tester.pumpWidget(_app(controller, clipboard, pickFiles: pickFiles));
   await tester.pumpAndSettle();
   return (controller: controller, client: client);
 }
@@ -348,7 +371,7 @@ void main() {
         isFalse,
       );
       expect(clipboard.reads, 0);
-      // Files can still be sent; the image options are gone.
+      expect(find.byTooltip('附加'), findsOneWidget);
       await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
       expect(find.text('上傳檔案'), findsOneWidget);
@@ -431,9 +454,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('上傳檔案'));
       await tester.pumpAndSettle();
+      expect(h.client.uploads.single.sessionId, 'codex:one');
       expect(h.client.uploads.single.name, '資料.txt');
       expect(h.client.uploads.single.bytes, bytes);
       expect(find.text('資料.txt'), findsOneWidget);
+      expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
       await tester.tap(find.byTooltip('送出'));
       await tester.pumpAndSettle();
       expect(h.client.prompts.single['prompt'], [
@@ -442,7 +467,6 @@ void main() {
           'type': 'resource_link',
           'name': '資料.txt',
           'uri': 'file:///workspace/資料.txt',
-          'size': bytes.length,
         },
       ]);
       expect(find.text('資料.txt'), findsNothing);
@@ -450,6 +474,151 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  for (final size in [const Size(320, 640), const Size(844, 390)]) {
+    testWidgets('file progress and server acknowledgement fit $size', (
+      tester,
+    ) async {
+      final bytes = Uint8List(5 * 1024 * 1024);
+      final finished = Completer<Map<String, dynamic>>();
+      UploadProgressCallback? progress;
+      final h = await _show(
+        tester,
+        _Clipboard(),
+        pickFiles: () async => [
+          XFile.fromData(
+            bytes,
+            name: 'Generated Audio October 01.wav',
+            path: 'Generated Audio October 01.wav',
+          ),
+        ],
+      );
+      tester.view.physicalSize = size;
+      h.client.onUpload = (_, data, callback) {
+        progress = callback;
+        callback!(0, data.length);
+        return finished.future;
+      };
+      await tester.enterText(_input, 'Read this');
+      await tester.tap(find.byTooltip('附加'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('上傳檔案'));
+      await tester.pumpAndSettle();
+      progress!(bytes.length * 2 ~/ 5, bytes.length);
+      await tester.pump();
+      expect(find.text('40%'), findsOneWidget);
+      expect(find.textContaining('MiB · 上傳中'), findsOneWidget);
+      expect(
+        tester
+            .widget<LinearProgressIndicator>(
+              find.byKey(const ValueKey('file-upload-bar')),
+            )
+            .value,
+        closeTo(.4, .001),
+      );
+      await tester.tap(find.byTooltip('送出'));
+      expect(h.client.prompts, isEmpty);
+      progress!(bytes.length, bytes.length);
+      await tester.pump();
+      expect(find.text('100%'), findsOneWidget);
+      expect(find.textContaining('等待電腦確認'), findsOneWidget);
+      expect(find.byTooltip('移除檔案'), findsNothing);
+      finished.complete({
+        'type': 'resource_link',
+        'name': 'Generated Audio October 01.wav',
+        'uri': 'file:///workspace/audio.wav',
+      });
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('file-upload-progress')), findsNothing);
+      expect(find.byTooltip('移除檔案'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    });
+  }
+
+  testWidgets(
+    'multiple files progress in order and retain successful files on failure',
+    (tester) async {
+      final bytes = Uint8List(100);
+      final failed = Completer<Map<String, dynamic>>();
+      UploadProgressCallback? progress;
+      final h = await _show(
+        tester,
+        _Clipboard(),
+        pickFiles: () async => [
+          XFile.fromData(bytes, name: 'first.txt', path: 'first.txt'),
+          XFile.fromData(bytes, name: 'second.wav', path: 'second.wav'),
+        ],
+      );
+      h.client.onUpload = (name, data, callback) async {
+        if (name == 'first.txt') {
+          return {
+            'type': 'resource_link',
+            'name': name,
+            'uri': 'file:///first.txt',
+          };
+        }
+        progress = callback;
+        callback!(25, data.length);
+        return failed.future;
+      };
+      await tester.tap(find.byTooltip('附加'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('上傳檔案'));
+      await tester.pumpAndSettle();
+      expect(h.client.uploads.map((u) => u.name), ['first.txt', 'second.wav']);
+      expect(find.text('2/2'), findsOneWidget);
+      expect(find.text('25%'), findsOneWidget);
+      expect(find.text('first.txt'), findsOneWidget);
+      progress!(100, 100);
+      await tester.pump();
+      failed.completeError(const FormatException('Disk full'));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('file-upload-progress')), findsNothing);
+      expect(find.text('first.txt'), findsOneWidget);
+      expect(find.text('second.wav'), findsNothing);
+      expect(find.textContaining('檔案上傳失敗'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('late upload progress cannot enter another chat', (tester) async {
+    final clipboard = _Clipboard();
+    final finished = Completer<Map<String, dynamic>>();
+    UploadProgressCallback? progress;
+    final h = await _show(
+      tester,
+      clipboard,
+      pickFiles: () async => [
+        XFile.fromData(Uint8List(100), name: 'old.wav', path: 'old.wav'),
+      ],
+    );
+    h.client.onUpload = (_, data, callback) {
+      progress = callback;
+      callback!(10, data.length);
+      return finished.future;
+    };
+    await tester.tap(find.byTooltip('附加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('上傳檔案'));
+    await tester.pumpAndSettle();
+    expect(find.text('10%'), findsOneWidget);
+    final other = SessionController(h.client, 'codex:two');
+    addTearDown(other.dispose);
+    await tester.pumpWidget(_app(other, clipboard));
+    progress!(100, 100);
+    finished.complete({
+      'type': 'resource_link',
+      'name': 'old.wav',
+      'uri': 'file:///old.wav',
+    });
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('file-upload-progress')), findsNothing);
+    expect(find.text('old.wav'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('failed send restores the draft and uploaded file for retry', (
     tester,
@@ -555,6 +724,7 @@ void main() {
     );
     expect(h.controller.draft, 'My next unsent draft');
     expect(h.client.prompts, hasLength(1));
+    await tester.pump(const Duration(seconds: 2));
     await tester.pumpWidget(const SizedBox());
     next.dispose();
   });

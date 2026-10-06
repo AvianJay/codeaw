@@ -4,6 +4,9 @@ import type { AddressInfo } from "node:net";
 import type { LoadedConfig } from "./config.js";
 import { AgentRegistry } from "./backend/registry.js";
 import { PushNotifier } from "./notify/ntfy.js";
+import { LiveActivityPush } from "./notify/live-activity.js";
+import path from "node:path";
+import { expandHome } from "./util/paths.js";
 import { DeviceStore } from "./server/auth.js";
 import { PathGuard } from "./server/ext.js";
 import { createHttpHandlers } from "./server/http.js";
@@ -15,6 +18,7 @@ import { tailscaleIPv4 } from "./util/tailscale.js";
 import { TerminalManager } from "./terminal/manager.js";
 import { CpaUsageService } from "./server/cpa.js";
 import { findWebRoot } from "./server/web.js";
+import { UPLOAD_TIMEOUT_MS } from "./server/uploads.js";
 
 const log = logger("bridge");
 
@@ -69,6 +73,11 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   });
   const notifier = new PushNotifier(config.notifications.ntfy, () => manager.clientCount > 0, opts.fetchImpl);
   manager.notifier = notifier;
+  const liveConfig = config.notifications.liveActivity;
+  const liveActivity = new LiveActivityPush(liveConfig ? { ...liveConfig,
+    privateKeyPath: path.resolve(home, expandHome(liveConfig.privateKeyPath)) } : undefined,
+    (id) => devices.list().some((d) => d.id === id), (id) => manager.activitySnapshot(id));
+  manager.liveActivity = liveActivity;
   manager.start();
   const uploads = new UploadStore(dataDir);
   uploads.prune();
@@ -88,7 +97,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const listen = (host: string) =>
     new Promise<void>((resolve, reject) => {
       binding.add(host);
-      const server = http.createServer(handlers.onRequest);
+      const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
       server.on("upgrade", handlers.onUpgrade);
       server.once("error", (err) => { binding.delete(host); reject(err); });
       server.listen(port, host, () => {
@@ -114,6 +123,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     if (retry) clearInterval(retry);
     clearInterval(pruneUploads);
     notifier.dispose();
+    liveActivity.dispose();
     await terminals.dispose();
     await handlers.close();
     await Promise.all([...servers.values()].map((server) => new Promise<void>((resolve) => {

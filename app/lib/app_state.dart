@@ -3,11 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'data/app_updater.dart';
+import 'data/android_live_activity.dart';
 import 'data/bridge_client.dart';
 import 'data/cpa_usage.dart';
 import 'data/host.dart';
-import 'data/live_activity.dart';
+import 'data/history_cache.dart';
 import 'data/notifications.dart';
+import 'data/live_activity.dart';
 import 'data/session_controller.dart';
 import 'data/sessions_model.dart';
 import 'data/terminal_controller.dart';
@@ -19,16 +21,17 @@ class AppState extends ChangeNotifier {
     required void Function(String sessionId) openSession,
     BridgeClient Function(HostConfig)? createClient,
     AppUpdater? updater,
-    LiveActivityTracker? liveActivity,
+    LiveActivityTracker? androidLiveActivity,
   }) : notifier = LocalNotifier(openSession),
        updater = updater ?? AppUpdater(),
-       liveActivity = liveActivity ?? LiveActivityTracker(),
+       androidLiveActivity = androidLiveActivity ?? LiveActivityTracker(),
        _createClient = createClient ?? BridgeClient.new;
 
   final HostStore store;
   final LocalNotifier notifier;
+  final LiveActivityController liveActivity = LiveActivityController();
   final AppUpdater updater;
-  final LiveActivityTracker liveActivity;
+  final LiveActivityTracker androidLiveActivity;
   final BridgeClient Function(HostConfig) _createClient;
   List<HostConfig> _hosts = const [];
   bool _changingHost = false;
@@ -55,7 +58,8 @@ class AppState extends ChangeNotifier {
 
   Future<void> load() async {
     await notifier.init();
-    await liveActivity.load();
+    await liveActivity.initialize();
+    await androidLiveActivity.load();
     final library = await store.load();
     final appearance = await store.loadAppearance();
     themeMode =
@@ -100,6 +104,7 @@ class AppState extends ChangeNotifier {
       _hosts = next;
       _unbind();
       host = null;
+      await HistoryCache(current).clear();
       if (next.isNotEmpty) _bind(next.first);
       notifyListeners();
     } finally {
@@ -112,7 +117,9 @@ class AppState extends ChangeNotifier {
     final c = _createClient(h)..start();
     client = c;
     hub = SessionHub(c);
-    sessions = SessionsModel(c);
+    sessions = SessionsModel(c, cache: hub!.cache);
+    liveActivity.bind(c);
+    androidLiveActivity.bind(c, sessions!, hub!);
     terminals = TerminalHub(c);
     final usage = CpaController(
       request: (method, params) async {
@@ -128,7 +135,6 @@ class AppState extends ChangeNotifier {
       (id) => c.agent(id)?.name ?? id,
       (id) => sessions?.byId(id)?.displayTitle,
     );
-    liveActivity.bind(c, sessions!, hub!);
     // Remember which URL worked so the next start tries it first.
     c.addListener(() {
       if (_changingHost ||
@@ -154,6 +160,7 @@ class AppState extends ChangeNotifier {
 
   void _unbind() {
     liveActivity.unbind();
+    androidLiveActivity.unbind();
     notifier.unwatch();
     _cpaReconnect?.cancel();
     _cpaReconnect = null;
@@ -174,6 +181,7 @@ class AppState extends ChangeNotifier {
     _unbind();
     notifier.dispose();
     liveActivity.dispose();
+    androidLiveActivity.dispose();
     updater.dispose();
     super.dispose();
   }

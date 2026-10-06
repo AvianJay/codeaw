@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -9,6 +10,12 @@ import '../acp/jsonrpc.dart';
 import 'bridge_socket.dart';
 import 'host.dart';
 import 'models.dart';
+import 'upload_progress.dart';
+import 'upload_transport_web.dart'
+    if (dart.library.io) 'upload_transport_io.dart'
+    as upload_transport;
+
+export 'upload_progress.dart';
 
 enum ConnStatus { offline, connecting, online }
 
@@ -278,18 +285,72 @@ class BridgeClient extends ChangeNotifier {
     'Authorization': 'Bearer ${host.token}',
   };
 
+  Future<Map<String, dynamic>> uploadFile(
+    String sessionId,
+    String name,
+    Uint8List bytes, {
+    UploadProgressCallback? onProgress,
+  }) async {
+    if (bytes.length > maxUploadBytes) {
+      throw const FormatException('檔案上限為 $uploadLimitLabel');
+    }
+    final response = await upload_transport.uploadBytes(
+      httpUri('/api/uploads', {'sessionId': sessionId, 'name': name}),
+      {...authHeaders, 'Content-Type': 'application/octet-stream'},
+      bytes,
+      onProgress: onProgress,
+    );
+    return _uploadedBlock(response);
+  }
+
+  Future<Map<String, dynamic>> uploadPickedFile(
+    String sessionId,
+    XFile file, {
+    UploadProgressCallback? onProgress,
+  }) async {
+    final length = await file.length();
+    if (length > maxUploadBytes) {
+      throw const FormatException('檔案上限為 $uploadLimitLabel');
+    }
+    final response = await upload_transport.uploadFile(
+      httpUri('/api/uploads', {'sessionId': sessionId, 'name': file.name}),
+      {...authHeaders, 'Content-Type': 'application/octet-stream'},
+      file,
+      length,
+      onProgress: onProgress,
+    );
+    return _uploadedBlock(response);
+  }
+
+  Map<String, dynamic> _uploadedBlock(http.Response response) {
+    final result =
+        jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
+    if (response.statusCode != 201) {
+      throw FormatException('${result['error'] ?? '檔案上傳失敗'}');
+    }
+    return Map<String, dynamic>.from(result['block'] as Map);
+  }
+
   /// Stores a file on the bridge's computer for the agent to read.
-  Future<UploadedFile> upload(String name, Uint8List bytes, {String? mimeType}) async {
+  Future<UploadedFile> upload(
+    String name,
+    Uint8List bytes, {
+    String? mimeType,
+  }) async {
     if (!isOnline) throw const UploadException('尚未連上 bridge');
+    if (bytes.length > maxUploadBytes) {
+      throw const UploadException('檔案上限為 $uploadLimitLabel');
+    }
     final http.Response response;
     try {
-      response = await http
-          .post(
-            httpUri('/api/uploads', {'name': name}),
-            headers: {...authHeaders, 'Content-Type': mimeType ?? 'application/octet-stream'},
-            body: bytes,
-          )
-          .timeout(const Duration(minutes: 5));
+      response = await upload_transport.uploadBytes(
+        httpUri('/api/uploads', {'name': name}),
+        {
+          ...authHeaders,
+          'Content-Type': mimeType ?? 'application/octet-stream',
+        },
+        bytes,
+      );
     } catch (_) {
       throw const UploadException('連線中斷，請再試一次');
     }
@@ -297,11 +358,21 @@ class BridgeClient extends ChangeNotifier {
     try {
       body = jsonDecode(utf8.decode(response.bodyBytes));
     } catch (_) {}
-    if (response.statusCode == 200 && body is Map<String, dynamic>) return UploadedFile.fromJson(body);
+    if (response.statusCode == 200 && body is Map<String, dynamic>) {
+      return UploadedFile.fromJson(body);
+    }
     // Bridges from before uploads answer the route with 404.
-    if (response.statusCode == 404) throw const UploadException('電腦上的 bridge 版本較舊，請更新後再上傳檔案');
-    if (response.statusCode == 413) throw const UploadException('檔案超過 50 MB');
-    throw UploadException(body is Map && body['error'] is String ? body['error'] as String : 'HTTP ${response.statusCode}');
+    if (response.statusCode == 404) {
+      throw const UploadException('電腦上的 bridge 版本較舊，請更新後再上傳檔案');
+    }
+    if (response.statusCode == 413) {
+      throw const UploadException('檔案上限為 $uploadLimitLabel');
+    }
+    throw UploadException(
+      body is Map && body['error'] is String
+          ? body['error'] as String
+          : 'HTTP ${response.statusCode}',
+    );
   }
 
   @override

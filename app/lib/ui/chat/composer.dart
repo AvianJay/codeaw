@@ -11,14 +11,119 @@ import 'package:image_picker/image_picker.dart';
 import '../../data/mentions.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
+import '../../data/upload_progress.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
 
+class _FileUpload {
+  _FileUpload(this.name, this.index, this.count);
+  final String name;
+  final int index;
+  final int count;
+  int? total;
+  int sent = 0;
+  bool transferring = false;
+  double? get fraction => !transferring || total == null
+      ? null
+      : total == 0
+      ? 1
+      : (sent / total!).clamp(0, 1);
+}
+
+String _uploadSize(int bytes) => bytes >= 1024 * 1024
+    ? '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MiB'
+    : bytes >= 1024
+    ? '${(bytes / 1024).toStringAsFixed(1)} KiB'
+    : '$bytes B';
+
+class _UploadProgress extends StatelessWidget {
+  const _UploadProgress({required this.upload});
+  final _FileUpload upload;
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = upload.fraction;
+    final status = !upload.transferring
+        ? '讀取檔案…'
+        : fraction == 1
+        ? '等待電腦確認…'
+        : '上傳中';
+    final sizes = upload.total == null
+        ? status
+        : '${_uploadSize(upload.sent)} / ${_uploadSize(upload.total!)} · $status';
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      key: const ValueKey('file-upload-progress'),
+      padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.cloud_upload_outlined,
+                size: 16,
+                color: scheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  upload.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (upload.count > 1) ...[
+                Text(
+                  '${upload.index}/${upload.count}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                fraction == null ? '準備中' : '${(fraction * 100).floor()}%',
+                key: const ValueKey('file-upload-percent'),
+                style: TextStyle(fontSize: 12, color: scheme.primary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          LinearProgressIndicator(
+            key: const ValueKey('file-upload-bar'),
+            value: fraction,
+            minHeight: 3,
+            borderRadius: BorderRadius.circular(3),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            sizes,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.controller, this.imageClipboard, this.pickFiles});
+  const Composer({
+    super.key,
+    required this.controller,
+    this.imageClipboard,
+    this.pickFiles,
+  });
   final SessionController controller;
   final ImageClipboard? imageClipboard;
+
   /// Chooses files to send; defaults to the platform file picker.
   final Future<List<XFile>> Function()? pickFiles;
 
@@ -37,6 +142,8 @@ class _ComposerState extends State<Composer> {
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
   int _attachGeneration = 0;
+  bool _pickingFiles = false;
+  _FileUpload? _fileUpload;
 
   // `@` completion: the word before the cursor and the bridge's matches for it.
   ({int start, String query})? _mention;
@@ -90,6 +197,8 @@ class _ComposerState extends State<Composer> {
       _dismissKeyboard();
       _attachGeneration++;
       _readingImages = 0;
+      _pickingFiles = false;
+      _fileUpload = null;
       _images.clear();
       _uploads.clear();
       _closeMention();
@@ -112,70 +221,109 @@ class _ComposerState extends State<Composer> {
 
   Future<void> _pickImages(ImageSource source) async {
     final target = c;
-    final picker = ImagePicker();
-    final List<XFile> files;
+    final generation = _attachGeneration;
+    _dismissKeyboard();
+    setState(() => _readingImages++);
+    bool current() =>
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
-      files = source == ImageSource.camera
-          ? [?await picker.pickImage(source: source, maxWidth: 1600, maxHeight: 1600, imageQuality: 85)]
-          : await picker.pickMultiImage(maxWidth: 1600, maxHeight: 1600, imageQuality: 85);
+      final picker = ImagePicker();
+      final files = source == ImageSource.camera
+          ? [
+              ?await picker.pickImage(
+                source: source,
+                maxWidth: 1600,
+                maxHeight: 1600,
+                imageQuality: 85,
+              ),
+            ]
+          : await picker.pickMultiImage(
+              maxWidth: 1600,
+              maxHeight: 1600,
+              imageQuality: 85,
+            );
+      for (final file in files) {
+        if (!current()) return;
+        final image = ClipboardImage(await file.readAsBytes(), _mimeType(file));
+        if (current()) setState(() => _images.add(image));
+      }
     } catch (_) {
-      if (mounted) _message(source == ImageSource.camera ? '無法開啟相機' : '無法開啟相簿');
-      return;
-    }
-    if (files.isEmpty || !mounted || !identical(c, target)) return;
-    final images = [for (final file in files) ClipboardImage(await file.readAsBytes(), _mimeType(file))];
-    if (mounted && identical(c, target)) {
-      setState(() => _images.addAll(images));
+      if (current()) _message('無法讀取圖片，請檢查相簿／相機權限後重試');
+    } finally {
+      if (current()) setState(() => _readingImages--);
     }
   }
 
-  static const _maxUpload = 50 * 1024 * 1024;
   // Larger images go up as files, so the prompt stays within model limits.
   static const _maxInlineImage = 4 * 1024 * 1024;
 
   Future<void> _pickFiles() async {
-    final target = c;
-    final List<XFile> files;
-    try {
-      files = await (widget.pickFiles ?? openFiles)();
-    } catch (_) {
-      if (mounted) _message('無法開啟檔案選擇器');
-      return;
-    }
-    for (final file in files) {
-      if (!mounted || !identical(c, target)) return;
-      final size = await file.length();
-      if (_supportsImages && size <= _maxInlineImage && RegExp(r'\.(png|jpe?g|webp|gif)$', caseSensitive: false).hasMatch(file.name)) {
-        try {
-          final image = ClipboardImage.fromBytes(await file.readAsBytes());
-          if (mounted && identical(c, target)) setState(() => _images.add(image));
-          continue;
-        } on FormatException {
-          // Not really an image: send it as a file.
-        }
-      }
-      if (size > _maxUpload) {
-        _message('${file.name} 超過 50 MB，無法上傳');
-        continue;
-      }
-      unawaited(_upload(file, size));
-    }
-  }
-
-  /// Uploads now, so sending later is instant and failures show up early.
-  Future<void> _upload(XFile file, int size) async {
+    if (_pickingFiles) return;
     final target = c;
     final generation = _attachGeneration;
-    final upload = _Upload(file.name, size);
-    setState(() => _uploads.add(upload));
-    bool current() => mounted && identical(c, target) && generation == _attachGeneration && _uploads.contains(upload);
+    _dismissKeyboard();
+    setState(() {
+      _pickingFiles = true;
+      _readingImages++;
+    });
+    bool current() =>
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
-      final stored = await target.client.upload(file.name, await file.readAsBytes(), mimeType: file.mimeType);
-      if (current()) setState(() => upload.file = stored);
-    } catch (e) {
-      if (!current()) return;
-      setState(() => _uploads.remove(upload));
-      _message('無法上傳 ${file.name}：${e is UploadException ? e.message : '讀取檔案失敗'}');
+      final selected = await (widget.pickFiles ?? openFiles)();
+      for (var index = 0; index < selected.length; index++) {
+        final file = selected[index];
+        if (!current()) return;
+        final progress = _FileUpload(file.name, index + 1, selected.length);
+        setState(() => _fileUpload = progress);
+        final size = await file.length();
+        if (!current()) return;
+        if (size > maxUploadBytes) {
+          throw const FormatException('檔案上限為 $uploadLimitLabel');
+        }
+        if (_supportsImages &&
+            size <= _maxInlineImage &&
+            RegExp(
+              r'\.(png|jpe?g|webp|gif)$',
+              caseSensitive: false,
+            ).hasMatch(file.name)) {
+          try {
+            final image = ClipboardImage.fromBytes(await file.readAsBytes());
+            if (!current()) return;
+            setState(() => _images.add(image));
+            continue;
+          } on FormatException {
+            // Not an image: stream the source as an ordinary file.
+          }
+        }
+        setState(() => progress.total = size);
+        final block = await target.client.uploadPickedFile(
+          target.sessionId,
+          file,
+          onProgress: (sent, total) {
+            if (!current()) return;
+            setState(() {
+              progress.sent = sent.clamp(0, total);
+              progress.total = total;
+              progress.transferring = true;
+            });
+          },
+        );
+        if (current()) {
+          setState(() => _uploads.add(_Upload(file.name, size)..file = block));
+        }
+      }
+    } catch (error) {
+      if (current()) {
+        _message('檔案上傳失敗：${error is UploadException ? error.message : error}');
+      }
+    } finally {
+      if (current()) {
+        setState(() {
+          _readingImages--;
+          _pickingFiles = false;
+          _fileUpload = null;
+        });
+      }
     }
   }
 
@@ -263,7 +411,7 @@ class _ComposerState extends State<Composer> {
     if (text.isEmpty && _images.isEmpty && _uploads.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
       if (text.isNotEmpty) ...promptBlocks(text, c.draftMentions),
-      for (final upload in _uploads) upload.file!.block,
+      for (final upload in _uploads) upload.file!,
       for (final img in _images)
         {
           'type': 'image',
@@ -311,7 +459,10 @@ class _ComposerState extends State<Composer> {
 
   List<Map<String, dynamic>> get _commands {
     final t = _text.text;
-    if (_dismissed == t || !t.startsWith('/') || t.contains(' ') || t.contains('\n')) {
+    if (_dismissed == t ||
+        !t.startsWith('/') ||
+        t.contains(' ') ||
+        t.contains('\n')) {
       return const [];
     }
     final q = t.substring(1).toLowerCase();
@@ -335,7 +486,10 @@ class _ComposerState extends State<Composer> {
   /// The `@word` being typed at the cursor, unless it is a mention already picked.
   ({int start, String query})? _mentionAt(TextEditingValue value) {
     final cursor = value.selection;
-    if (c.cwd.isEmpty || !cursor.isValid || !cursor.isCollapsed || cursor.baseOffset > value.text.length) {
+    if (c.cwd.isEmpty ||
+        !cursor.isValid ||
+        !cursor.isCollapsed ||
+        cursor.baseOffset > value.text.length) {
       return null;
     }
     final before = value.text.substring(0, cursor.baseOffset);
@@ -369,7 +523,9 @@ class _ComposerState extends State<Composer> {
       } catch (_) {
         // Offline or not allowed: show no matches rather than an error.
       }
-      if (!mounted || generation != _fileSearchGeneration || !identical(target, c)) {
+      if (!mounted ||
+          generation != _fileSearchGeneration ||
+          !identical(target, c)) {
         return;
       }
       setState(() {
@@ -396,7 +552,11 @@ class _ComposerState extends State<Composer> {
     if (mention == null || !cursor.isValid) return;
     final complete = !file.directory || folder;
     if (complete) c.draftMentions[file.token] = fileUriOf(file.path);
-    _replace(mention.start, cursor.baseOffset, '@${file.token}${complete ? ' ' : ''}');
+    _replace(
+      mention.start,
+      cursor.baseOffset,
+      '@${file.token}${complete ? ' ' : ''}',
+    );
     _focus.requestFocus();
   }
 
@@ -444,7 +604,10 @@ class _ComposerState extends State<Composer> {
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is KeyUpEvent) return KeyEventResult.ignored;
     final keyboard = HardwareKeyboard.instance;
-    if (keyboard.isControlPressed || keyboard.isMetaPressed || keyboard.isAltPressed || keyboard.isShiftPressed) {
+    if (keyboard.isControlPressed ||
+        keyboard.isMetaPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isShiftPressed) {
       return KeyEventResult.ignored;
     }
     if (event.logicalKey == LogicalKeyboardKey.escape && _attachMenu.isOpen) {
@@ -463,7 +626,10 @@ class _ComposerState extends State<Composer> {
       case LogicalKeyboardKey.arrowUp when count > 0:
         _moveHighlight(-1, count);
         return KeyEventResult.handled;
-      case LogicalKeyboardKey.tab || LogicalKeyboardKey.enter || LogicalKeyboardKey.numpadEnter when count > 0:
+      case LogicalKeyboardKey.tab ||
+              LogicalKeyboardKey.enter ||
+              LogicalKeyboardKey.numpadEnter
+          when count > 0:
         _acceptSuggestion(_highlight.clamp(0, count - 1));
         return KeyEventResult.handled;
     }
@@ -472,19 +638,46 @@ class _ComposerState extends State<Composer> {
 
   List<_AttachAction?> _attachActions() {
     final images = _supportsImages;
-    final mobile = defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS;
-    final camera = images && mobile && ImagePicker().supportsImageSource(ImageSource.camera);
+    final mobile =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final camera =
+        images &&
+        mobile &&
+        ImagePicker().supportsImageSource(ImageSource.camera);
     final mention = c.cwd.isNotEmpty;
     // Commands only work at the start of an otherwise empty message.
     final command = c.timeline.commands.isNotEmpty && _text.text.isEmpty;
     return [
-      if (images) _AttachAction(Icons.photo_library_outlined, '從相簿選擇', () => _pickImages(ImageSource.gallery)),
-      if (camera) _AttachAction(Icons.photo_camera_outlined, '拍照', () => _pickImages(ImageSource.camera)),
-      if (images) _AttachAction(Icons.content_paste_rounded, '貼上剪貼簿圖片', () => _pasteImage(notifyEmpty: true)),
+      if (images)
+        _AttachAction(
+          Icons.photo_library_outlined,
+          '從相簿選擇',
+          () => _pickImages(ImageSource.gallery),
+        ),
+      if (camera)
+        _AttachAction(
+          Icons.photo_camera_outlined,
+          '拍照',
+          () => _pickImages(ImageSource.camera),
+        ),
+      if (images)
+        _AttachAction(
+          Icons.content_paste_rounded,
+          '貼上剪貼簿圖片',
+          () => _pasteImage(notifyEmpty: true),
+        ),
       if (images) null,
       _AttachAction(Icons.attach_file_rounded, '上傳檔案', _pickFiles),
-      if (mention) _AttachAction(Icons.alternate_email_rounded, '提及檔案', _startMention, shortcut: '@'),
-      if (command) _AttachAction(Icons.bolt_rounded, '斜線指令', _startCommand, shortcut: '/'),
+      if (mention)
+        _AttachAction(
+          Icons.alternate_email_rounded,
+          '提及檔案',
+          _startMention,
+          shortcut: '@',
+        ),
+      if (command)
+        _AttachAction(Icons.bolt_rounded, '斜線指令', _startCommand, shortcut: '/'),
     ];
   }
 
@@ -494,16 +687,27 @@ class _ComposerState extends State<Composer> {
         ListTile(
           dense: true,
           leading: _searchingFiles
-              ? const SizedBox.square(dimension: 20, child: Padding(padding: EdgeInsets.all(2), child: CircularProgressIndicator(strokeWidth: 2)))
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: Padding(
+                    padding: EdgeInsets.all(2),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
               : Icon(Icons.search_off_rounded, size: 20, color: scheme.outline),
-          title: Text(_searchingFiles ? '搜尋檔案中…' : '找不到符合的檔案', style: TextStyle(color: scheme.outline)),
+          title: Text(
+            _searchingFiles ? '搜尋檔案中…' : '找不到符合的檔案',
+            style: TextStyle(color: scheme.outline),
+          ),
         ),
       ];
     }
     return [
       for (final (i, file) in _files.indexed)
         ListTile(
-          key: i == _highlight ? _highlightKey : ValueKey('mention:${file.token}'),
+          key: i == _highlight
+              ? _highlightKey
+              : ValueKey('mention:${file.token}'),
           dense: true,
           selected: i == _highlight,
           leading: Icon(
@@ -511,9 +715,17 @@ class _ComposerState extends State<Composer> {
             size: 20,
             color: file.directory ? scheme.primary : scheme.outline,
           ),
-          title: Text(file.directory ? '${file.name}/' : file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+          title: Text(
+            file.directory ? '${file.name}/' : file.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
           subtitle: file.relative.contains('/')
-              ? Text(file.relative.substring(0, file.relative.lastIndexOf('/')), maxLines: 1, overflow: TextOverflow.ellipsis)
+              ? Text(
+                  file.relative.substring(0, file.relative.lastIndexOf('/')),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                )
               : null,
           trailing: file.directory
               ? IconButton(
@@ -539,7 +751,9 @@ class _ComposerState extends State<Composer> {
         (!c.desktopSync || c.desktopConnected) &&
         _readingImages == 0 &&
         !_uploads.any((u) => u.file == null) &&
-        (_text.text.trim().isNotEmpty || _images.isNotEmpty || _uploads.isNotEmpty);
+        (_text.text.trim().isNotEmpty ||
+            _images.isNotEmpty ||
+            _uploads.isNotEmpty);
     final wide = useWideLayout(context);
     // Scaffold removes body viewInsets after resizing; read the actual view
     // so the Done control and compact composer still see the keyboard.
@@ -608,7 +822,10 @@ class _ComposerState extends State<Composer> {
                   else if (_mentioning)
                     _SuggestionList(children: _fileTiles(scheme)),
                   if (!(compact && keyboard)) ConfigBar(controller: c),
-                  if (_readingImages > 0) const LinearProgressIndicator(),
+                  if (_readingImages > 0 && _fileUpload == null)
+                    const LinearProgressIndicator(),
+                  if (_fileUpload case final progress?)
+                    _UploadProgress(upload: progress),
                   if (_images.isNotEmpty || _uploads.isNotEmpty)
                     SizedBox(
                       height: compact ? 48 : 72,
@@ -624,7 +841,9 @@ class _ComposerState extends State<Composer> {
                               padding: const EdgeInsets.only(right: 8),
                               child: _UploadChip(
                                 upload: upload,
-                                onRemove: () => setState(() => _uploads.remove(upload)),
+                                compact: compact,
+                                onRemove: () =>
+                                    setState(() => _uploads.remove(upload)),
                               ),
                             ),
                           for (final img in _images)
@@ -664,7 +883,10 @@ class _ComposerState extends State<Composer> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         if (attachments.isNotEmpty)
-                          _AttachButton(controller: _attachMenu, actions: attachments)
+                          _AttachButton(
+                            controller: _attachMenu,
+                            actions: attachments,
+                          )
                         else
                           const SizedBox(width: 8),
                         Expanded(
@@ -681,7 +903,8 @@ class _ComposerState extends State<Composer> {
                               textInputAction: TextInputAction.newline,
                               contentInsertionConfiguration: _supportsImages
                                   ? ContentInsertionConfiguration(
-                                      allowedMimeTypes: ClipboardImage.mimeTypes,
+                                      allowedMimeTypes:
+                                          ClipboardImage.mimeTypes,
                                       onContentInserted: _insertKeyboardImage,
                                     )
                                   : null,
@@ -785,29 +1008,48 @@ class _ComposerTextController extends TextEditingController {
   final Iterable<String> Function() _mentions;
 
   @override
-  TextSpan buildTextSpan({required BuildContext context, TextStyle? style, required bool withComposing}) {
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
     final ranges = mentionRanges(text, _mentions());
     if (ranges.isEmpty) {
-      return super.buildTextSpan(context: context, style: style, withComposing: withComposing);
+      return super.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: withComposing,
+      );
     }
-    final accent = TextStyle(color: Theme.of(context).colorScheme.primary, fontWeight: FontWeight.w600);
-    final composing = withComposing && value.isComposingRangeValid ? value.composing : TextRange.empty;
+    final accent = TextStyle(
+      color: Theme.of(context).colorScheme.primary,
+      fontWeight: FontWeight.w600,
+    );
+    final composing = withComposing && value.isComposingRangeValid
+        ? value.composing
+        : TextRange.empty;
     final cuts = {
       0,
       text.length,
       for (final r in ranges) ...[r.start, r.end],
       if (!composing.isCollapsed) ...[composing.start, composing.end],
-    }.toList()
-      ..sort();
+    }.toList()..sort();
     final children = <TextSpan>[];
     for (var i = 0; i + 1 < cuts.length; i++) {
       final (start, end) = (cuts[i], cuts[i + 1]);
       final mention = ranges.any((r) => r.start <= start && end <= r.end);
-      final composed = !composing.isCollapsed && composing.start <= start && end <= composing.end;
-      children.add(TextSpan(
-        text: text.substring(start, end),
-        style: (mention ? accent : const TextStyle()).copyWith(decoration: composed ? TextDecoration.underline : null),
-      ));
+      final composed =
+          !composing.isCollapsed &&
+          composing.start <= start &&
+          end <= composing.end;
+      children.add(
+        TextSpan(
+          text: text.substring(start, end),
+          style: (mention ? accent : const TextStyle()).copyWith(
+            decoration: composed ? TextDecoration.underline : null,
+          ),
+        ),
+      );
     }
     return TextSpan(style: style, children: children);
   }
@@ -835,20 +1077,26 @@ class _AttachButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return RawMenuAnchor(
       controller: controller,
-      overlayBuilder: (context, info) => _AttachMenu(info: info, controller: controller, actions: actions),
+      overlayBuilder: (context, info) =>
+          _AttachMenu(info: info, controller: controller, actions: actions),
       builder: (context, controller, _) => IconButton(
         tooltip: '附加',
         isSelected: controller.isOpen,
         icon: const Icon(Icons.add_rounded),
         selectedIcon: const Icon(Icons.close_rounded),
-        onPressed: () => controller.isOpen ? controller.close() : controller.open(),
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
       ),
     );
   }
 }
 
 class _AttachMenu extends StatelessWidget {
-  const _AttachMenu({required this.info, required this.controller, required this.actions});
+  const _AttachMenu({
+    required this.info,
+    required this.controller,
+    required this.actions,
+  });
   final RawMenuOverlayInfo info;
   final MenuController controller;
   final List<_AttachAction?> actions;
@@ -860,7 +1108,10 @@ class _AttachMenu extends StatelessWidget {
     final width = math.min(260.0, info.overlaySize.width - 16);
     final top = MediaQuery.paddingOf(context).top + 8;
     return Positioned(
-      left: anchor.left.clamp(8.0, math.max(8.0, info.overlaySize.width - width - 8)),
+      left: anchor.left.clamp(
+        8.0,
+        math.max(8.0, info.overlaySize.width - width - 8),
+      ),
       bottom: info.overlaySize.height - anchor.top + 6,
       width: width,
       child: TapRegion(
@@ -872,15 +1123,22 @@ class _AttachMenu extends StatelessWidget {
           curve: Curves.easeOutCubic,
           builder: (context, t, child) => Opacity(
             opacity: t,
-            child: Transform.translate(offset: Offset(0, 8 * (1 - t)), child: child),
+            child: Transform.translate(
+              offset: Offset(0, 8 * (1 - t)),
+              child: child,
+            ),
           ),
           child: Material(
             elevation: 3,
             color: scheme.surfaceContainer,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
             clipBehavior: Clip.antiAlias,
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: math.max(120, anchor.top - 6 - top)),
+              constraints: BoxConstraints(
+                maxHeight: math.max(120, anchor.top - 6 - top),
+              ),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.symmetric(vertical: 6),
                 child: Column(
@@ -895,7 +1153,13 @@ class _AttachMenu extends StatelessWidget {
                           leadingIcon: Icon(action.icon),
                           trailingIcon: action.shortcut == null
                               ? null
-                              : Text(action.shortcut!, style: TextStyle(color: scheme.outline, fontWeight: FontWeight.w600)),
+                              : Text(
+                                  action.shortcut!,
+                                  style: TextStyle(
+                                    color: scheme.outline,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                           onPressed: () {
                             controller.close();
                             action.onSelected();
@@ -918,13 +1182,18 @@ class _Upload {
   _Upload(this.name, this.size);
   final String name;
   final int size;
-  UploadedFile? file;
+  Map<String, dynamic>? file;
 }
 
 class _UploadChip extends StatelessWidget {
-  const _UploadChip({required this.upload, required this.onRemove});
+  const _UploadChip({
+    required this.upload,
+    required this.onRemove,
+    this.compact = false,
+  });
   final _Upload upload;
   final VoidCallback onRemove;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -932,9 +1201,14 @@ class _UploadChip extends StatelessWidget {
     return Stack(
       children: [
         Container(
-          height: 60,
+          height: compact ? 36 : 60,
           constraints: const BoxConstraints(maxWidth: 200),
-          padding: const EdgeInsets.fromLTRB(10, 8, 22, 8),
+          padding: EdgeInsets.fromLTRB(
+            10,
+            compact ? 4 : 8,
+            22,
+            compact ? 4 : 8,
+          ),
           decoration: BoxDecoration(
             color: scheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(8),
@@ -943,7 +1217,10 @@ class _UploadChip extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               if (upload.file == null)
-                const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
               else
                 Icon(fileIcon(upload.name), size: 22, color: scheme.primary),
               const SizedBox(width: 8),
@@ -956,12 +1233,19 @@ class _UploadChip extends StatelessWidget {
                       upload.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
-                    Text(
-                      upload.file == null ? '上傳中…' : formatBytes(upload.size),
-                      style: TextStyle(fontSize: 11.5, color: scheme.onSurfaceVariant),
-                    ),
+                    if (!compact)
+                      Text(
+                        upload.file == null ? '上傳中…' : formatBytes(upload.size),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -990,7 +1274,11 @@ class _SuggestionList extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ConstrainedBox(
     constraints: const BoxConstraints(maxHeight: 220),
-    child: ListView(shrinkWrap: true, padding: EdgeInsets.zero, children: children),
+    child: ListView(
+      shrinkWrap: true,
+      padding: EdgeInsets.zero,
+      children: children,
+    ),
   );
 }
 

@@ -33,6 +33,8 @@ class DesktopPeer {
   fragment = false;
   dropSteeringReply = false;
   delayedSettings = false;
+  completeHistoryGate?: () => void;
+  delayCompleteHistory = false;
   revision = 0;
   conversation: any = {
     id: this.id, cwd: this.home, title: "Desktop fixture",
@@ -110,10 +112,14 @@ class DesktopPeer {
       if (params.expectedTurnId && params.expectedTurnId !== turn.turnId) throw new Error("Interrupt targeted the wrong turn");
       this.finish("interrupted"); reply({ interruptedTurnId: turn.turnId });
     } else if (message.method === "thread-follower-load-complete-history") {
-      this.conversation.turnsPagination.hasLoadedOldest = true;
-      this.revision++;
-      for (const peer of this.followed) this.snapshot(peer);
-      reply({ method: message.method, result: { revision: this.revision } });
+      const complete = () => {
+        this.conversation.turns.unshift({ turnId: "oldest", status: "completed", params: { input: [{ type: "text", text: "oldest prompt" }] }, items: [{ type: "agentMessage", id: "oldest-reply", text: "oldest reply" }] });
+        this.conversation.turnsPagination.hasLoadedOldest = true;
+        this.revision++;
+        for (const peer of this.followed) this.snapshot(peer);
+        reply({ method: message.method, result: { revision: this.revision } });
+      };
+      if (this.delayCompleteHistory) this.completeHistoryGate = complete; else complete();
     } else if (["thread-follower-command-approval-decision", "thread-follower-file-approval-decision", "thread-follower-permissions-request-approval-response", "thread-follower-submit-user-input", "thread-follower-submit-mcp-server-elicitation-response"].includes(message.method)) {
       this.patch([{ op: "replace", path: ["requests"], value: this.conversation.requests.filter((request: any) => request.id !== params.requestId) }]);
       reply({ ok: true });
@@ -167,6 +173,20 @@ const nativeId = "fake:desktop-thread";
 function send(client: TestClient, text: string, queue = false): Promise<any> { return client.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text }], ...(queue ? { _meta: { codeaw: { delivery: "queue" } } } : {}) }); }
 
 describe("Codex desktop synchronization", () => {
+  it("returns the current snapshot before delayed older history and then replaces it completely", async () => {
+    const { a, desktop } = await setup();
+    desktop.conversation.turnsPagination.hasLoadedOldest = false;
+    desktop.delayCompleteHistory = true;
+    const loaded = await load(a);
+    expect(loaded._meta.codeaw.connection).toBe("desktop");
+    expect(a.text(nativeId)).toBe("earlier desktop reply");
+    await a.waitFor(() => desktop.completeHistoryGate !== undefined);
+    desktop.completeHistoryGate!();
+    await a.waitFor(() => a.received.some((r) => r.method === "_codeaw/replay" && r.params.mode === "complete"));
+    const final = await load(a);
+    expect(final._meta.codeaw.epoch).not.toBe(loaded._meta.codeaw.epoch);
+    expect(a.text(nativeId)).toContain("oldest reply");
+  });
   it("waits through unrelated owner revisions and accepts normalized artifact roots", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.delayedSettings = true;

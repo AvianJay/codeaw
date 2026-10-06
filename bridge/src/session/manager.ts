@@ -8,7 +8,10 @@ import type { PushNotifier, PushKind } from "../notify/ntfy.js";
 import { logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import { compactLog } from "./compact.js";
+import { lazyToolEntry } from "./history.js";
 import { parentToolCallId } from "./subagent.js";
+import { WorkTracker } from "./work-status.js";
+import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import { newEpoch, type SessionStore } from "./store.js";
 import {
   codeawMeta,
@@ -64,6 +67,10 @@ interface PendingRequest {
 }
 
 class BridgeSession {
+  readonly work = new WorkTracker();
+  workTimer?: NodeJS.Timeout;
+  completedTurn?: CompletedTurn;
+  stopReason?: string;
   entries?: LogEntry[];
   readonly subscribers = new Set<ClientHandle>();
   turn?: Turn;
@@ -141,12 +148,14 @@ export class SessionManager implements AgentHandlers {
   private readonly sessions = new Map<string, BridgeSession>();
   private readonly clients = new Set<ClientHandle>();
   private readonly attachedTo = new Map<ClientHandle, Set<BridgeSession>>();
+  private readonly lazyHistory = new Map<ClientHandle, Set<string>>();
   private readonly importing = new Map<string, Promise<BridgeSession>>();
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
   private sweepTimer?: NodeJS.Timeout;
   private shuttingDown = false;
   notifier?: PushNotifier;
+  liveActivity?: LiveActivityPush;
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -162,7 +171,10 @@ export class SessionManager implements AgentHandlers {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.sweepTimer) clearInterval(this.sweepTimer);
-    for (const s of this.sessions.values()) this.saveMeta(s, true);
+    for (const s of this.sessions.values()) {
+      if (s.workTimer) clearTimeout(s.workTimer);
+      this.saveMeta(s, true);
+    }
     this.store.closeAll();
   }
 
@@ -188,6 +200,7 @@ export class SessionManager implements AgentHandlers {
       }
     }
     this.attachedTo.delete(c);
+    this.lazyHistory.delete(c);
     // Anything still waiting for an answer now may need a push.
     if (this.clients.size === 0) {
       for (const s of this.sessions.values()) {
@@ -202,6 +215,7 @@ export class SessionManager implements AgentHandlers {
     if (!s) return;
     s.subscribers.delete(c);
     this.attachedTo.get(c)?.delete(s);
+    this.lazyHistory.get(c)?.delete(s.id);
     for (const pr of s.pending.values()) {
       pr.dispatched.get(c.id)?.abort();
       pr.dispatched.delete(c.id);
@@ -269,15 +283,27 @@ export class SessionManager implements AgentHandlers {
     s.meta.modes = null;
     s.midRun = undefined;
     s.emitted = undefined;
+    s.work.reset();
     for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "full", epoch: s.meta.epoch, lastSeq: 0 });
-    for (const update of updates) this.ingest(s, update);
-    for (const entry of waiting) if (entry.kind === "update") this.append(s, { kind: "update", update: entry.update });
-    for (const [promptId, status] of receipts) this.appendEvent(s, { type: "prompt_receipt", promptId, status });
-    for (const pending of s.pending.values()) {
-      if (pending.kind === "permission") this.appendEvent(s, { type: "permission_request", requestId: pending.id, toolCall: pending.params.toolCall, options: pending.params.options });
-      else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
+    // Build the authoritative log first, then send its compact transport projection.
+    const subscribers = [...s.subscribers];
+    s.subscribers.clear();
+    try {
+      for (const update of updates) this.ingest(s, update);
+      for (const entry of waiting) if (entry.kind === "update") this.append(s, { kind: "update", update: entry.update });
+      for (const [promptId, status] of receipts) this.appendEvent(s, { type: "prompt_receipt", promptId, status });
+      for (const pending of s.pending.values()) {
+        if (pending.kind === "permission") this.appendEvent(s, { type: "permission_request", requestId: pending.id, toolCall: pending.params.toolCall, options: pending.params.options });
+        else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
+      }
+    } finally {
+      for (const c of subscribers) s.subscribers.add(c);
     }
-    for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
+    const replay = compactLog(this.ensureEntries(s));
+    for (const c of subscribers) {
+      for (const entry of replay) this.sendEntry(c, s, this.historyEntry(c, s, entry));
+      void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
+    }
     this.saveMeta(s, true);
   }
 
@@ -339,6 +365,10 @@ export class SessionManager implements AgentHandlers {
       s.midRun = undefined;
     }
     this.append(s, { kind: "update", update });
+    if (s.work.ingest(update) && s.state !== "idle" && !s.workTimer) {
+      s.workTimer = setTimeout(() => { s.workTimer = undefined; this.activity(s); }, 500);
+      s.workTimer.unref();
+    }
     if (update.sessionUpdate === "session_info_update") this.activity(s);
   }
 
@@ -513,6 +543,22 @@ export class SessionManager implements AgentHandlers {
     else void c.notify("_codeaw/event", { sessionId: s.id, event: entry.event, _meta });
   }
 
+  private historyEntry(c: ClientHandle, s: BridgeSession, entry: LogEntry): LogEntry {
+    return this.lazyHistory.get(c)?.has(s.id) ? lazyToolEntry(entry) : entry;
+  }
+
+  /** Authenticated, read-only expansion of a deferred tool, including every output byte. */
+  toolHistory(params: { sessionId?: unknown; epoch?: unknown; toolCallId?: unknown }): object {
+    const s = this.requireLoaded(params.sessionId);
+    if (params.epoch !== s.meta.epoch) throw acp.RequestError.invalidParams(undefined, "History changed; reconnect before expanding this tool");
+    if (typeof params.toolCallId !== "string" || !params.toolCallId) throw acp.RequestError.invalidParams(undefined, "toolCallId is required");
+    const entries = this.ensureEntries(s).filter((e) => e.kind === "update" &&
+      ["tool_call", "tool_call_update"].includes(e.update.sessionUpdate) && (e.update as any).toolCallId === params.toolCallId);
+    const entry = compactLog(entries)[0];
+    if (!entry || entry.kind !== "update") throw acp.RequestError.invalidParams(undefined, "Tool no longer exists");
+    return { epoch: s.meta.epoch, seq: entry.seq, t: entry.t, update: entry.update };
+  }
+
   private emitState(s: BridgeSession, stopReason?: string, completedTurn?: CompletedTurn): void {
     const state = s.state;
     const queued = s.queue.length;
@@ -520,6 +566,8 @@ export class SessionManager implements AgentHandlers {
     const nativeTurnId = s.desktop?.turnId;
     if (!stopReason && s.emitted && s.emitted.state === state && s.emitted.queued === queued && s.emitted.desktopConnected === desktopConnected && s.emitted.nativeTurnId === nativeTurnId) return;
     s.emitted = { state, queued, desktopConnected, nativeTurnId };
+    if (completedTurn) s.completedTurn = completedTurn;
+    if (state === "idle") s.stopReason = stopReason;
     this.appendEvent(s, {
       type: "state", state, queued,
       ...(s.desktop?.connected && s.desktop.turnId ? { turnStartedAt: s.desktop.startedAt, turnPromptId: s.desktop.turnId } : s.turn ? { turnStartedAt: s.turn.startedAt, turnPromptId: s.turn.promptId } : {}),
@@ -530,11 +578,31 @@ export class SessionManager implements AgentHandlers {
     this.activity(s);
   }
 
+  activitySnapshot(sessionId: string): ActivitySnapshot | undefined {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    return this.snapshot(s);
+  }
+
+  activitySnapshots(): ActivitySnapshot[] { return [...this.sessions.values()].map((s) => this.snapshot(s)); }
+
+  private snapshot(s: BridgeSession): ActivitySnapshot {
+    const native = s.desktop?.turnId ? s.desktop : undefined;
+    const disconnected = native?.connected === false;
+    const state = disconnected ? "running" : s.state;
+    return {
+      sessionId: s.id, agentId: s.meta.agentId, title: s.meta.title,
+      state, turnPromptId: native?.turnId ?? s.turn?.promptId,
+      turnStartedAt: native?.startedAt ?? s.turn?.startedAt,
+      completedTurn: state === "idle" ? s.completedTurn : undefined,
+      work: disconnected ? { project: s.work.view(s.meta.cwd, "running").project, phase: "disconnected", summary: "桌面連線中斷，等待重新同步", updatedAt: Date.now() }
+        : s.work.view(s.meta.cwd, state, native?.turnId, s.stopReason),
+    };
+  }
+
   private activity(s: BridgeSession): void {
     const params = {
-      sessionId: s.id,
-      agentId: s.meta.agentId,
-      state: s.state,
+      ...this.snapshot(s),
       pending: s.pending.size,
       queued: s.queue.length,
       title: s.meta.title,
@@ -543,6 +611,7 @@ export class SessionManager implements AgentHandlers {
       ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: s.desktop?.connected === true } : {}),
     };
     for (const c of this.clients) void c.notify("_codeaw/activity", params);
+    this.liveActivity?.observe(params);
   }
 
   private saveMeta(s: BridgeSession, now = false): void {
@@ -773,7 +842,7 @@ export class SessionManager implements AgentHandlers {
     if (replay) {
       void c.notify("_codeaw/replay", { sessionId: s.id, mode: replay.mode, epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
       const list = replay.mode === "delta" ? entries.filter((e) => e.seq > replay.afterSeq) : compactLog(entries);
-      for (const e of list) this.sendEntry(c, s, e);
+      for (const e of list) this.sendEntry(c, s, this.historyEntry(c, s, e));
     }
     // Open requests go out after the response to load/resume (and after the replay).
     setImmediate(() => {
@@ -788,6 +857,8 @@ export class SessionManager implements AgentHandlers {
     if (!s) throw acp.RequestError.invalidParams(undefined, `Unknown session ${id}; load it first`);
     return s;
   }
+
+  uploadCwd(id: unknown): string { return this.requireLoaded(id).meta.cwd; }
 
   // ───────────────────────────── client → bridge ─────────────────────────────
 
@@ -824,6 +895,9 @@ export class SessionManager implements AgentHandlers {
   async loadSession(c: ClientHandle, params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
     const s = await this.sessionForAttach(params.sessionId, params.cwd);
     const m = codeawMeta(params as any);
+    let lazy = this.lazyHistory.get(c);
+    if (!lazy) this.lazyHistory.set(c, lazy = new Set());
+    if (m.lazyHistory === true) lazy.add(s.id); else lazy.delete(s.id);
     const delta =
       typeof m.afterSeq === "number" && m.epoch === s.meta.epoch && m.afterSeq >= 0 && m.afterSeq <= s.meta.lastSeq;
     await this.attach(c, s, delta ? { mode: "delta", afterSeq: m.afterSeq } : { mode: "full" });
@@ -891,6 +965,11 @@ export class SessionManager implements AgentHandlers {
         s.stale = true; // continued elsewhere (e.g. in a terminal); re-import on next open
       }
       const title = info.title ?? meta?.title ?? null;
+      if (s && typeof title === "string" && title !== s.meta.title) {
+        s.meta.title = title;
+        this.saveMeta(s);
+        this.activity(s); // Native list titles must reach unopened chats' Live Activities too.
+      }
       return {
         ...info,
         title,
@@ -972,6 +1051,9 @@ export class SessionManager implements AgentHandlers {
     });
     done.catch(() => undefined);
     s.turn = { promptId, startedAt: Date.now(), done };
+    s.work.reset();
+    s.completedTurn = undefined;
+    s.stopReason = undefined;
     this.emitState(s);
     void (async () => {
       let result: acp.PromptResponse | undefined;

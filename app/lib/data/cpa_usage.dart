@@ -209,7 +209,10 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _scheduleAutoRefresh() {
-    if (!_autoRefresh || _refreshTimer != null || settings == null || _disposed) {
+    if (!_autoRefresh ||
+        _refreshTimer != null ||
+        settings == null ||
+        _disposed) {
       return;
     }
     _refreshTimer = Timer.periodic(
@@ -315,43 +318,65 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
             as Map,
       );
       if (_disposed || generation != _generation) return;
-      accounts = (result['accounts'] as List)
+      final nextAccounts = (result['accounts'] as List)
           .map((v) => CpaAccount.fromJson(Map<String, dynamic>.from(v as Map)))
           .toList();
-      // Never present a previous failed refresh as a fresh quota value.
-      quotas.clear();
-      loadingQuotas.addAll(accounts.where((a) => !a.disabled).map((a) => a.id));
-      updatedAt = DateTime.tryParse(result['checkedAt'] as String? ?? '');
-      loading = false;
+      final nextQuotas = <String, CpaQuota>{};
+      // Keep the last complete snapshot visible until every account has settled.
+      loadingQuotas.addAll(
+        nextAccounts.where((a) => !a.disabled).map((a) => a.id),
+      );
       _changed();
       var index = 0;
       Future<void> worker() async {
-        while (index < accounts.length &&
+        while (index < nextAccounts.length &&
             generation == _generation &&
             !_disposed) {
-          final account = accounts[index++];
+          final account = nextAccounts[index++];
           if (account.disabled) continue;
-          await _quota(account.id, generation, connection);
+          final quota = await _fetchQuota(account.id, connection);
+          if (_disposed || generation != _generation) return;
+          nextQuotas[account.id] = quota;
+          loadingQuotas.remove(account.id);
+          _changed();
         }
       }
 
       await Future.wait(List.generate(3, (_) => worker()));
+      if (_disposed || generation != _generation) return;
+      accounts = nextAccounts;
+      quotas
+        ..clear()
+        ..addAll(nextQuotas);
+      updatedAt = DateTime.now();
+      loadingQuotas.clear();
+      loading = false;
+      _changed();
     } catch (e) {
       if (_disposed || generation != _generation) return;
       loading = false;
+      loadingQuotas.clear();
       error = _safeError(e, connection.managementKey);
       _changed();
     }
   }
 
   Future<void> refreshAccount(String id) async {
-    if (settings == null || loadingQuotas.contains(id)) return;
+    if (settings == null || loading || loadingQuotas.contains(id)) return;
     loadingQuotas.add(id);
     _changed();
     await _quota(id, _generation, settings!);
   }
 
   Future<void> _quota(String id, int generation, CpaSettings connection) async {
+    final quota = await _fetchQuota(id, connection);
+    if (_disposed || generation != _generation) return;
+    quotas[id] = quota;
+    loadingQuotas.remove(id);
+    _changed();
+  }
+
+  Future<CpaQuota> _fetchQuota(String id, CpaSettings connection) async {
     CpaQuota quota;
     try {
       final result = await request('_codeaw/cpa/quota', {
@@ -365,10 +390,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
         'message': _safeError(e, connection.managementKey),
       });
     }
-    if (_disposed || generation != _generation) return;
-    quotas[id] = quota;
-    loadingQuotas.remove(id);
-    _changed();
+    return quota;
   }
 
   static String _safeError(Object error, String secret) {

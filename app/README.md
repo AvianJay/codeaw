@@ -26,13 +26,13 @@ $env:CODEAW_SCREENSHOTS = '1'
 flutter test --update-goldens test/adaptive_layout_test.dart
 ```
 
-Background progress (Settings → 背景進度, off by default) mirrors one running conversation into the system's live progress UI after the app leaves the foreground: the conversation on screen, or else the only running one. It is followed until its turn and queued prompts finish, or the app returns. `lib/data/live_activity.dart` arms the content over the `codeaw/live_activity` channel while the app is visible, because neither platform lets an app start these from the background:
+Android background progress (Settings → 背景進度, off by default) mirrors one running conversation after the app leaves the foreground: the conversation on screen, or else the only running one. It is followed until its turn and queued prompts finish, or the app returns. Nicko's `lib/data/android_live_activity.dart` arms the content over `codeaw/live_activity` while visible; the iOS controller is disabled on Android.
 
 - Android (`LiveUpdates.kt`) starts a `dataSync` foreground service when the activity stops. The service keeps the bridge connection alive and shows a `ProgressStyle` notification with one segment per plan entry; Android 16 promotes it to a Live Update with a status bar chip. Older versions show it as an ongoing notification.
-- iOS 16.2+ (`LiveActivityChannel.swift` and the `CodeawLiveActivity` widget extension) requests a Live Activity for the Lock Screen and Dynamic Island as the scene resigns active. Updates continue while iOS lets the app run in the background (about 30 seconds). After that the activity is marked stale, and its elapsed timer keeps running until the app is opened.
+- iOS 16.2+ keeps the concurrent `lib/data/live_activity.dart` controller, `CodeawLiveActivityPlugin.swift`, shared attributes and widget extension. It tracks running conversations independently of the selected chat and refreshes on resume/reconnect. Sustained suspended-app updates require APNs credentials on the bridge and matching signing entitlements; see [Live Activities](../docs/live-activities.md). The Android tracker is disabled on iOS.
 
 ```sh
-flutter test test/live_activity_test.dart
+flutter test test/live_activity_test.dart test/android_live_activity_test.dart test/live_activity_platform_test.dart
 ```
 
 ```sh

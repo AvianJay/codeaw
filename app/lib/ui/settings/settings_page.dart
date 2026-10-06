@@ -11,6 +11,7 @@ import '../../app_state.dart';
 import '../../data/bridge_client.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'live_activity_settings.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -26,7 +27,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadNtfy();
-    unawaited(AppScope.read(context).liveActivity.refreshSupport());
+    unawaited(AppScope.read(context).androidLiveActivity.refreshSupport());
   }
 
   Future<void> _loadNtfy() async {
@@ -182,6 +183,10 @@ class _SettingsPageState extends State<SettingsPage> {
                           onPressed: () => _restartAgent(a.id),
                         ),
                       ),
+                    if (state.liveActivity.supported) ...[
+                      const _Section('即時動態'),
+                      LiveActivitySettings(controller: state.liveActivity),
+                    ],
                     const _Section('推播通知（App 沒開時）'),
                     if (_ntfy == null)
                       const ListTile(title: Text('讀取中…'))
@@ -251,11 +256,28 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                     ],
-                    if (state.liveActivity.channel.platformSupported) ...[
+                    if (state
+                        .androidLiveActivity
+                        .channel
+                        .platformSupported) ...[
                       const _Section('背景進度'),
                       _LiveActivityTiles(state: state),
                     ],
                     const _Section('其他'),
+                    ListTile(
+                      leading: const Icon(Icons.history_rounded),
+                      title: const Text('清除這台電腦的本機聊天快取'),
+                      subtitle: const Text('重開 App 先顯示已保存的歷史，再同步新訊息。只清除本機資料。'),
+                      onTap: () async {
+                        state.sessions?.discardPendingCache();
+                        await state.hub?.clearCache();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已清除本機聊天快取')),
+                          );
+                        }
+                      },
+                    ),
                     if (!kIsWeb)
                       ListTile(
                         leading: const Icon(Icons.notifications_outlined),
@@ -315,8 +337,7 @@ class _LiveActivityTiles extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final tracker = state.liveActivity;
-    final ios = defaultTargetPlatform == TargetPlatform.iOS;
+    final tracker = state.androidLiveActivity;
     return ListenableBuilder(
       listenable: tracker,
       builder: (context, _) {
@@ -337,9 +358,7 @@ class _LiveActivityTiles extends StatelessWidget {
               title: const Text('背景即時進度'),
               subtitle: Text(
                 !support.available
-                    ? (ios ? '需要 iOS 16.2 以上' : '這台裝置不支援')
-                    : ios
-                    ? '切到背景時，在動態島與鎖定畫面顯示對話進度。只追蹤當時開著的、或唯一正在執行的對話；App 被系統暫停後會停在最後狀態。'
+                    ? '這台裝置不支援'
                     : '切到背景時，用常駐通知顯示對話進度並保持連線（Android 16 起為即時更新）。只追蹤當時開著的、或唯一正在執行的對話。',
               ),
               isThreeLine: true,
@@ -352,10 +371,7 @@ class _LiveActivityTiles extends StatelessWidget {
                     }
                   : null,
             ),
-            if (on && !support.allowed)
-              ios
-                  ? warning('即時動態已關閉', '到「設定」中的 codeaw 開啟「即時動態」')
-                  : warning('通知已關閉', '開啟 App 通知才能顯示背景進度'),
+            if (on && !support.allowed) warning('通知已關閉', '開啟 App 通知才能顯示背景進度'),
             if (on && support.allowed && support.promoted == false)
               warning('即時更新已關閉', '目前以一般通知顯示，可到系統設定開啟'),
           ],

@@ -138,8 +138,14 @@ class _CodeawAppState extends State<CodeawApp> {
   void _onLifecycle(AppLifecycleState s) {
     final foreground = s == AppLifecycleState.resumed;
     widget.state.notifier.foreground = foreground;
+    widget.state.liveActivity.foreground = foreground;
     widget.state.client?.setForeground(foreground);
-    widget.state.liveActivity.visible =
+    if (foreground) unawaited(widget.state.liveActivity.refresh());
+    if (!foreground) unawaited(widget.state.hub?.persist() ?? Future.value());
+    if (!foreground) {
+      unawaited(widget.state.sessions?.persist() ?? Future.value());
+    }
+    widget.state.androidLiveActivity.visible =
         foreground || s == AppLifecycleState.inactive;
   }
 
@@ -149,7 +155,7 @@ class _CodeawAppState extends State<CodeawApp> {
     final uri = router.routerDelegate.currentConfiguration.isEmpty
         ? null
         : router.state.uri;
-    widget.state.liveActivity.viewing = uri?.path == '/session'
+    widget.state.androidLiveActivity.viewing = uri?.path == '/session'
         ? uri!.queryParameters['id']
         : null;
   }
