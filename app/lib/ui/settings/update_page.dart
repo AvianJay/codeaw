@@ -121,6 +121,8 @@ class _UpdatePageState extends State<UpdatePage> {
                     ),
                     const SizedBox(height: 8),
                     const Text('IPA 需要由簽署／側載工具安裝。請先設定工具；無法開啟時會改用瀏覽器下載。'),
+                    if (updater.iosInstaller == IosInstaller.lcSign)
+                      const Text('LCSign 會下載並匯入 IPA；請在 LCSign 使用原本的憑證與 App 識別碼簽署安裝，以保留 App 資料。'),
                   ],
                   if (updater.updateAvailable && updater.asset != null) ...[
                     const SizedBox(height: 16),

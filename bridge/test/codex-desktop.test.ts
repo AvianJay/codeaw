@@ -8,7 +8,7 @@ import { CodexDesktopIpc, encodeDesktopIpc, readDesktopIpcVersions } from "../sr
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
-const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4 };
+const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
 
 function appArchive(file: string): void {
   const source = Buffer.from(`const versions=${JSON.stringify(VERSIONS)};`);
@@ -32,10 +32,12 @@ class DesktopPeer {
   available = true;
   fragment = false;
   dropSteeringReply = false;
+  delayedSettings = false;
   revision = 0;
   conversation: any = {
     id: this.id, cwd: this.home, title: "Desktop fixture",
     turnsPagination: { hasLoadedOldest: true }, requests: [],
+    latestThreadSettings: { model: "gpt-6-luna", effort: "low", sandboxPolicy: { type: "workspaceWrite" }, collaborationMode: { mode: "default", settings: { model: "gpt-6-luna", reasoning_effort: "low", developer_instructions: null } } },
     turns: [{ turnId: "old-turn", status: "completed", params: { input: [{ type: "text", text: "earlier desktop prompt" }] }, items: [{ type: "agentMessage", id: "old-reply", text: "earlier desktop reply" }] }],
   };
 
@@ -83,12 +85,26 @@ class DesktopPeer {
     } else if (message.method === "thread-follower-start-turn") {
       const request = params.turnStart.request;
       const turnId = this.begin(request.input, request.clientUserMessageId);
-      reply({ result: { turnId } });
+      reply({ method: message.method, result: { result: { turnId } } });
     } else if (message.method === "thread-follower-steer-turn") {
+      if (!params.restoreMessage?.context?.workspaceRoots || params.restoreMessage.cwd !== this.home || params.restoreMessage.id !== params.clientUserMessageId) {
+        this.send(socket, { type: "response", requestId: message.requestId, resultType: "error", error: "missing restoreMessage context" }); return;
+      }
       const index = this.conversation.turns.length - 1;
       const items = this.conversation.turns[index].items;
       this.patch([{ op: "add", path: ["turns", index, "items", items.length], value: { type: "steeringUserMessage", id: randomUUID(), input: params.input } }]);
-      if (!this.dropSteeringReply) reply({ result: true });
+      if (!this.dropSteeringReply) reply({ method: message.method, result: { result: { turnId: this.conversation.turns[index].turnId } } });
+    } else if (message.method === "thread-follower-update-thread-settings") {
+      const apply = () => {
+        const settings = { ...this.conversation.latestThreadSettings, ...params.threadSettings };
+        if (settings.sandboxPolicy?.type === "workspaceWrite") settings.sandboxPolicy = { ...settings.sandboxPolicy, writableRoots: [this.home, path.join(this.home, "artifacts")] };
+        this.patch([{ op: "replace", path: ["latestThreadSettings"], value: settings }]);
+      };
+      if (this.delayedSettings) {
+        this.patch([{ op: "replace", path: ["title"], value: "Unrelated owner update" }]);
+        setTimeout(apply, 30);
+      } else apply();
+      reply({ method: message.method, result: { applied: true } });
     } else if (message.method === "thread-follower-interrupt-turn") {
       const turn = this.conversation.turns.at(-1);
       if (params.expectedTurnId && params.expectedTurnId !== turn.turnId) throw new Error("Interrupt targeted the wrong turn");
@@ -97,7 +113,7 @@ class DesktopPeer {
       this.conversation.turnsPagination.hasLoadedOldest = true;
       this.revision++;
       for (const peer of this.followed) this.snapshot(peer);
-      reply({ revision: this.revision });
+      reply({ method: message.method, result: { revision: this.revision } });
     } else if (["thread-follower-command-approval-decision", "thread-follower-file-approval-decision", "thread-follower-permissions-request-approval-response", "thread-follower-submit-user-input", "thread-follower-submit-mcp-server-elicitation-response"].includes(message.method)) {
       this.patch([{ op: "replace", path: ["requests"], value: this.conversation.requests.filter((request: any) => request.id !== params.requestId) }]);
       reply({ ok: true });
@@ -151,6 +167,26 @@ const nativeId = "fake:desktop-thread";
 function send(client: TestClient, text: string, queue = false): Promise<any> { return client.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text }], ...(queue ? { _meta: { codeaw: { delivery: "queue" } } } : {}) }); }
 
 describe("Codex desktop synchronization", () => {
+  it("waits through unrelated owner revisions and accepts normalized artifact roots", async () => {
+    const { a, desktop } = await setup(); await load(a);
+    desktop.delayedSettings = true;
+    const result = await a.request("session/set_config_option", { sessionId: nativeId, configId: "mode", value: "agent" });
+    expect(result.configOptions.find((option: any) => option.id === "mode").currentValue).toBe("agent");
+    expect(desktop.conversation.latestThreadSettings.sandboxPolicy.writableRoots).toContain(path.join(desktop.home, "artifacts"));
+  });
+  it("changes settings on the same owner and streams desktop changes back", async () => {
+    const { a, desktop, bridge } = await setup();
+    const response = await load(a);
+    expect(response.configOptions.find((option: any) => option.id === "model").currentValue).toBe("gpt-6-luna");
+    for (const [configId, value] of [["model", "gpt-6-sol"], ["reasoning_effort", "medium"], ["mode", "read-only"], ["collaboration_mode", "plan"]]) {
+      const r = await a.request("session/set_config_option", { sessionId: nativeId, configId, value });
+      expect(r.configOptions.find((option: any) => option.id === configId).currentValue).toBe(value);
+    }
+    expect(desktop.requests.filter((message) => message.method === "thread-follower-update-thread-settings")).toHaveLength(4);
+    expect(fs.existsSync(path.join(bridge.home, "fake-state.json"))).toBe(false);
+    desktop.patch([{ op: "replace", path: ["latestThreadSettings", "effort"], value: "low" }]);
+    await a.waitFor(() => a.updates(nativeId).at(-1)?.update.configOptions?.some((option: any) => option.id === "reasoning_effort" && option.currentValue === "low"));
+  });
   it("loads an owned thread without resuming it in the ACP process, and fans out both desktop and phone messages", async () => {
     const { a, desktop, bridge } = await setup();
     const response = await load(a);
@@ -182,6 +218,26 @@ describe("Codex desktop synchronization", () => {
     await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-start-turn"));
     desktop.text("queued reply"); desktop.finish(); await queued;
     expect(a.text(nativeId, "user_message_chunk").match(/look here/g)).toHaveLength(1);
+  });
+
+  it("keeps queued receipts through native history rebuilds and marks read only after desktop accepts", async () => {
+    const { a, desktop } = await setup(); await load(a);
+    desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
+    const id = "42e82e99-6479-437f-b1a1-e84303284f19";
+    const queued = a.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text: "receipt after desktop" }], _meta: { codeaw: { delivery: "queue", clientPromptId: id } } });
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.queued === 1);
+    expect(a.events(nativeId, "prompt_receipt").filter((e) => e.event.promptId === id).map((e) => e.event.status)).toEqual(["received"]);
+    const b = await TestClient.connect(bridge!.url, bridge!.tokenFor("receipt tablet")); clients.push(b); await load(b);
+    expect(b.text(nativeId, "user_message_chunk")).toContain("receipt after desktop");
+    desktop.patch([{ op: "replace", path: ["turns", 0, "items", 0, "text"], value: "edited older reply" }]);
+    await b.waitFor(() => b.received.some((r) => r.method === "_codeaw/replay" && r.params.mode === "complete"));
+    expect(b.events(nativeId, "prompt_receipt").at(-1)?.event.status).toBe("received");
+    desktop.finish();
+    await a.waitFor(() => a.events(nativeId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "read"));
+    desktop.text("receipt reply"); desktop.finish(); await queued;
+    const fresh = await TestClient.connect(bridge!.url, bridge!.tokenFor("receipt fresh")); clients.push(fresh); await load(fresh);
+    expect(fresh.text(nativeId, "user_message_chunk").match(/receipt after desktop/g)).toHaveLength(1);
+    expect(fresh.events(nativeId, "prompt_receipt").some((e) => e.event.promptId === id && e.event.status === "read")).toBe(true);
   });
 
   it("interrupts a desktop-started turn, while closing the mobile view only unfollows", async () => {
@@ -287,6 +343,15 @@ describe("Codex desktop synchronization", () => {
 });
 
 describe("desktop IPC wire and state", () => {
+  it("retains steering client prompt ids directly from the native snapshot after reconnect", () => {
+    const id = randomUUID();
+    const conversation = { turns: [{ turnId: "t", status: "completed", items: [{
+      type: "steeringUserMessage", id: "steer", clientUserMessageId: id,
+      input: [{ type: "text", text: "steered" }],
+    }] }] };
+    const user = projectDesktopConversation(conversation).records.find((r) => r.key === "t:steer:0")!.update as any;
+    expect(user._meta.codeaw).toMatchObject({ promptId: id, receipt: "read", steered: true });
+  });
   it("reads method versions from an app archive and handles fragmented UTF-8 frames and concurrent requests", async () => {
     desktop = new DesktopPeer(); desktop.fragment = true; await desktop.start();
     expect(await readDesktopIpcVersions(desktop.archivePath)).toEqual(VERSIONS);

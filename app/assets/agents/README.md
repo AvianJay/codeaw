@@ -18,3 +18,8 @@ agent's accent color while preserving the original icon geometry.
   See `LICENSE-hermes-agent`.
 
 The brand names and logos belong to their respective owners.
+
+`grok.svg` is from [`src/assets/icons/grok.svg`](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/blob/ee79a794526a30c03748a8864a9ac6589a31833b/src/assets/icons/grok.svg)
+in CLI Proxy API Management Center, revision
+`ee79a794526a30c03748a8864a9ac6589a31833b`. See
+`LICENSE-cpa-management-center` (MIT).

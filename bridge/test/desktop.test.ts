@@ -228,9 +228,10 @@ describe("desktop runtime", () => {
     const file = configFile();
     const occupied = net.createServer();
     servers.push(occupied);
-    await new Promise<void>((resolve) => occupied.listen(0, "127.0.0.2", resolve));
+    const secondHost = process.platform === "darwin" ? "::1" : "127.0.0.2";
+    await new Promise<void>((resolve, reject) => { occupied.once("error", reject); occupied.listen(0, secondHost, resolve); });
     const port = (occupied.address() as net.AddressInfo).port;
-    await expect(startBridge(loadConfig(file), { hosts: ["127.0.0.1", "127.0.0.2"], port })).rejects.toThrow();
+    await expect(startBridge(loadConfig(file), { hosts: ["127.0.0.1", secondHost], port })).rejects.toThrow();
     const probe = net.createServer();
     servers.push(probe);
     await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(port, "127.0.0.1", resolve); });

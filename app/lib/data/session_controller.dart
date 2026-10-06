@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -17,17 +18,26 @@ class PendingRequest {
   final CancelToken token;
   final _answer = Completer<Object?>();
 
-  String get requestId => ((params['_meta'] as Map?)?['codeaw'] as Map?)?['requestId'] as String? ?? '';
+  String get requestId =>
+      ((params['_meta'] as Map?)?['codeaw'] as Map?)?['requestId'] as String? ??
+      '';
   bool get isPermission => method == 'session/request_permission';
-  Map<String, dynamic> get toolCall => params['toolCall'] as Map<String, dynamic>? ?? const {};
-  List<Map<String, dynamic>> get options => (params['options'] as List? ?? const []).whereType<Map<String, dynamic>>().toList();
-  String get title => isPermission ? (toolCall['title'] as String? ?? '工具呼叫') : (params['message'] as String? ?? '需要你的回覆');
+  Map<String, dynamic> get toolCall =>
+      params['toolCall'] as Map<String, dynamic>? ?? const {};
+  List<Map<String, dynamic>> get options =>
+      (params['options'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+  String get title => isPermission
+      ? (toolCall['title'] as String? ?? '工具呼叫')
+      : (params['message'] as String? ?? '需要你的回覆');
 }
 
 /// Everything about one open session: its timeline, connection to the bridge's log
 /// (lastSeq/epoch for delta replay), open requests, and actions.
 class SessionController extends ChangeNotifier {
-  SessionController(this.client, this.sessionId, {String? cwd}) : cwd = cwd ?? '' {
+  SessionController(this.client, this.sessionId, {String? cwd})
+    : cwd = cwd ?? '' {
     _connSub = client.connected.listen((_) {
       if (_wantAttached) unawaited(attach());
     });
@@ -37,8 +47,10 @@ class SessionController extends ChangeNotifier {
   final BridgeClient client;
   final String sessionId;
   String cwd;
+
   /// Unsent text survives navigating between recently opened conversations.
   String draft = '';
+  final _promptReceipts = <String, Completer<bool>>{};
 
   /// `@` tokens picked for [draft] → their `file:` URIs.
   final draftMentions = <String, String>{};
@@ -68,7 +80,10 @@ class SessionController extends ChangeNotifier {
 
   bool get running => timeline.running;
 
-  List<ConfigOption> get configOptions => (timeline.configOptions ?? const []).map(ConfigOption.new).where((o) => o.type == 'select' || o.type == 'boolean').toList();
+  List<ConfigOption> get configOptions => (timeline.configOptions ?? const [])
+      .map(ConfigOption.new)
+      .where((o) => o.type == 'select' || o.type == 'boolean')
+      .toList();
 
   void _onClientChange() {
     if (client.status != ConnStatus.online && attached) {
@@ -91,27 +106,47 @@ class SessionController extends ChangeNotifier {
     error = null;
     _notify();
     try {
-      final resp = await client.request('session/load', {
-        'sessionId': sessionId,
-        'cwd': cwd,
-        'mcpServers': const [],
-        '_meta': {
-          'codeaw': {if (epoch != null && lastSeq > 0) ...{'afterSeq': lastSeq, 'epoch': epoch}},
-        },
-      }) as Map<String, dynamic>;
+      final resp =
+          await client.request('session/load', {
+                'sessionId': sessionId,
+                'cwd': cwd,
+                'mcpServers': const [],
+                '_meta': {
+                  'codeaw': {
+                    if (epoch != null && lastSeq > 0) ...{
+                      'afterSeq': lastSeq,
+                      'epoch': epoch,
+                    },
+                  },
+                },
+              })
+              as Map<String, dynamic>;
       final m = (resp['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
       desktopSync = m['connection'] == 'desktop';
       desktopConnected = m['desktopConnected'] == true;
       _replayingFull = false;
+      timeline.finishReplay();
       lastSeq = (m['lastSeq'] as num?)?.toInt() ?? lastSeq;
       epoch = m['epoch'] as String? ?? epoch;
       if (m['cwd'] is String) cwd = m['cwd'] as String;
-      if (m['title'] is String && timeline.title == null) timeline.title = m['title'] as String;
-      if (resp['configOptions'] is List) {
-        timeline.configOptions = (resp['configOptions'] as List).whereType<Map<String, dynamic>>().toList();
+      if (m['title'] is String && timeline.title == null) {
+        timeline.title = m['title'] as String;
       }
-      if (resp['modes'] is Map) timeline.modes = Map<String, dynamic>.from(resp['modes'] as Map);
-      if (m['state'] is String) timeline.setTurnState(m['state'] as String, startedAt: m['turnStartedAt'] as num?, promptId: m['turnPromptId'] as String?);
+      if (resp['configOptions'] is List) {
+        timeline.configOptions = (resp['configOptions'] as List)
+            .whereType<Map<String, dynamic>>()
+            .toList();
+      }
+      if (resp['modes'] is Map) {
+        timeline.modes = Map<String, dynamic>.from(resp['modes'] as Map);
+      }
+      if (m['state'] is String) {
+        timeline.setTurnState(
+          m['state'] as String,
+          startedAt: m['turnStartedAt'] as num?,
+          promptId: m['turnPromptId'] as String?,
+        );
+      }
       timeline.queued = (m['queued'] as num?)?.toInt() ?? timeline.queued;
       attached = true;
     } on RpcError catch (e) {
@@ -128,32 +163,43 @@ class SessionController extends ChangeNotifier {
   /// Stop receiving live updates (screen closed). The log keeps going on the bridge.
   void detach() {
     _wantAttached = false;
-    if (attached) client.notify('_codeaw/session/detach', {'sessionId': sessionId});
+    if (attached) {
+      client.notify('_codeaw/session/detach', {'sessionId': sessionId});
+    }
     attached = false;
   }
 
   void onMessage(SessionMessage msg) {
+    if (_disposed) return;
     if (msg.method == '_codeaw/replay') {
       if (msg.params['mode'] == 'full') {
-        timeline.clear();
+        timeline.clear(preserveUnconfirmed: true);
         lastSeq = 0;
         _replayingFull = true;
       } else if (msg.params['mode'] == 'complete') {
         lastSeq = (msg.params['lastSeq'] as num?)?.toInt() ?? lastSeq;
         _replayingFull = false;
+        timeline.finishReplay();
         timeline.flush();
         _notify();
       }
       epoch = msg.params['epoch'] as String? ?? epoch;
       return;
     }
-    final seq = (((msg.params['_meta'] as Map?)?['codeaw'] as Map?)?['seq'] as num?)?.toInt();
+    final seq =
+        (((msg.params['_meta'] as Map?)?['codeaw'] as Map?)?['seq'] as num?)
+            ?.toInt();
     if (!_replayingFull && seq != null) {
       if (seq <= lastSeq) return; // already seen (overlapping replay)
       lastSeq = seq;
     }
     if (msg.method == '_codeaw/event') {
       final event = msg.params['event'] as Map?;
+      if (event?['type'] == 'prompt_receipt' &&
+          ['received', 'read'].contains(event?['status'])) {
+        final receipt = _promptReceipts[event?['promptId']];
+        if (receipt != null && !receipt.isCompleted) receipt.complete(true);
+      }
       if (event?['type'] == 'state' && event?['connection'] == 'desktop') {
         desktopSync = true;
         desktopConnected = event?['desktopConnected'] == true;
@@ -170,13 +216,22 @@ class SessionController extends ChangeNotifier {
     });
   }
 
-  Future<Object?> onServerRequest(String method, Map<String, dynamic> params, CancelToken token) async {
+  Future<Object?> onServerRequest(
+    String method,
+    Map<String, dynamic> params,
+    CancelToken token,
+  ) async {
     final req = PendingRequest(method, params, token);
-    final id = req.requestId.isEmpty ? '${DateTime.now().microsecondsSinceEpoch}' : req.requestId;
+    final id = req.requestId.isEmpty
+        ? '${DateTime.now().microsecondsSinceEpoch}'
+        : req.requestId;
     pending[id] = req;
     _notify();
     try {
-      return await Future.any([req._answer.future, token.whenCancelled.then((_) => null)]);
+      return await Future.any([
+        req._answer.future,
+        token.whenCancelled.then((_) => null),
+      ]);
     } finally {
       pending.remove(id);
       _notify();
@@ -185,27 +240,86 @@ class SessionController extends ChangeNotifier {
 
   void answerPermission(PendingRequest req, String? optionId) {
     req._answer.complete({
-      'outcome': optionId == null ? {'outcome': 'cancelled'} : {'outcome': 'selected', 'optionId': optionId},
+      'outcome': optionId == null
+          ? {'outcome': 'cancelled'}
+          : {'outcome': 'selected', 'optionId': optionId},
     });
   }
 
-  void answerElicitation(PendingRequest req, String action, [Map<String, dynamic>? content]) {
-    req._answer.complete({'action': action, if (content != null && action == 'accept') 'content': content});
+  void answerElicitation(
+    PendingRequest req,
+    String action, [
+    Map<String, dynamic>? content,
+  ]) {
+    req._answer.complete({
+      'action': action,
+      if (content != null && action == 'accept') 'content': content,
+    });
   }
 
   /// Sends a prompt. While a turn runs it is steered into it (agents that support it) or queued.
-  Future<void> send(List<Map<String, dynamic>> blocks, {bool queue = false}) async {
-    try {
-      await client.request('session/prompt', {
-        'sessionId': sessionId,
-        'prompt': blocks,
-        if (queue) '_meta': {'codeaw': {'delivery': 'queue'}},
+  Future<bool> send(
+    List<Map<String, dynamic>> blocks, {
+    bool queue = false,
+  }) async {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    final hex = bytes.map((v) => v.toRadixString(16).padLeft(2, '0')).join();
+    final promptId =
+        '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+    final receipt = Completer<bool>();
+    _promptReceipts[promptId] = receipt;
+    timeline.addPendingPrompt(promptId, blocks);
+    final sent = () async {
+      try {
+        await client.request('session/prompt', {
+          'sessionId': sessionId,
+          'prompt': blocks,
+          '_meta': {
+            'codeaw': {
+              'clientPromptId': promptId,
+              if (queue) 'delivery': 'queue',
+            },
+          },
+        });
+        return true;
+      } on RpcError catch (e) {
+        if (_disposed) return true;
+        if (e.code == RpcError.connectionClosed) {
+          if (!receipt.isCompleted) {
+            _toast('連線中斷，送出結果待確認；請先查看聊天紀錄，避免重複傳送');
+            timeline.apply('_codeaw/event', {
+              'event': {
+                'type': 'prompt_receipt',
+                'promptId': promptId,
+                'status': 'unknown',
+              },
+            });
+            timeline.flush();
+          }
+          // An interrupted turn RPC does not mean the bridge rejected the prompt.
+          // Replay will reconcile it; never resurrect possibly accepted text.
+          return true;
+        }
+        _toast(e.detail);
+      } catch (e) {
+        if (_disposed) return true;
+        _toast('$e');
+      }
+      timeline.apply('_codeaw/event', {
+        'event': {
+          'type': 'prompt_receipt',
+          'promptId': promptId,
+          'status': 'failed',
+        },
       });
-    } on RpcError catch (e) {
-      if (e.code != RpcError.connectionClosed) _toast(e.detail);
-    } catch (e) {
-      _toast('$e');
-    }
+      timeline.flush();
+      return false;
+    }();
+    unawaited(sent.whenComplete(() => _promptReceipts.remove(promptId)));
+    return Future.any([receipt.future, sent]);
   }
 
   void cancel() => client.notify('session/cancel', {'sessionId': sessionId});
@@ -248,14 +362,18 @@ class SessionController extends ChangeNotifier {
 
   Future<void> setConfig(ConfigOption option, Object value) async {
     try {
-      final resp = await client.request('session/set_config_option', {
-        'sessionId': sessionId,
-        'configId': option.id,
-        'value': value,
-        if (value is bool) 'type': 'boolean',
-      }) as Map<String, dynamic>;
+      final resp =
+          await client.request('session/set_config_option', {
+                'sessionId': sessionId,
+                'configId': option.id,
+                'value': value,
+                if (value is bool) 'type': 'boolean',
+              })
+              as Map<String, dynamic>;
       if (resp['configOptions'] is List) {
-        timeline.configOptions = (resp['configOptions'] as List).whereType<Map<String, dynamic>>().toList();
+        timeline.configOptions = (resp['configOptions'] as List)
+            .whereType<Map<String, dynamic>>()
+            .toList();
         timeline.flush();
         _notify();
       }
@@ -266,7 +384,9 @@ class SessionController extends ChangeNotifier {
 
   Future<bool> reimport() async {
     try {
-      await client.request('_codeaw/session/reimport', {'sessionId': sessionId});
+      await client.request('_codeaw/session/reimport', {
+        'sessionId': sessionId,
+      });
       return true;
     } on RpcError catch (e) {
       _toast(e.detail);
@@ -317,7 +437,9 @@ class SessionController extends ChangeNotifier {
 /// recently used ones alive so switching back is instant.
 class SessionHub {
   SessionHub(this.client) {
-    _sub = client.messages.listen((m) => _controllers[m.sessionId]?.onMessage(m));
+    _sub = client.messages.listen(
+      (m) => _controllers[m.sessionId]?.onMessage(m),
+    );
     client.onServerRequest = _onServerRequest;
   }
 
@@ -350,13 +472,20 @@ class SessionHub {
   SessionController? peek(String sessionId) => _controllers[sessionId];
 
   /// A controller for a session just created through `session/new` (already attached).
-  SessionController adopt(String sessionId, String cwd, Map<String, dynamic> newSessionResponse) {
+  SessionController adopt(
+    String sessionId,
+    String cwd,
+    Map<String, dynamic> newSessionResponse,
+  ) {
     final c = SessionController(client, sessionId, cwd: cwd);
-    final m = (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
+    final m =
+        (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
     c.lastSeq = (m['lastSeq'] as num?)?.toInt() ?? 0;
     c.epoch = m['epoch'] as String?;
     if (newSessionResponse['configOptions'] is List) {
-      c.timeline.configOptions = (newSessionResponse['configOptions'] as List).whereType<Map<String, dynamic>>().toList();
+      c.timeline.configOptions = (newSessionResponse['configOptions'] as List)
+          .whereType<Map<String, dynamic>>()
+          .toList();
     }
     c.attached = true;
     c._wantAttached = true;
@@ -365,7 +494,11 @@ class SessionHub {
     return c;
   }
 
-  Future<Object?> _onServerRequest(String method, Map<String, dynamic> params, CancelToken token) async {
+  Future<Object?> _onServerRequest(
+    String method,
+    Map<String, dynamic> params,
+    CancelToken token,
+  ) async {
     final c = _controllers[params['sessionId']];
     if (c == null) {
       // Not open on this device: leave it to another device (or a later attach).

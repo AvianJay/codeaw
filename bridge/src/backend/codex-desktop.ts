@@ -4,7 +4,8 @@ import type { AgentConfig } from "../config.js";
 import type { AgentBackend } from "./backend.js";
 import { AgentProcess, type AgentHandlers, type AgentInfo } from "./agent-process.js";
 import { CodexDesktopIpc, DesktopIpcRequestError, type DesktopIpcMessage } from "./codex-desktop-ipc.js";
-import { applyDesktopPatches, codexInput, desktopRecordChanges, desktopRequests, projectDesktopConversation, type DesktopRecord, type DesktopState } from "./codex-desktop-state.js";
+import { applyDesktopPatches, codexInput, inputBlocks, desktopRecordChanges, desktopRequests, projectDesktopConversation, type DesktopRecord, type DesktopState } from "./codex-desktop-state.js";
+import { desktopConfigOptions, desktopModels, desktopRestoreMessage, desktopSettingsPatch } from "./codex-desktop-settings.js";
 
 interface DesktopSession {
   id: string;
@@ -12,11 +13,14 @@ interface DesktopSession {
   revision: number;
   conversation?: any;
   records?: DesktopRecord[];
+  configOptions?: acp.SessionConfigOption[];
   connected: boolean;
   attaching?: Promise<void>;
   snapshotWaiters: Set<{ revision: number; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>;
   prompts: Set<{ turnId?: string; clientUserMessageId: string; before: Set<string>; resolve: (response: acp.PromptResponse) => void; reject: (error: Error) => void }>;
   requests: Map<string, AbortController>;
+  messagePromptIds?: Map<string, string>;
+  steering?: Map<string, { before: Set<string>; blocks: string }>;
 }
 
 /** Prefer the current desktop owner; retain ACP for sessions the desktop does not own. */
@@ -102,7 +106,7 @@ export class CodexDesktopBackend implements AgentBackend {
         }
         session.owner = owner;
         await this.attach(session);
-        return { configOptions: [], _meta: { codeaw: { connection: "desktop", desktopConnected: true } } } as T;
+        return { configOptions: this.configOptions(session), _meta: { codeaw: { connection: "desktop", desktopConnected: true } } } as T;
       }
       if (force) throw new Error("Codex desktop no longer owns this session. Reopen it on desktop before reconnecting");
     }
@@ -114,12 +118,32 @@ export class CodexDesktopBackend implements AgentBackend {
       }
       if (!session) throw new Error("Reconnect this Codex desktop session before sending");
       await this.attach(session);
-      if (method === "session/prompt") return await this.prompt(session, params.prompt) as T;
+      if (method === "session/prompt") return await this.prompt(session, params.prompt, params._meta?.codeaw?.promptId) as T;
+      if (method === "session/set_config_option" || method === "session/set_mode") {
+        const patch = desktopSettingsPatch(session.conversation, method === "session/set_mode" ? "mode" : params.configId, method === "session/set_mode" ? params.modeId : params.value);
+        const response = await this.ipc.request("thread-follower-update-thread-settings", { conversationId: id, threadSettings: patch }, { targetClientId: session.owner });
+        const result = response.result?.result ?? response.result;
+        if (result?.applied !== true) throw new Error("Codex desktop did not apply the settings; reconnect and try again");
+        // Owner broadcasts are authoritative. Do not claim a change until observed.
+        const deadline = Date.now() + (this.ipc.options.timeoutMs ?? 12000);
+        while (!this.settingsMatch(session, patch)) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new Error("Codex desktop has not confirmed the changed settings");
+          await this.waitForRevision(session, session.revision + 1, remaining);
+        }
+        return { configOptions: this.configOptions(session) } as T;
+      }
       if (method === "_session/steering") {
         const input = codexInput(params.prompt);
-        const response = await this.ipc.request("thread-follower-steer-turn", { conversationId: id, input, attachments: [], clientUserMessageId: randomUUID() }, { targetClientId: session.owner });
-        const result = response.result?.result ?? response.result;
-        return { outcome: result === false || result?.outcome === "promptRequired" ? "promptRequired" : "injected" } as T;
+        const clientUserMessageId = params._meta?.codeaw?.promptId ?? randomUUID();
+        (session.steering ??= new Map()).set(clientUserMessageId, { before: new Set(session.records?.map((r) => r.key)), blocks: JSON.stringify(inputBlocks(input)) });
+        const response = await this.ipc.request("thread-follower-steer-turn", { conversationId: id, input, attachments: [], clientUserMessageId,
+          restoreMessage: desktopRestoreMessage(session.conversation, input, clientUserMessageId) }, { targetClientId: session.owner });
+        const wrapper = response.result?.result ?? response.result;
+        const result = wrapper?.result ?? wrapper;
+        if (result === false || result?.outcome === "promptRequired") return { outcome: "promptRequired" } as T;
+        if (!result || (typeof result.turnId !== "string" && result !== true && result.outcome !== "injected")) throw new Error("Codex desktop did not confirm steering; check desktop before sending again");
+        return { outcome: "injected" } as T;
       }
       throw new Error("This operation is not available for a desktop-linked session");
     }
@@ -157,7 +181,8 @@ export class CodexDesktopBackend implements AgentBackend {
           const incomplete = state?.turnHistory?.kind === "canonical" ? state.turnHistory.history?.isComplete === false : state?.turnsPagination?.hasLoadedOldest === false;
           if (incomplete) {
             const response = await this.ipc.request("thread-follower-load-complete-history", { conversationId: session.id }, { targetClientId: session.owner, timeoutMs: 60000 });
-            if (typeof response.result?.revision === "number") await this.waitForRevision(session, response.result.revision);
+            const result = response.result?.result ?? response.result;
+            if (typeof result?.revision === "number") await this.waitForRevision(session, result.revision);
           }
           session.connected = true;
           this.ipc.setReconnectWanted(true);
@@ -174,10 +199,10 @@ export class CodexDesktopBackend implements AgentBackend {
     return session.attaching;
   }
 
-  private waitForRevision(session: DesktopSession, revision: number): Promise<void> {
+  private waitForRevision(session: DesktopSession, revision: number, timeoutMs?: number): Promise<void> {
     if (session.conversation && session.revision >= revision) return Promise.resolve();
     return new Promise((resolve, reject) => {
-      const waiter = { revision, resolve, reject, timer: setTimeout(() => { session.snapshotWaiters.delete(waiter); reject(new Error("Codex desktop snapshot timed out")); }, this.config.desktopSync && typeof this.config.desktopSync === "object" ? this.config.desktopSync.timeoutMs ?? 12000 : 12000) };
+      const waiter = { revision, resolve, reject, timer: setTimeout(() => { session.snapshotWaiters.delete(waiter); reject(new Error("Codex desktop snapshot timed out")); }, timeoutMs ?? (this.config.desktopSync && typeof this.config.desktopSync === "object" ? this.config.desktopSync.timeoutMs ?? 12000 : 12000)) };
       session.snapshotWaiters.add(waiter);
     });
   }
@@ -241,11 +266,31 @@ export class CodexDesktopBackend implements AgentBackend {
   }
 
   private project(session: DesktopSession): void {
-    const projection = projectDesktopConversation(session.conversation);
+    let projection = projectDesktopConversation(session.conversation, session.messagePromptIds);
+    for (const [promptId, pending] of session.steering ?? []) {
+      const messages = new Map<string, acp.ContentBlock[]>();
+      for (const record of projection.records) {
+        const update = record.update as any;
+        if (pending.before.has(record.key) || update.sessionUpdate !== "user_message_chunk" || !update._meta?.codeaw?.steered) continue;
+        const blocks = messages.get(update.messageId) ?? [];
+        blocks.push(update.content); messages.set(update.messageId, blocks);
+      }
+      const match = [...messages].find(([key, blocks]) => !session.messagePromptIds?.has(key) && JSON.stringify(blocks) === pending.blocks);
+      if (match) {
+        (session.messagePromptIds ??= new Map()).set(match[0], promptId);
+        session.steering!.delete(promptId);
+        projection = projectDesktopConversation(session.conversation, session.messagePromptIds);
+      }
+    }
     const changes = desktopRecordChanges(session.records, projection.records);
     session.records = projection.records;
     if (changes.reset) this.handlers.onHistoryReset?.(this.id, session.id, changes.updates);
     else for (const update of changes.updates) this.handlers.onUpdate(this.id, { sessionId: session.id, update });
+    const configOptions = this.configOptions(session);
+    if (changes.reset || JSON.stringify(configOptions) !== JSON.stringify(session.configOptions)) {
+      session.configOptions = configOptions;
+      this.handlers.onUpdate(this.id, { sessionId: session.id, update: { sessionUpdate: "config_option_update", configOptions } });
+    }
     this.publishState(session, projection.state);
     this.syncRequests(session);
     for (const prompt of session.prompts) {
@@ -254,6 +299,25 @@ export class CodexDesktopBackend implements AgentBackend {
       session.prompts.delete(prompt);
       prompt.resolve({ stopReason: ["interrupted", "cancelled"].includes(turn.status) ? "cancelled" : "end_turn" });
     }
+  }
+
+  private configOptions(session: DesktopSession): acp.SessionConfigOption[] {
+    return desktopConfigOptions(session.conversation, desktopModels(this.ipc.options.modelCatalogPath));
+  }
+
+  private settingsMatch(session: DesktopSession, patch: Record<string, unknown>): boolean {
+    const settings = session.conversation?.latestThreadSettings ?? {};
+    return Object.entries(patch).every(([key, value]) => {
+      if (key === "permissions") return value !== null || settings.activePermissionProfile == null;
+      // The app may add its own writable artifact roots and mode instructions.
+      if (key === "sandboxPolicy") return settings.sandboxPolicy?.type === (value as any).type &&
+        ((value as any).networkAccess === undefined || settings.sandboxPolicy?.networkAccess === (value as any).networkAccess);
+      if (key === "collaborationMode") {
+        const wanted = value as any, actual = settings.collaborationMode;
+        return actual?.mode === wanted.mode && actual?.settings?.model === wanted.settings.model && actual?.settings?.reasoning_effort === wanted.settings.reasoning_effort;
+      }
+      return JSON.stringify(settings[key]) === JSON.stringify(value);
+    });
   }
 
   private publishState(session: DesktopSession, state?: DesktopState): void {
@@ -315,9 +379,9 @@ export class CodexDesktopBackend implements AgentBackend {
     }
   }
 
-  private async prompt(session: DesktopSession, blocks: acp.ContentBlock[]): Promise<acp.PromptResponse> {
+  private async prompt(session: DesktopSession, blocks: acp.ContentBlock[], promptId?: string): Promise<acp.PromptResponse> {
     const input = codexInput(blocks);
-    const clientUserMessageId = randomUUID();
+    const clientUserMessageId = promptId ?? randomUUID();
     const before = new Set(projectDesktopConversation(session.conversation).turns.map((turn) => String(turn.turnId ?? turn.id)));
     let pending!: DesktopSession["prompts"] extends Set<infer T> ? T : never;
     const completed = new Promise<acp.PromptResponse>((resolve, reject) => { pending = { clientUserMessageId, before, resolve, reject }; session.prompts.add(pending); });
@@ -328,7 +392,8 @@ export class CodexDesktopBackend implements AgentBackend {
         ? { conversationId: session.id, hostId: "local", turnStart: { request: { threadId: session.id, input, clientUserMessageId }, context: { attachments: [], inheritThreadSettings: true } } }
         : { conversationId: session.id, hostId: "local", turnStartParams: { input, attachments: [] } };
       const response = await this.ipc.request("thread-follower-start-turn", params, { targetClientId: session.owner });
-      const result = response.result?.result ?? response.result;
+      const wrapper = response.result?.result ?? response.result;
+      const result = wrapper?.result ?? wrapper;
       pending.turnId = result?.turnId ?? result?.turn?.id ?? result?.id;
       if (!pending.turnId) {
         const turns = projectDesktopConversation(session.conversation).turns;

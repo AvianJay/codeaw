@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { bridgeInvocation } from "./process.js";
 import { controlAddress, runningStatus } from "./control.js";
 import { SERVICE_HOST, SERVICE_INSTALL_SCRIPT } from "./windows-service.js";
+import { desktopEnvironment } from "../util/environment.js";
 
 export function serviceName(file: string): string {
   const absolute = path.resolve(file);
@@ -31,11 +32,11 @@ export function systemdUnit(file: string, invocation = bridgeInvocation()): stri
   return `[Unit]\nDescription=codeaw bridge\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart=${args.map((arg) => quote(arg, true)).join(" ")}\nWorkingDirectory=${quote(path.dirname(file))}\nEnvironment=${quote(`PATH=${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`)}\nRestart=on-failure\nRestartSec=10\nTimeoutStopSec=15\nUMask=0077\n\n[Install]\nWantedBy=default.target\n`;
 }
 
-export function launchdPlist(file: string, name: string, invocation = bridgeInvocation()): string {
+export function launchdPlist(file: string, name: string, invocation = bridgeInvocation(), tray = false): string {
   const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const args = [invocation.executable, ...invocation.args, "start", "--headless", "--config", file];
+  const args = [invocation.executable, ...invocation.args, ...(tray ? ["tray"] : ["start", "--headless"]), "--config", file];
   const log = path.join(path.dirname(file), "bridge.log");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(name)}</string>\n<key>ProgramArguments</key><array>${args.map((a) => `<string>${xml(a)}</string>`).join("")}</array>\n<key>WorkingDirectory</key><string>${xml(path.dirname(file))}</string>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin")}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>StandardOutPath</key><string>${xml(log)}</string>\n<key>StandardErrorPath</key><string>${xml(log)}</string>\n</dict></plist>\n`;
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${xml(name)}</string>\n<key>ProgramArguments</key><array>${args.map((a) => `<string>${xml(a)}</string>`).join("")}</array>\n<key>WorkingDirectory</key><string>${xml(path.dirname(file))}</string>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(desktopEnvironment().PATH ?? "/usr/local/bin:/usr/bin:/bin")}</string></dict>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>StandardOutPath</key><string>${xml(log)}</string>\n<key>StandardErrorPath</key><string>${xml(log)}</string>\n</dict></plist>\n`;
 }
 
 export async function manageService(file: string, action: string): Promise<void> {

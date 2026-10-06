@@ -61,6 +61,14 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
         slots.push(slot);
       }
       slot.seq = Math.max(slot.seq, e.seq);
+      if (u.sessionUpdate === "user_message_chunk") {
+        const previous = codeawMeta(slot.first), current = codeawMeta(u);
+        if (current.replace === true && current.partIndex === 0) slot.parts = [];
+        slot.first = { ...slot.first, _meta: { ...slot.first._meta, ...u._meta, codeaw: {
+          ...previous, ...current,
+          ...(previous.receipt === "read" ? { receipt: "read" } : {}),
+        } } };
+      }
       const last = slot.parts[slot.parts.length - 1];
       if (u.content?.type === "text" && last?.type === "text") {
         slot.parts[slot.parts.length - 1] = { ...last, text: last.text + u.content.text };
@@ -104,8 +112,11 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
         out.push(slot.entry);
         break;
       case "message":
-        for (const part of slot.parts) {
-          const update = { ...slot.first, content: part };
+        for (const [partIndex, part] of slot.parts.entries()) {
+          const meta = codeawMeta(slot.first);
+          const update = { ...slot.first, content: part,
+            ...(meta.replace === true ? { _meta: { ...slot.first._meta, codeaw: { ...meta, partIndex } } } : {}),
+          };
           out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
         }
         break;

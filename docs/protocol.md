@@ -141,8 +141,9 @@ than synthesized locally. Closing a linked session unfollows it and cancels
 unsent codeaw queue entries; it does not interrupt the desktop turn. Explicit
 `session/cancel` interrupts the currently observed native turn. Desktop affinity
 is persisted so an unavailable owner fails closed instead of silently falling
-back to an independent runtime. Desktop settings and deletion are not exposed
-through this first integration.
+back to an independent runtime. Desktop model, effort, permission and collaboration
+settings are exposed through the operations described under Prompts. Desktop
+deletion remains unavailable.
 
 ### `session/list`
 
@@ -271,6 +272,35 @@ prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
 open permission/elicitation request with `cancelled`.
 
+Clients may supply a UUID `_meta.codeaw.clientPromptId`. The bridge uses it as
+the logged `promptId` and suppresses duplicate delivery within that session,
+including replay/reconnect. Older clients receive a bridge-generated UUID.
+Acceptance is independent of the turn's eventual RPC response: the bridge logs
+the user message and sends a `prompt_receipt` event `{promptId, status}` with
+`received` immediately. `read` means confirmed injection/native user echo for
+desktop sessions, or first agent response activity for ACP sessions (a successful
+non-cancelled completion also confirms read). Queued prompts remain `received`
+until consumed. `failed` reports a known dispatch failure; read never regresses.
+These receipt events are persisted and replayed, including across a native
+history rebuild. They do not indicate response completion or guarantee semantic
+understanding. A connection-close exception while awaiting the turn response
+does not prove rejection; clients retain the uncertain message and reconcile
+with replay instead of restoring the old draft or blindly resending it.
+
+Desktop user echoes carry `promptId`, `receipt: "read"`, `replace: true` and
+`partIndex` in `update._meta.codeaw`. The first part replaces the local echo;
+later parts append. Steering uses the native item's `clientUserMessageId`
+(or its server/restore equivalent), retaining correlation after reattachment.
+
+Codex desktop steering includes the owner's required `restoreMessage` (message
+ID, input, cwd, workspace roots and collaboration context), and requires an
+accepted result. It never starts a second ACP runtime for a desktop-owned turn.
+Desktop `session/set_config_option` supports `model`, `reasoning_effort`, `mode`
+(`read-only`, `agent`, `agent-full-access`) and `collaboration_mode` (`default`,
+`plan`); `session/set_mode` is also supported. Settings are applied to the next
+turn and confirmed from the owner's snapshot. Updated options are returned and
+broadcast as `config_option_update`.
+
 ## Permission and elicitation requests
 
 The bridge forwards an agent's `session/request_permission` /
@@ -286,8 +316,9 @@ out on the bridge.
 |---|---|---|
 | `_codeaw/agents/list` | – | `{agents: AgentInfo[]}` |
 | `_codeaw/agents/restart` | `{agentId}` | `{}` |
-| `_codeaw/workspaces/list` | – | `{roots: [{path, name, source: "config"\|"session"}]}` |
+| `_codeaw/workspaces/list` | – | `{allowAllPaths, roots: [{path, name, source: "config"\|"session"\|"filesystem"}]}` |
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |
+| `_codeaw/fs/mkdir` | `{path, name}` | `{path, name}` (created child directory) |
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
 | `_codeaw/fs/search` | `{cwd, query?, limit?}` | `{cwd, files: [{path, relative, type: "file"\|"dir"}], truncated}` — best matches first; `relative` uses `/` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
@@ -300,17 +331,79 @@ out on the bridge.
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
+| `_codeaw/cpa/accounts` | `{endpoint, managementKey}` | `{accounts: CpaAccount[], checkedAt}` |
+| `_codeaw/cpa/quota` | `{endpoint, managementKey, accountId}` | `CpaQuota` |
 
-File-system methods only accept paths inside the configured workspaces or a
-known session `cwd`. `fs/search` ranks git's tracked and unignored files (and
-their folders) when `cwd` is in a repository; elsewhere it walks the folder,
-skipping dependency and build folders, within size and time limits. File lists
-are cached for ten seconds.
+File-system methods and `session/new` only accept paths inside the configured
+workspaces or a known session `cwd`, unless the PC administrator opts into
+`filesystem.allowAllPaths: true`. The opt-in adds existing Windows drive roots
+(or `/` on POSIX) and allows all absolute paths accessible to the bridge account.
+There is no remote API for enabling it. This exposes private files to every
+paired device; it is not a sandbox for agents or interactive shells. Paths are
+resolved through links before containment checks, and new sessions require an
+existing directory.
+
+`fs/search` ranks git's tracked and unignored files (and their folders) when
+`cwd` is in a repository; elsewhere it walks the folder, skipping dependency
+and build folders, within size and time limits. File lists are cached for ten
+seconds.
+
+`fs/mkdir` resolves and checks the existing parent `path` before creating a
+single child. `name` must be a valid single directory component (maximum 200
+characters); traversal, separators, control characters and reserved Windows
+names are rejected. It never creates missing ancestors or overwrites an
+existing file/directory. The result is the canonical created directory path.
+
+### CPA usage (paired clients only)
+
+The bridge calls CLIProxyAPI's management API with a Bearer Management Key,
+not a model API key. `endpoint` accepts an HTTP(S) root/prefix, management page,
+or explicit `/v0/management` or `/v8/management` URL. Embedded credentials,
+query strings and fragments are rejected; redirects are not followed.
+Root URLs default to v0. v0 uses `auth-files` and `api-call`; v8 uses
+`credentials` and `requests/api-call`. Requests have a 12-second timeout and
+an 8 MiB response limit. Connection failures expose no upstream response body.
+
+`CpaAccount` is `{id, name, provider, label, plan, disabled, unavailable,
+status, requests, subscriptionUntil}`. `id` is opaque; `requests` is the CPA
+success/failure count if supplied, not an allowance. The bridge discards raw
+credentials and only caches minimal query metadata for five minutes. Neither
+service-provider tokens nor CPA's potentially secret `account` field are
+returned to clients. The Management Key is not persisted by the bridge.
+
+`CpaQuota` is `{accountId, windows, resetsRemaining, plan, subscriptionUntil,
+checkedAt, status, message?}`, where `status` is `ok`, `error`, `unsupported`,
+or `disabled`. Each window is `{id, label, remainingPercent, resetAt,
+periodSeconds}`. Percentages mean **remaining**, timestamps are ISO 8601 UTC,
+and unknown fields are `null`. Windows are classified from provider durations,
+not primary/secondary position. `resetsRemaining` is an actual provider reset
+credit count; no reset or redemption action is exposed. Queries use fixed
+Codex, Claude, Grok and Antigravity usage/plan URLs via CPA's `$TOKEN$`
+substitution; they do not send model prompts or download auth files.
+
+The app persists the endpoint/key in its device secure storage and sends them
+over the paired connection. Network access occurs from the PC, so localhost
+refers to the bridge machine. Protect remote management connections with
+HTTPS or a trusted private network. A past reset timestamp does not prove
+replenishment: clients keep the received percentage until refreshed.
+
+The app shares one CPA controller between chat and usage screens. It polls
+every 30 seconds in the foreground, refreshes on resume/reconnect and skips
+overlapping automatic requests. Each provider/window is averaged independently,
+with one vote per account and one decimal display. Unknown, invalid, failed,
+disabled and unavailable values are excluded; zero is valid. Main Codex/Claude
+weekly/five-hour windows exclude special allowances. AGY first averages groups
+of the same duration within each account. The chat header selects the current
+agent's provider; missing windows stay unknown rather than borrowing another
+provider's value. Quota colors reflect remaining amount: green >=50, amber
+20–49.9, red <20, gray unknown.
 
 ### Interactive terminals
 
 Terminals are separate from ACP agent sessions. `open` starts an interactive
 PowerShell on Windows or the host's `$SHELL` (falling back to `/bin/sh`) on POSIX.
+On Windows, writes normalize LF/CRLF to CR so newline means Enter in PSReadLine;
+POSIX bytes are unchanged.
 The starting `cwd` must be an allowed workspace directory. The shell itself has
 the bridge account's usual permissions; the workspace check is not a sandbox.
 There is one retained shell per device and starting directory, with at most eight

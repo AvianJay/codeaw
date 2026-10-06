@@ -32,13 +32,15 @@ npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP
 
 安裝 bridge：
 
-Linux 一行安裝（預設 nightly）：
+Linux／macOS 一行安裝（預設 nightly）：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AvianJay/codeaw/master/install.sh | sh
 ```
 
 安裝器自動選擇 x64／ARM64 與 glibc／musl，下載後驗證 `SHA256SUMS`，將執行檔與 `web/` 安裝到 `${XDG_DATA_HOME:-~/.local/share}/codeaw-bridge`，並在 `~/.local/bin/codeaw-bridge` 建立指令連結。不需 sudo、Node 或 Bun；需要 `curl`、`tar`、`sha256sum` 與一般 Linux 命令列工具。若 `~/.local/bin` 尚未加入 PATH，依安裝完成時的提示設定，再執行 `codeaw-bridge start`，首次啟動會建立設定並顯示配對 QR code。Tailscale 與 ACP agents 仍需另外安裝。
+
+macOS 會選擇 Intel／Apple Silicon 套件並使用內建 `shasum` 驗證；安裝後執行 `codeaw-bridge tray`，選單列提供配對、ACP 安裝、設定、裝置管理與更新。macOS 也可使用 `codeaw-bridge-macos-x64-setup.dmg`／`codeaw-bridge-macos-arm64-setup.dmg`，將 `codeaw.app` 拖到 Applications 後開啟。未公證版本可能需要在「系統設定 → 隱私權與安全性」允許開啟。
 
 可指定穩定版（`latest`）、版本 tag，或安裝路徑：
 
@@ -78,15 +80,28 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 | `listen.hosts: auto` | 只綁這台電腦的 Tailscale IP 與 127.0.0.1，**不會**對區網開放 |
 | `listen.port` | 預設 7860 |
 | `workspaces` | 手機可以瀏覽、也可以在這些資料夾開新對話（已有 session 的資料夾一律允許） |
+| `filesystem.allowAllPaths` | 預設 `false`；在電腦上選擇允許瀏覽所有磁碟／資料夾後，手機可從 C:、D: 等磁碟開新對話 |
 | `agents.<id>.env` | 額外環境變數，例如給某個 agent 指定不同的 `ANTHROPIC_BASE_URL` |
 | `notifications.ntfy` | 推播設定，見下方 |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
+若需瀏覽工作區以外的資料夾，在 Windows 系統匣「設定…」勾選「允許已配對裝置瀏覽所有磁碟與資料夾」，或在 YAML 加入 `filesystem: { allowAllPaths: true }` 後重新載入 bridge。此設定只能從電腦端啟用。**所有已配對裝置都能瀏覽、讀取這個 Windows 帳號可存取的檔案，並在任意資料夾啟動 agent／終端機**，包括私人資料；建議只配對可信任的裝置。不需此功能時取消勾選。資料夾限制不是 agent 或 shell 的安全沙箱，其權限仍由作業系統及 agent 設定決定。不存在的工作目錄會在啟動 agent 前直接回報錯誤。
+
+在新對話的「瀏覽…」選好父目錄後，按右上角的「新增資料夾」圖示，輸入名稱並建立。App 會進入新目錄，按「選這裡」即可用它開新對話；專案檔案頁也有相同按鈕。建立只限目前允許存取的目錄，不會覆蓋同名檔案，也不會自動開啟所有磁碟權限。
+
+聊天輸入列的「附加檔案或圖片」可選擇 iOS「檔案」等原生檔案選擇器。一般檔案選好後即以已配對裝置的認證上傳至電腦的 bridge 資料夾 `uploads/<id>/<檔名>`，每個檔案上限 50 MB，以 `resource_link` 附在訊息中讓 agent 自行讀取；超過 30 天的上傳會自動清除。上傳或送出失敗會顯示錯誤，送出失敗保留草稿及附件供重試。相簿／拍照／剪貼簿圖片仍使用圖片內容傳送。
+
+手機橫向會維持精簡聊天版面；鍵盤只在輸入欄取得焦點時開啟，可點輸入欄外、拖曳聊天列表，或按「收起鍵盤」。切換對話與開啟選擇器會解除舊輸入欄焦點。Windows 互動終端機會將手機的 LF 換行轉為 PowerShell 的 Enter（CR），避免只出現 `>>` 而未執行。
+
+聊天中自己上傳的圖片和 AI 回傳的圖片都可點擊開啟大圖，支援雙指縮放、拖曳、點兩下放大及重設縮放；重新連線後的圖片仍透過已配對 bridge 讀取。
+
+訊息下方一個勾表示 bridge 已收到，兩個勾表示 AI 已開始處理。排隊訊息在真正交給 AI 前保持一個勾；兩個勾不表示 AI 已完成回覆。傳送中或斷線而結果不明會顯示時鐘，請先查看聊天紀錄再重試。已收到的訊息會立即清空輸入欄，斷線、切換對話或回到 App 不會把它填回草稿。
+
 ### ACP agent 安裝器
 
-Windows 可從系統匣的「安裝 ACP agents…」或設定視窗的「安裝 ACP agent…」開啟安裝器，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
+Windows 系統匣與 macOS 選單列都可開啟「安裝 ACP agent…」，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
 
 所有平台都可使用 CLI：
 
@@ -100,6 +115,8 @@ codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；�
 ```
 
 agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式；Hermes Agent 目前不在 ACP registry，請依下方指引安裝。
+
+macOS 的 npm 安裝器會先檢查 Node.js／npm；若缺少或損壞，會下載官方 Node 24、驗證 SHA-256，放在設定旁的 `runtime/node/`，不更動 Homebrew 或系統 Node。新設定只列出真正找到的 ACP 執行檔，不再自動加入未安裝的 Claude。
 
 ### Hermes Agent
 
@@ -165,7 +182,9 @@ Windows 上的 `codex` agent 預設啟用桌面同步。先在 ChatGPT desktop a
 
 支援雙向訊息、圖片、串流回覆、命令與檔案變更、桌面發起的回合、插話、手機排隊、停止、工具批准，以及一般問題／MCP 表單回覆。手機斷線時桌面工作繼續；桌面 IPC 斷線後 bridge 會重新尋找 owner 並補齊歷史。發送結果不明的訊息不會自動重送。選擇「停止桌面同步」只解除訂閱並取消尚未發送的手機排隊訊息，桌面正在執行的工作會繼續。
 
-沒有桌面 owner 的對話與從 codeaw 新建的對話，仍使用原有 ACP 模式。已經附加過桌面的 session 會記住這個連接方式：owner 不可用時會提示重新連接，不會悄悄改成另一個 runtime。模型／模式設定、刪除對話、特殊選擇器、密碼問題及 URL 授權流程，請在桌面操作。
+沒有桌面 owner 的對話與從 codeaw 新建的對話，仍使用原有 ACP 模式。已經附加過桌面的 session 會記住這個連接方式：owner 不可用時會提示重新連接，不會悄悄改成另一個 runtime。手機可修改模型、推理強度、權限模式與 Default／Plan 協作模式；變更交由桌面 owner 套用並確認，作用於下一回合，進行中的回合保持原設定。模型清單讀取本機 Codex catalog metadata，也可輸入自訂模型 ID；實際可用性依帳號及桌面版本。刪除對話、特殊選擇器、密碼問題及 URL 授權流程，請在桌面操作。
+
+回合進行中一般「送出」會直接插入目前回合，長按「送出」則排到下一回合。bridge 會提供桌面新版 IPC 所需的訊息還原上下文並檢查接受結果；插入未獲確認會回報錯誤，避免誤稱成功。切換下一回合的模型設定不會中斷插話所在的回合。
 
 桌面 IPC 是內部介面，桌面更新可能需要同步更新 bridge。bridge 會從已安裝 app 的程式包讀取 IPC 方法版本表，不讀取桌面認證檔。可以在 agent 設定中關閉桌面同步，或指定其他 IPC／程式包位置：
 
@@ -231,7 +250,7 @@ New-NetFirewallRule -DisplayName "codeaw-bridge (Tailscale)" -Direction Inbound 
 
 ### 開機自動啟動
 
-Windows 可從系統匣勾選「登入後自動啟動系統匣」，或使用指令（不需要管理員權限）：
+Windows／macOS 可從系統匣或選單列勾選「登入後自動啟動」，或使用指令（不需要管理員權限）：
 
 ```powershell
 codeaw-bridge autostart install
@@ -240,6 +259,8 @@ codeaw-bridge autostart uninstall
 ```
 
 登入啟動採用使用者的 Windows Run 登錄項目，以隱藏視窗啟動，會沿用本機設定；若 bridge 已由服務啟動，登入時只附加系統匣。舊的 `bridge/scripts/autostart.ps1` 保留為相容入口，也會移除舊版登入排程。
+
+macOS 登入啟動使用 `~/Library/LaunchAgents/tw.codeaw.*.tray.plist`，下次登入後啟動選單列；若 Bridge 已在背景運行，只附加選單列。從 DMG 安裝後，請先把 App 放進 Applications 再啟用，避免啟動路徑指向已卸載的磁碟映像。
 
 ### 服務模式
 
@@ -268,6 +289,8 @@ Windows 服務在沒有登入桌面時也能運行。登入後執行 `codeaw-bri
 
 Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly 下載 `codeaw-ios-unsigned.ipa`，以自己的簽署／側載工具重新簽署後安裝。Unsigned IPA 沒有 Apple 簽章或 provisioning profile，無法直接點開安裝，也不是 App Store／TestFlight 發行包。
 
+App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://import?url=<percent-encoded HTTPS IPA URL>`，直接讓 LCSign 下載並匯入 IPA，無須先在 Safari 下載再手動分享。此格式已由 [LCSign 官方安裝包](https://www.sign.lc/install) 的 URL scheme 與繁體中文說明確認。匯入後仍需在 LCSign 的「專案／檔案」頁面用原本的憑證與 bundle identifier 簽名並安裝，以保留資料；scheme 不會自動簽名。若未安裝 LCSign 或無法開啟，App 會提供瀏覽器下載備援。
+
 1. 安裝 Tailscale App，並登入同一個 tailnet。
 2. 安裝 codeaw App：[nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 的 `codeaw-arm64-v8a.apk` 或 `codeaw-universal.apk`（或用 `cd app && flutter build apk --release --target-platform=android-arm64` 自己建置）。
 3. 在電腦上執行 `codeaw-bridge pair`，用 App 的「掃描 QR code」掃終端機上的 QR。也可以手動輸入網址與配對碼；配對碼 5 分鐘內有效，只能用一次。
@@ -279,6 +302,20 @@ Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly
 - 輸入框上方的 chip 可以切換模式、模型與推理強度。Claude 的「Manual」模式會在每個危險操作前詢問；`dontAsk` 會直接拒絕沒有預先允許的工具。
 - 右上角可以瀏覽專案檔案，或查看 git 變更與 diff。
 - 「從電腦重新載入歷史」：如果你在終端機上又繼續聊了同一個 session，用這個重新同步。
+
+### CLI Proxy API 用量
+
+從首頁的用量圖示或「設定 → CPA 用量」開啟「用量與額度」，按「連接 CPA」填入 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的網址與 **Management Key**。這是 CPA 管理金鑰，不是模型呼叫用的 API key。網址可填伺服器根目錄（例如 `http://127.0.0.1:8317`）、`management.html`、反向代理前綴，或明確的 `/v0/management`、`/v8/management`；根目錄預設使用仍受支援的 v0 API。設定與金鑰保存在目前裝置的加密儲存，Web 則使用瀏覽器的加密儲存機制。
+
+由**已配對的 Windows bridge**連到 CPA，因此 `127.0.0.1` 指的是電腦，不是 iPhone；CPA 不必為手機額外開放 CORS。若 CPA 在其他電腦，需允許 bridge 存取其管理 API，依 [CPA 管理 API 文件](https://help.router-for.me/management/api) 設定遠端管理權限，並使用 HTTPS 或可信任的私有網路。Management Key 會經配對連線送到 bridge，再作為認證送到你指定的 CPA；bridge 不將金鑰寫入設定或日誌。
+
+帳號以精簡列表顯示 Codex、Claude、Grok、Antigravity 等類型、方案、剩餘百分比與本地時間的重置倒數。Codex／Claude 可顯示 5 小時、每週及服務商提供的其他視窗；Grok 顯示其每週 credits／每月額度，Antigravity 顯示模型群組。可搜尋、依類型篩選、下拉或逐帳號重新整理。剩餘重置次數只顯示 Codex 回傳的實際可用 reset credits，不以週內時間估算；重置時間已到也需重新整理確認額度。API key 帳號或其他服務商未提供配額時會顯示未知／不支援，不會假設 100%。
+
+用量頁頂部保留各類型的「週／5hr」平均額度，分別計算、不混合 Codex／Claude／AGY。各帳號等權，例如三個 Codex 帳號剩餘 97%、23%、20%，平均顯示 46.7%；未知、失敗、停用或不可用帳號不納入，零額度仍納入。AGY 先平均帳號內相同週期的模型群組，再平均帳號；Codex review 和 Claude 特定模型額度不混入主要額度。搜尋與篩選不改變平均。
+
+設定 CPA 後，聊天標題旁也會顯示目前代理對應的兩條精簡額度條，只標「週／5hr」及一位小數百分比；點擊可查看用量頁。剩餘 ≥50% 為綠色、20–49.9% 為黃色、<20% 為紅色，未知為灰色。手機狹窄版面將部分操作移到選單，保留聊天標題及額度條。App 在前景每 30 秒查詢一次，回到前景或重新連線立即更新；聊天與用量頁共用資料及計時器，正在查詢時不重疊發送，背景暫停。
+
+用量查詢只讀取管理端帳號清單及固定的服務商用量／方案介面，不下載認證檔、不回傳服務商 token、不呼叫模型，也不兌換 reset credits。金鑰可在「CPA 連線設定」移除。App 另提供「設定 → 外觀」的跟隨系統／淺色／深色選擇。
 
 ### 推播（App 沒開時）
 
@@ -326,11 +363,13 @@ GitHub Actions 的 [Build nightly](.github/workflows/build.yml) 會在 `master` 
 
 在 repository 的 Actions secrets 設定 `KEYSTORE_BASE64`（keystore 的 Base64）、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`。密碼同時用於 keystore 與 key；CI 缺少任何一項會失敗。Android 會產出已簽章的 universal APK、三個 ABI APK 與 AAB，版本編號使用 workflow run number。
 
-Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 附件提供 NSIS `*-setup.exe` 與可攜式 ZIP，其餘為 tar.gz，全部列入 `SHA256SUMS`。
+Bridge 會將 `bridge/package.json` 的所有 `bin` 打包成 Windows、Linux（glibc／musl）與 macOS 的 x64／ARM64 執行檔。執行檔內含 runtime，不需另外安裝 Node 或 Bun；Tailscale 與 ACP agents 仍需另外安裝。Windows 提供 NSIS `*-setup.exe` 與可攜式 ZIP；macOS 提供 `*-setup.dmg` 與 tar.gz，Linux 提供 tar.gz，全部列入 `SHA256SUMS`。
 
 Web 先建置，再附入所有 bridge 發行包與 Windows 安裝程式。iOS 在 macOS runner 執行 `flutter build ios --release --no-codesign`，把 `Runner.app` 放進 `Payload/` 壓縮成 `codeaw-ios-unsigned.ipa`，不需要 Apple 簽署 secrets。本機 iOS 建置需 macOS／Xcode，也可以用相同方式打包。
 
 本機已安裝 Bun 1.4.2 或更新版本時，可在 `bridge` 執行 `npm run build:bin`，或用 `npm run build:bin -- --target=bun-linux-arm64` 交叉建置，輸出位於 `bridge/dist/bin`。Windows 執行檔需在 Windows 建置，才能嵌入與 Flutter App 相同的圖示；系統匣和原生視窗會使用這個圖示。本機 Android 建置若未設定 `KEYSTORE_PATH`、`KEYSTORE_ALIAS`、`KEYSTORE_PASSWORD`，會沿用 debug 簽章。
+
+macOS 本機建置另需 Xcode Command Line Tools；先建置 web 與 standalone bridge，再執行 `npm run build:macos -- --out-dir dist/bin` 和 `npm run build:macos-installer`，產生含選單列與 web 的 `bridge/dist/installer/codeaw-bridge-macos-<架構>-setup.dmg`。CI 在對應架構的 macOS runner 建置。
 
 建置 Windows NSIS 安裝程式另需 [NSIS 3.09+](https://nsis.sourceforge.io/Download)（建議使用最新版）；Windows 安裝 NSIS，Linux 可安裝 `nsis` 套件。預設會先建置對應的 Windows 執行檔，再產生安裝包：
 
@@ -355,6 +394,7 @@ npm run typecheck
 npm run smoke            # 對本機真的 agent 做握手 / 列 session / 開 session（不送 prompt）
 npm run smoke:desktop    # Windows：隔離設定渲染三個原生視窗、編譯服務 host；不安裝服務／自動啟動
 npm run smoke:tray       # Windows：驗證打包版 CLI 結束後系統匣仍存活，重複啟動只有一個圖示
+npm run smoke:macos      # macOS：驗證選單列存活、原生 IPC、重複啟動與重啟／停止（隔離設定）
 npx tsx scripts/dev-bridge.ts --host 0.0.0.0 --port 7861   # 只有假 agent 的 bridge，方便調 UI
 
 cd ../app

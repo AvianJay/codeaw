@@ -20,10 +20,18 @@ if (!bins || Object.keys(bins).length === 0) throw new Error("No package.json bi
 
 const outputDir = path.resolve(bridgeDir, values["out-dir"]);
 const windows = values.target.includes("windows");
+const macos = values.target.includes("darwin");
 if (windows && process.platform !== "win32") {
   throw new Error("Build Windows executables on Windows so Bun can embed the app icon.");
 }
 fs.mkdirSync(outputDir, { recursive: true });
+if (macos) {
+  if (process.platform !== "darwin") throw new Error("Build macOS releases on macOS so the native menu bar can be included.");
+  const helper = spawn.sync(process.execPath, [path.join(bridgeDir, "scripts/build-macos.mjs"), "--out-dir", outputDir,
+    "--arch", values.target.endsWith("arm64") ? "arm64" : "x64"], { cwd: bridgeDir, stdio: "inherit" });
+  if (helper.error) throw helper.error;
+  if (helper.status !== 0) process.exit(helper.status ?? 1);
+}
 // Keep the browser client with portable releases and installers.
 const webDir = path.join(bridgeDir, "dist/web");
 if (fs.existsSync(path.join(webDir, "index.html")) && path.resolve(outputDir, "web") !== webDir) {

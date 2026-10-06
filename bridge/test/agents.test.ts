@@ -57,6 +57,16 @@ describe("ACP registry", () => {
 });
 
 describe("agent installation", () => {
+  it("handles macOS alias paths while retaining archive containment checks", async () => {
+    const root = home();
+    const alias = path.join(home(), "alias");
+    fs.symlinkSync(root, alias, process.platform === "win32" ? "junction" : "dir");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(validZip)));
+    const installed = await prepareAgent(alias, binary());
+    expect(fs.readFileSync(installed.config.command, "utf8")).toBe("agent fixture");
+    expect(installed.directory).toContain(fs.realpathSync(root));
+  });
+
   it("downloads, verifies and extracts a binary with its ACP arguments", async () => {
     const root = home();
     const sha256 = crypto.createHash("sha256").update(validZip).digest("hex");
@@ -158,7 +168,8 @@ describe("agent installation", () => {
     const installed = await prepareAgent(root, agent({ npx: { package: "codeaw-acp-fixture@1.0.0", args: [], env: {} } }), undefined, undefined, {
       run: (command, args, directory, signal, env) => runInstaller(command, [...args.slice(0, -1), archive], directory, signal, env),
     });
-    await runInstaller(installed.config.command, ["--check"], installed.directory, new AbortController().signal);
+    await runInstaller(installed.config.command, ["--check"], installed.directory, new AbortController().signal, installed.config.env.PATH
+      ? { ...process.env, ...installed.config.env } : undefined);
   });
 
   it("cleans up package failures and rejects package specs that could invoke a shell", async () => {
@@ -232,7 +243,7 @@ describe("background agent installer", () => {
     expect(await installer.wait()).toMatchObject({ state: "failed", message: "Fixture failure" });
     await installer.start("codex");
     await installer.stop();
-    expect(installer.getStatus()).toMatchObject({ state: "failed", message: "Cancelled" });
+    expect(installer.getStatus()).toMatchObject({ state: "failed", message: "Agent installation cancelled" });
     expect(commit).not.toHaveBeenCalled();
   });
 

@@ -257,7 +257,10 @@ void main() {
       expect(uri.host, 'install');
       expect(uri.queryParameters['url'], url.toString());
     }
-    expect(IosInstaller.lcSign.installUri(url), url);
+    final lc = IosInstaller.lcSign.installUri(url);
+    expect(lc.scheme, 'loadcontroller');
+    expect(lc.host, 'import');
+    expect(lc.queryParameters['url'], url.toString());
     expect(IosInstaller.browser.installUri(url), url);
   });
 

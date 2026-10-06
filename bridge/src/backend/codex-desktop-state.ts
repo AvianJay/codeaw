@@ -75,7 +75,7 @@ function textOf(value: any): string {
   return "";
 }
 
-function inputBlocks(input: any): acp.ContentBlock[] {
+export function inputBlocks(input: any): acp.ContentBlock[] {
   if (typeof input === "string") return [{ type: "text", text: input }];
   if (!Array.isArray(input)) return [];
   const blocks: acp.ContentBlock[] = [];
@@ -112,22 +112,25 @@ function toolStatus(item: any, turn: any): acp.ToolCallStatus {
   return "in_progress";
 }
 
-export function projectDesktopConversation(conversation: any): { records: DesktopRecord[]; state: DesktopState; turns: any[] } {
+export function projectDesktopConversation(conversation: any, messagePromptIds: ReadonlyMap<string, string> = new Map()): { records: DesktopRecord[]; state: DesktopState; turns: any[] } {
   const turns = desktopTurns(conversation);
   const records: DesktopRecord[] = [];
-  function message(key: string, type: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk", blocks: acp.ContentBlock[]) {
-    blocks.forEach((content, index) => records.push({ key: `${key}:${index}`, update: { sessionUpdate: type, messageId: key, content } as acp.SessionUpdate }));
+  function message(key: string, type: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk", blocks: acp.ContentBlock[], promptId?: string, steered = false) {
+    blocks.forEach((content, index) => records.push({ key: `${key}:${index}`, update: { sessionUpdate: type, messageId: key, content,
+      ...(type === "user_message_chunk" ? { _meta: { codeaw: { receipt: "read", ...(steered ? { steered: true } : {}), ...(promptId ? { promptId, replace: true, partIndex: index } : {}) } } } : {}),
+    } as acp.SessionUpdate }));
   }
   turns.forEach((turn, index) => {
     const id = String(turn.turnId ?? turn.id ?? turn.params?.clientUserMessageId ?? `turn-${index}`);
     const input = inputBlocks(turn.params?.input ?? turn.input);
-    if (input.length) message(`${id}:user`, "user_message_chunk", input);
+    if (input.length) message(`${id}:user`, "user_message_chunk", input, turn.params?.clientUserMessageId);
     (turn.items ?? []).forEach((item: any, itemIndex: number) => {
       const key = `${id}:${item.id ?? item.itemId ?? `${item.type}-${itemIndex}`}`;
       if (item.type === "userMessage") {
-        if (!input.length) message(`${id}:user`, "user_message_chunk", inputBlocks(item.content ?? item.input));
+        if (!input.length) message(`${id}:user`, "user_message_chunk", inputBlocks(item.content ?? item.input), turn.params?.clientUserMessageId);
       } else if (item.type === "steeringUserMessage") {
-        message(key, "user_message_chunk", inputBlocks(item.input ?? item.content ?? item.text));
+        message(key, "user_message_chunk", inputBlocks(item.input ?? item.content ?? item.text),
+          item.clientUserMessageId ?? item.serverClientUserMessageId ?? item.restoreMessage?.id ?? messagePromptIds.get(key), true);
       } else if (item.type === "agentMessage") {
         const text = textOf(item.text ?? item.content);
         if (text) message(key, "agent_message_chunk", [{ type: "text", text }]);
@@ -184,6 +187,8 @@ export function desktopRecordChanges(previous: DesktopRecord[] | undefined, next
     const after = record.update as any;
     if (!before) { updates.push(record.update); continue; }
     if (JSON.stringify(before) === JSON.stringify(after)) continue;
+    // User replacements contain the whole input, not a streamed suffix.
+    if (after.sessionUpdate === "user_message_chunk") return { reset: true, updates: next.map((item) => item.update) };
     if (after.sessionUpdate.endsWith("_chunk") && after.content.type === "text" && before.content.type === "text" && after.content.text.startsWith(before.content.text)) {
       const text = after.content.text.slice(before.content.text.length);
       if (text) updates.push({ ...after, content: { type: "text", text } });

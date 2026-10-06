@@ -21,15 +21,15 @@ const HELP = `codeaw-bridge ${VERSION}
 Usage: codeaw-bridge [command] [options]
 
 Commands:
-  start            Run in the foreground (default on Linux/macOS)
-  tray             Run in the background with a Windows tray (default on Windows)
+  start            Run in the foreground (default on Linux)
+  tray             Run in the background with a tray / macOS menu bar
   stop             Gracefully stop the running bridge
   restart          Reload config and restart the running bridge
   status           Show bridge status and connected device count
-  settings         Open the Windows settings window
+  settings         Open the desktop settings window
   agents <action>  list / install <id> (ACP registry agents)
   update <action>  check / download / install (verified bridge updates)
-  autostart <action> install / uninstall / status (Windows login tray)
+  autostart <action> install / uninstall / status (Windows/macOS login tray)
   init             Write a starter config if none exists
   pair             Print a QR / one-time code (valid 5 minutes)
   devices          List paired devices
@@ -41,7 +41,7 @@ Options:
   -c, --config <file>  Config file (default: ${defaultConfigFile()})
   -p, --port <port>    Override listen.port (0 = random)
       --background     Start detached; logs go to the config folder's bridge.log
-      --tray           Show the Windows tray when starting
+      --tray           Show the tray / macOS menu bar when starting
       --window         Open the pairing, ACP installer or updater window
       --channel <name>  Select release or nightly for bridge updates
       --headless       Suppress interactive pairing (for service managers)
@@ -70,11 +70,11 @@ async function main(): Promise<void> {
   if (values.help) { process.stdout.write(HELP); return; }
   if (values.debug) setLogLevel("debug");
   const file = path.resolve(values.config ?? defaultConfigFile());
-  const command = positionals[0] ?? (process.platform === "win32" ? "tray" : "start");
+  const command = positionals[0] ?? (["win32", "darwin"].includes(process.platform) ? "tray" : "start");
   const port = values.port === undefined ? undefined : Number(values.port);
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65535)) throw new Error("Port must be an integer from 0 to 65535");
-  if ((values.tray || command === "tray" || command === "settings" || values.window) && process.platform !== "win32") {
-    throw new Error("Native tray and windows are currently available on Windows");
+  if ((values.tray || command === "tray" || command === "settings" || values.window) && !["win32", "darwin"].includes(process.platform)) {
+    throw new Error("Native tray and windows are available on Windows and macOS");
   }
 
   const showDesktop = async (page?: DesktopPage, channel?: string) => {
@@ -159,7 +159,13 @@ async function main(): Promise<void> {
         }
       } else {
         await installer.start(positionals[2]!);
-        status = await installer.wait();
+        status = installer.getStatus();
+        let message = "";
+        while (status.state === "installing") {
+          if (status.message !== message) { message = status.message; process.stdout.write(message + "\n"); }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          status = installer.getStatus();
+        }
       }
       if (status.state !== "succeeded") throw new Error(status.message);
       process.stdout.write(`Installed ${status.name} ${status.version}. ${running ? "Run codeaw-bridge restart to apply it (active turns will stop)." : "Start codeaw-bridge to use it."}\n`);

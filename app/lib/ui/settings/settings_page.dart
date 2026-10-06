@@ -71,6 +71,52 @@ class _SettingsPageState extends State<SettingsPage> {
                 builder: (context, padding) => ListView(
                   padding: padding,
                   children: [
+                    const _Section('外觀'),
+                    ListTile(
+                      leading: const Icon(Icons.contrast_rounded),
+                      title: const Text('顯示主題'),
+                      trailing: DropdownButtonHideUnderline(
+                        child: DropdownButton<ThemeMode>(
+                          value: state.themeMode,
+                          items: const [
+                            DropdownMenuItem(
+                              value: ThemeMode.system,
+                              child: Text('跟隨系統'),
+                            ),
+                            DropdownMenuItem(
+                              value: ThemeMode.light,
+                              child: Text('淺色'),
+                            ),
+                            DropdownMenuItem(
+                              value: ThemeMode.dark,
+                              child: Text('深色'),
+                            ),
+                          ],
+                          onChanged: (mode) async {
+                            if (mode == null) return;
+                            final messenger = ScaffoldMessenger.of(context);
+                            try {
+                              await state.setThemeMode(mode);
+                            } catch (_) {
+                              messenger.showSnackBar(
+                                const SnackBar(content: Text('無法儲存外觀設定')),
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const _Section('用量與帳號'),
+                    ListTile(
+                      leading: Icon(
+                        Icons.donut_large_rounded,
+                        color: scheme.primary,
+                      ),
+                      title: const Text('CPA 用量與額度'),
+                      subtitle: const Text('Codex、Claude、Grok · 重置時間與剩餘額度'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => context.push('/usage'),
+                    ),
                     const _Section('App 更新'),
                     ListenableBuilder(
                       listenable: state.updater,

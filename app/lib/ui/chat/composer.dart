@@ -19,7 +19,6 @@ class Composer extends StatefulWidget {
   const Composer({super.key, required this.controller, this.imageClipboard, this.pickFiles});
   final SessionController controller;
   final ImageClipboard? imageClipboard;
-
   /// Chooses files to send; defaults to the platform file picker.
   final Future<List<XFile>> Function()? pickFiles;
 
@@ -56,6 +55,7 @@ class _ComposerState extends State<Composer> {
   @override
   void initState() {
     super.initState();
+    _focus.addListener(_focusChanged);
     _clipboard = widget.imageClipboard ?? ImageClipboard();
     _stopPasteListener = _clipboard.listen(
       canPaste: () => mounted && _focus.hasFocus && _supportsImages,
@@ -63,6 +63,15 @@ class _ComposerState extends State<Composer> {
     );
     _text.text = c.draft;
     _text.addListener(_onTextChanged);
+  }
+
+  void _focusChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _dismissKeyboard() {
+    _focus.unfocus();
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
   }
 
   @override
@@ -78,6 +87,7 @@ class _ComposerState extends State<Composer> {
   void didUpdateWidget(Composer oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, c)) {
+      _dismissKeyboard();
       _attachGeneration++;
       _readingImages = 0;
       _images.clear();
@@ -86,7 +96,10 @@ class _ComposerState extends State<Composer> {
       if (_attachMenu.isOpen) _attachMenu.close();
       _text.text = c.draft;
     } else if (_text.text != c.draft) {
-      _text.value = TextEditingValue(text: c.draft, selection: TextSelection.collapsed(offset: c.draft.length));
+      _text.value = TextEditingValue(
+        text: c.draft,
+        selection: TextSelection.collapsed(offset: c.draft.length),
+      );
     }
   }
 
@@ -258,7 +271,27 @@ class _ComposerState extends State<Composer> {
           'data': base64Encode(img.bytes),
         },
     ];
-    c.send(blocks, queue: queue);
+    final target = c;
+    final images = List<ClipboardImage>.of(_images);
+    final uploads = List<_Upload>.of(_uploads);
+    final mentions = Map<String, String>.of(c.draftMentions);
+    unawaited(
+      target.send(blocks, queue: queue).then((sent) {
+        if (!sent &&
+            mounted &&
+            identical(c, target) &&
+            _text.text.isEmpty &&
+            _images.isEmpty &&
+            _uploads.isEmpty) {
+          c.draftMentions.addAll(mentions);
+          _text.text = text;
+          setState(() {
+            _images.addAll(images);
+            _uploads.addAll(uploads);
+          });
+        }
+      }),
+    );
     c.draftMentions.clear();
     _text.clear();
     setState(() {
@@ -507,7 +540,13 @@ class _ComposerState extends State<Composer> {
         _readingImages == 0 &&
         !_uploads.any((u) => u.file == null) &&
         (_text.text.trim().isNotEmpty || _images.isNotEmpty || _uploads.isNotEmpty);
-    final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
+    final wide = useWideLayout(context);
+    // Scaffold removes body viewInsets after resizing; read the actual view
+    // so the Done control and compact composer still see the keyboard.
+    final view = View.of(context);
+    final keyboardInset = view.viewInsets.bottom / view.devicePixelRatio;
+    final keyboard = keyboardInset > 0;
+    final compact = MediaQuery.sizeOf(context).height - keyboardInset < 430;
     return Padding(
       padding: wide
           ? const EdgeInsets.fromLTRB(16, 8, 16, 16)
@@ -530,11 +569,13 @@ class _ComposerState extends State<Composer> {
             ),
           },
           child: Material(
-            color: scheme.surfaceContainer,
+            color: scheme.surfaceContainerLow,
             shape: wide
                 ? RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(20),
-                    side: BorderSide(color: scheme.outlineVariant),
+                    side: BorderSide(
+                      color: scheme.outlineVariant.withValues(alpha: .7),
+                    ),
                   )
                 : null,
             clipBehavior: Clip.antiAlias,
@@ -566,11 +607,11 @@ class _ComposerState extends State<Composer> {
                     )
                   else if (_mentioning)
                     _SuggestionList(children: _fileTiles(scheme)),
-                  ConfigBar(controller: c),
+                  if (!(compact && keyboard)) ConfigBar(controller: c),
                   if (_readingImages > 0) const LinearProgressIndicator(),
                   if (_images.isNotEmpty || _uploads.isNotEmpty)
                     SizedBox(
-                      height: 72,
+                      height: compact ? 48 : 72,
                       child: ListView(
                         scrollDirection: Axis.horizontal,
                         padding: const EdgeInsets.symmetric(
@@ -635,7 +676,8 @@ class _ComposerState extends State<Composer> {
                               controller: _text,
                               focusNode: _focus,
                               minLines: 1,
-                              maxLines: 6,
+                              maxLines: compact ? 2 : 6,
+                              onTapOutside: (_) => _dismissKeyboard(),
                               textInputAction: TextInputAction.newline,
                               contentInsertionConfiguration: _supportsImages
                                   ? ContentInsertionConfiguration(
@@ -651,35 +693,69 @@ class _ComposerState extends State<Composer> {
                                     : '輸入訊息，@ 檔案、/ 指令',
                                 hintMaxLines: 1,
                                 filled: true,
-                                fillColor: scheme.surface,
+                                fillColor: scheme.surfaceContainerLowest,
                                 isDense: true,
                                 contentPadding: const EdgeInsets.symmetric(
                                   horizontal: 14,
                                   vertical: 10,
                                 ),
                                 border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(22),
-                                  borderSide: BorderSide.none,
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.outlineVariant.withValues(
+                                      alpha: .7,
+                                    ),
+                                  ),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.outlineVariant.withValues(
+                                      alpha: .7,
+                                    ),
+                                  ),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.primary.withValues(alpha: .6),
+                                  ),
                                 ),
                               ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 6),
+                        if (_focus.hasFocus && keyboard)
+                          IconButton(
+                            tooltip: '收起鍵盤',
+                            icon: const Icon(Icons.keyboard_hide_rounded),
+                            onPressed: _dismissKeyboard,
+                          ),
                         if (running)
                           IconButton.filledTonal(
                             tooltip: '停止',
                             icon: const Icon(Icons.stop_rounded),
                             onPressed: c.cancel,
                           ),
-                        GestureDetector(
-                          onLongPress: canSend && running
-                              ? () => _send(queue: true)
-                              : null,
-                          child: IconButton.filled(
-                            tooltip: running ? '送出（長按＝排隊）' : '送出',
-                            icon: const Icon(Icons.arrow_upward_rounded),
-                            onPressed: canSend ? _send : null,
+                        TooltipTheme(
+                          data: const TooltipThemeData(
+                            triggerMode: TooltipTriggerMode.manual,
+                          ),
+                          child: GestureDetector(
+                            onLongPress: canSend && running
+                                ? () => _send(queue: true)
+                                : null,
+                            child: IconButton.filled(
+                              style: IconButton.styleFrom(
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                              ),
+                              tooltip: running ? '送出（長按＝排隊）' : '送出',
+                              icon: const Icon(Icons.arrow_upward_rounded),
+                              onPressed: canSend ? _send : null,
+                            ),
                           ),
                         ),
                       ],
@@ -970,10 +1046,35 @@ class ConfigBar extends StatelessWidget {
                     )
                   : ActionChip(
                       visualDensity: VisualDensity.compact,
-                      avatar: Icon(_categoryIcon(o.category), size: 15),
-                      label: Text(
-                        o.currentLabel,
-                        style: const TextStyle(fontSize: 12),
+                      backgroundColor: Colors.transparent,
+                      side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      avatar: o.category == 'model'
+                          ? AgentAvatar(agentId: controller.agentId, size: 18)
+                          : Icon(
+                              _categoryIcon(o),
+                              size: 15,
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            o.currentLabel,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(width: 3),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 13,
+                            color: scheme.outline,
+                          ),
+                        ],
                       ),
                       onPressed: () => _pickValue(context, o),
                     ),
@@ -996,13 +1097,16 @@ class ConfigBar extends StatelessWidget {
     );
   }
 
-  IconData _categoryIcon(String? category) => switch (category) {
-    'mode' => Icons.shield_outlined,
-    'model' => Icons.memory_rounded,
-    'thought_level' => Icons.psychology_outlined,
-    'model_config' => Icons.tune_rounded,
-    _ => Icons.settings_outlined,
-  };
+  IconData _categoryIcon(ConfigOption option) =>
+      option.id == 'collaboration_mode'
+      ? Icons.route_outlined
+      : switch (option.category) {
+          'mode' => Icons.shield_outlined,
+          'model' => Icons.memory_rounded,
+          'thought_level' => Icons.psychology_outlined,
+          'model_config' => Icons.tune_rounded,
+          _ => Icons.settings_outlined,
+        };
 
   Future<void> _pickValue(BuildContext context, ConfigOption o) async {
     final values = o.values;

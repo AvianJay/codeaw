@@ -16,6 +16,7 @@ export type CodeawEvent =
   | { type: "elicitation_request"; requestId: string; request: acp.CreateElicitationRequest }
   | { type: "elicitation_resolved"; requestId: string; action: string; by?: string }
   | { type: "dequeued"; promptId: string; cancelled?: boolean }
+  | { type: "prompt_receipt"; promptId: string; status: "received" | "read" | "failed" }
   | { type: "error"; message: string; code?: number };
 
 export interface UpdateEntry {

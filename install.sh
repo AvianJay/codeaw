@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the standalone Linux bridge and its bundled web app.
+# Install the standalone Linux/macOS bridge and its bundled web app.
 set -eu
 
 fail() {
@@ -58,15 +58,21 @@ main() {
     case "$version" in
         ''|.|..|-*|*[!a-zA-Z0-9._-]*) fail "Invalid release tag: $version" ;;
     esac
-    [ "$(uname -s)" = Linux ] || fail "This installer supports Linux only."
+    system=$(uname -s)
+    case "$system" in Linux|Darwin) ;; *) fail "This installer supports Linux and macOS only." ;; esac
     case "$(uname -m)" in
         x86_64|amd64) arch=x64 ;;
         aarch64|arm64) arch=arm64 ;;
-        *) fail "Unsupported CPU architecture; Linux x64 and ARM64 are available." ;;
+        *) fail "Unsupported CPU architecture; x64 and ARM64 are available." ;;
     esac
-    for command in curl tar sha256sum awk sed mktemp mkdir mv rm ln readlink chmod; do
+    for command in curl tar awk sed mktemp mkdir mv rm ln readlink chmod; do
         command -v "$command" >/dev/null 2>&1 || fail "Required command not found: $command"
     done
+    if [ "$system" = Darwin ]; then
+        target=macos-$arch
+        command -v shasum >/dev/null 2>&1 || fail "Required command not found: shasum"
+    else
+    command -v sha256sum >/dev/null 2>&1 || fail "Required command not found: sha256sum"
     libc=$(ldd --version 2>&1 || true)
     case "$libc" in
         *musl*) target=linux-$arch-musl ;;
@@ -82,6 +88,7 @@ main() {
                 [ -n "$target" ] || fail "Cannot detect glibc or musl on this system."
             fi ;;
     esac
+    fi
 
     case "$install_dir" in /*) ;; *) fail "--install-dir must be an absolute path." ;; esac
     case "$bin_dir" in /*) ;; *) fail "--bin-dir must be an absolute path." ;; esac
@@ -137,7 +144,7 @@ main() {
     [ "${#checksum}" -eq 64 ] || fail "Missing or duplicate SHA-256 checksum for $asset"
     case "$checksum" in *[!a-fA-F0-9]*) fail "Invalid SHA-256 checksum for $asset" ;; esac
     download "$base/$asset" "$stage/$asset"
-    printf '%s  %s\n' "$checksum" "$asset" | (cd "$stage" && sha256sum -c -) \
+    printf '%s  %s\n' "$checksum" "$asset" | (cd "$stage" && if [ "$system" = Darwin ]; then shasum -a 256 -c -; else sha256sum -c -; fi) \
         || fail "Checksum verification failed; nothing was installed. Retry if nightly was being published."
 
     mkdir "$stage/payload"
@@ -146,6 +153,11 @@ main() {
         || fail "Archive is missing the bridge executable."
     [ -f "$stage/payload/web/index.html" ] || fail "Archive is missing the bundled web app."
     chmod 755 "$stage/payload/codeaw-bridge"
+    if [ "$system" = Darwin ]; then
+        [ -f "$stage/payload/codeaw-menu" ] && [ ! -L "$stage/payload/codeaw-menu" ] \
+            || fail "Archive is missing the macOS menu bar helper. Use a newer macOS release."
+        chmod 755 "$stage/payload/codeaw-menu"
+    fi
     "$stage/payload/codeaw-bridge" --help >/dev/null \
         || fail "The downloaded bridge cannot run on this system; the previous install was kept."
     printf '%s\n' "$version $target" > "$stage/payload/.codeaw-installer"
@@ -162,7 +174,11 @@ main() {
         *) printf 'Add this directory to your shell profile and current PATH:\n  export PATH=%s:"$PATH"\n' "$(quote "$bin_dir")" ;;
     esac
     printf '\nStart and pair your phone:\n  %s start\n' "$(quote "$link")"
-    printf '\nOptional systemd user service:\n  %s service install\n  %s service start\n' "$(quote "$link")" "$(quote "$link")"
+    if [ "$system" = Darwin ]; then
+        printf '\nStart the menu bar and optionally enable login startup:\n  %s tray\n  %s autostart install\n' "$(quote "$link")" "$(quote "$link")"
+    else
+        printf '\nOptional systemd user service:\n  %s service install\n  %s service start\n' "$(quote "$link")" "$(quote "$link")"
+    fi
     printf '\nTailscale and your chosen ACP agents must be installed separately.\n'
     printf 'After an update, stop/start the bridge or run codeaw-bridge service restart to load the new executable.\n'
 }

@@ -10,6 +10,7 @@ import { logger, type Logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import type { AgentBackend } from "./backend.js";
 import type { DesktopState } from "./codex-desktop-state.js";
+import { desktopEnvironment, resolveCommand } from "../util/environment.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -128,12 +129,16 @@ export class AgentProcess implements AgentBackend {
     this.stderrTail = "";
     const generation = ++this.generation;
     const { command, args, env } = this.config;
+    const environment = desktopEnvironment({ ...process.env, ...env });
+    if (!resolveCommand(command, environment)) {
+      return this.fail(generation, `ACP executable not found: ${command}. Install this agent from the ACP installer or fix its command in settings.`);
+    }
     this.log.info(`starting: ${command} ${args.join(" ")}`);
     let child: ChildProcess;
     try {
       child = spawn(command, args, {
         cwd: this.config.cwd ?? os.homedir(),
-        env: { ...process.env, ...env },
+        env: environment,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
@@ -163,9 +168,10 @@ export class AgentProcess implements AgentBackend {
     // stdout closing is the earliest sign of death; the process 'exit' event can lag behind.
     void this.conn.closed.then(() => this.onGone(generation, "closed its connection"));
 
+    let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      const t = setTimeout(() => reject(new Error(`initialize timed out after ${this.startTimeoutMs} ms`)), this.startTimeoutMs);
-      t.unref();
+      timer = setTimeout(() => reject(new Error(`initialize timed out after ${this.startTimeoutMs} ms`)), this.startTimeoutMs);
+      timer.unref();
     });
     try {
       const init = await Promise.race([
@@ -183,10 +189,12 @@ export class AgentProcess implements AgentBackend {
       this.lastUsed = Date.now();
       this.log.info(`ready (${describeAgent(init)})`);
     } catch (err) {
-      const detail = (err as Error).message + (this.stderrTail ? `\n${this.stderrTail.trim().slice(-800)}` : "");
+      const message = (err as Error).message;
+      const detail = (/abort/i.test(message) ? "ACP connection closed before initialization completed. Check the agent executable and its Node.js runtime." : message)
+        + (this.stderrTail ? `\n${this.stderrTail.trim().slice(-800)}` : "");
       this.killTree();
       return this.fail(generation, detail);
-    }
+    } finally { clearTimeout(timer); }
   }
 
   private fail(generation: number, detail: string): never {

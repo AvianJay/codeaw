@@ -49,7 +49,7 @@ describe("uploads", () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-workspace-"));
     dirs.push(workspace);
     const file = await uploads.save("log.txt", undefined, Readable.from([Buffer.from("log")]));
-    const guard = new PathGuard(() => [workspace], () => [], () => [uploads.dir]);
+    const guard = new PathGuard(() => [workspace], () => [], () => false, () => [uploads.dir]);
     expect(guard.resolveReadable(file.path)).toBe(fs.realpathSync.native(file.path));
     expect(() => guard.resolve(file.path)).toThrow(/outside/);
     expect(() => listDir(guard, path.dirname(file.path))).toThrow(/outside/);

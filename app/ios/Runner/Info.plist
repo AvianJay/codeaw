@@ -31,6 +31,7 @@
 		<string>altstore</string>
 		<string>sidestore</string>
 		<string>livecontainer</string>
+		<string>loadcontroller</string>
 	</array>
 	<key>FlutterDeepLinkingEnabled</key>
 	<false/>

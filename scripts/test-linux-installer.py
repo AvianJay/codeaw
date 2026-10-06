@@ -13,14 +13,14 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLER = ROOT / "install.sh"
-TARGETS = ("linux-x64", "linux-arm64", "linux-x64-musl", "linux-arm64-musl")
+TARGETS = ("linux-x64", "linux-arm64", "linux-x64-musl", "linux-arm64-musl", "macos-x64", "macos-arm64")
 
 
 class LinuxInstallerTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="codeaw-install-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(self.temporary.name).resolve()
         self.user_home = self.directory / "user's home"
         self.user_home.mkdir()
         self.downloads = self.directory / "downloads"
@@ -56,6 +56,8 @@ printf '%s\\n' "$url" >> "$TEST_ROOT/requests"
 [ "${TEST_DOWNLOAD_FAIL:-0}" = 0 ] || exit 22
 cp "$TEST_ROOT/downloads/${url##*/}" "$output"
 ''')
+        if not shutil.which("sha256sum", path="/usr/bin:/bin"):
+            self.stub("sha256sum", 'exec /usr/bin/shasum -a 256 "$@"')
         self.stub("mv", '''
 if [ "${TEST_FAIL_LINK:-0}" = 1 ] && [ "$1" = -f ]; then exit 1; fi
 exec /bin/mv "$@"
@@ -68,7 +70,7 @@ exec /bin/mv "$@"
         target.chmod(0o755)
 
     def make_release(self, text="first", web=True, executable=True, runnable=True):
-        files = {"LICENSE": b"fixture license"}
+        files = {"LICENSE": b"fixture license", "codeaw-menu": b"#!/bin/sh\nexit 0\n"}
         if executable:
             files["codeaw-bridge"] = f"#!/bin/sh\n[ \"$1\" = --help ] || exit 1\necho '{text}'\n".encode()
             if not runnable:
@@ -83,7 +85,7 @@ exec /bin/mv "$@"
                 for member, data in files.items():
                     info = tarfile.TarInfo("./" + member)
                     info.size = len(data)
-                    info.mode = 0o755 if member == "codeaw-bridge" else 0o644
+                    info.mode = 0o755 if member in ("codeaw-bridge", "codeaw-menu") else 0o644
                     bundle.addfile(info, io.BytesIO(data))
             sums.append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {name}\n")
         (self.downloads / "SHA256SUMS").write_text("".join(sums))
@@ -114,6 +116,17 @@ exec /bin/mv "$@"
                 self.assertEqual(self.command.resolve(), self.application / "codeaw-bridge")
                 self.assertEqual((self.application / "web/index.html").read_text(), "first")
                 self.assertEqual(subprocess.check_output([self.command, "--help"], text=True).strip(), "first")
+                self.assert_clean()
+
+    def test_macos_platforms_and_menu_bar(self):
+        self.env["TEST_OS"] = "Darwin"
+        for machine, target in (("x86_64", "macos-x64"), ("arm64", "macos-arm64")):
+            with self.subTest(target=target):
+                self.env["TEST_MACHINE"] = machine
+                result = self.install(piped=True)
+                self.assertIn(target, result.stdout)
+                self.assertIn("autostart install", result.stdout)
+                self.assertTrue((self.application / "codeaw-menu").is_file())
                 self.assert_clean()
 
     def test_upgrade_preserves_config_and_replaces_web(self):
@@ -230,7 +243,7 @@ exec /bin/mv "$@"
     def test_invalid_arguments_and_platforms_make_no_downloads(self):
         for args in (("--version",), ("--unknown",), ("--version", "../bad"), ("--install-dir", "/"), ("--bin-dir", "relative")):
             self.install(*args, success=False)
-        for machine, system in (("armv7l", "Linux"), ("x86_64", "Darwin")):
+        for machine, system in (("armv7l", "Linux"), ("x86_64", "FreeBSD")):
             self.env.update(TEST_MACHINE=machine, TEST_OS=system)
             self.install(success=False)
         self.install("--help")

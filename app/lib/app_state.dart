@@ -1,9 +1,10 @@
 import 'dart:async';
 
-import 'package:flutter/widgets.dart';
+import 'package:flutter/material.dart';
 
 import 'data/app_updater.dart';
 import 'data/bridge_client.dart';
+import 'data/cpa_usage.dart';
 import 'data/host.dart';
 import 'data/live_activity.dart';
 import 'data/notifications.dart';
@@ -37,7 +38,15 @@ class AppState extends ChangeNotifier {
   SessionHub? hub;
   SessionsModel? sessions;
   TerminalHub? terminals;
+  CpaController? cpa;
+  StreamSubscription<void>? _cpaReconnect;
   bool loaded = false;
+  ThemeMode themeMode = ThemeMode.system;
+  Future<void> setThemeMode(ThemeMode mode) async {
+    await store.saveAppearance(mode.name);
+    themeMode = mode;
+    notifyListeners();
+  }
 
   /// A pairing link received before/while the pair screen is shown (QR scanned by the system camera).
   PairingLink? pendingPairing;
@@ -48,6 +57,10 @@ class AppState extends ChangeNotifier {
     await notifier.init();
     await liveActivity.load();
     final library = await store.load();
+    final appearance = await store.loadAppearance();
+    themeMode =
+        ThemeMode.values.where((mode) => mode.name == appearance).firstOrNull ??
+        ThemeMode.system;
     _hosts = library.hosts;
     final h = library.activeHost;
     if (h != null) _bind(h);
@@ -101,6 +114,15 @@ class AppState extends ChangeNotifier {
     hub = SessionHub(c);
     sessions = SessionsModel(c);
     terminals = TerminalHub(c);
+    final usage = CpaController(
+      request: (method, params) async {
+        if (!c.isOnline) throw StateError('請先連上電腦 bridge');
+        return c.request(method, params);
+      },
+    )..startAutoRefresh();
+    cpa = usage;
+    unawaited(usage.initialize());
+    _cpaReconnect = c.connected.listen((_) => usage.refreshIfActive());
     notifier.watch(
       c,
       (id) => c.agent(id)?.name ?? id,
@@ -133,6 +155,10 @@ class AppState extends ChangeNotifier {
   void _unbind() {
     liveActivity.unbind();
     notifier.unwatch();
+    _cpaReconnect?.cancel();
+    _cpaReconnect = null;
+    cpa?.dispose();
+    cpa = null;
     hub?.dispose();
     sessions?.dispose();
     terminals?.dispose();

@@ -23,6 +23,17 @@ function output(c: TestClient, id: string) {
 }
 
 describe("interactive terminals", () => {
+  it.runIf(process.platform === "win32")("executes iOS LF and multiline paste in PowerShell instead of entering continuation mode", async () => {
+    tb = await startTestBridge();
+    const c = await connect();
+    const t = await c.request("_codeaw/terminal/open", { cwd: tb.home });
+    await c.waitFor(() => output(c, t.terminalId).includes("> "));
+    fs.mkdirSync(path.join(tb.home, "nested"));
+    await c.request("_codeaw/terminal/write", { terminalId: t.terminalId, data: "cd nested\nWrite-Output ('LF-' + '中文')\n(Get-Location).Path\n" });
+    await c.waitFor(() => output(c, t.terminalId).includes("LF-中文") && output(c, t.terminalId).includes(path.join(tb!.home, "nested")));
+    await c.request("_codeaw/terminal/write", { terminalId: t.terminalId, data: "Get-ChildItem\n" });
+    await c.request("_codeaw/terminal/close", { terminalId: t.terminalId });
+  }, 15000);
   it("streams a real shell, keeps its working directory, and replays after reconnect", async () => {
     tb = await startTestBridge();
     const a = await connect();

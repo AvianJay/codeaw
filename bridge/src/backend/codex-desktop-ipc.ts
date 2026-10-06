@@ -24,6 +24,7 @@ export interface DesktopIpcMessage {
 export interface DesktopIpcOptions {
   pipe?: string;
   archivePath?: string;
+  modelCatalogPath?: string;
   timeoutMs?: number;
   versions?: Record<string, number>;
 }
@@ -37,6 +38,7 @@ const CURRENT_VERSIONS: Record<string, number> = {
   "thread-follower-start-turn": 2,
   "thread-follower-load-complete-history": 1,
   "thread-follower-steer-turn": 1,
+  "thread-follower-update-thread-settings": 2,
   "thread-follower-interrupt-turn": 4,
   "thread-follower-command-approval-decision": 1,
   "thread-follower-file-approval-decision": 1,

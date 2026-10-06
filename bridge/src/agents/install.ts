@@ -11,6 +11,8 @@ import YAML from "yaml";
 import { ConfigSchema, loadConfig, type AgentConfig } from "../config.js";
 import { isInside, realPath, writeFileAtomic } from "../util/paths.js";
 import { configAgentId, distributionFor, fetchRegistry, platformTarget, type RegistryAgent } from "./registry.js";
+import { desktopEnvironment } from "../util/environment.js";
+import { npmEnvironment } from "./node-runtime.js";
 
 const MAX_DOWNLOAD = 512 * 1024 * 1024;
 const MAX_EXTRACTED = 2 * 1024 * 1024 * 1024;
@@ -71,7 +73,8 @@ export async function extractArchive(file: string, directory: string, format: "z
 }
 
 async function download(url: string, file: string, sha256: string | undefined, signal: AbortSignal): Promise<void> {
-  const response = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]) });
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(300_000)]);
+  const response = await fetch(url, { signal: bounded });
   if (!response.ok || !response.body) throw new Error("Cannot download the agent archive");
   if (Number(response.headers.get("content-length")) > MAX_DOWNLOAD) throw new Error("Agent download is too large");
   let bytes = 0;
@@ -81,13 +84,13 @@ async function download(url: string, file: string, sha256: string | undefined, s
     if (bytes > MAX_DOWNLOAD) { callback(new Error("Agent download is too large")); return; }
     hash.update(chunk); callback(null, chunk);
   } });
-  await pipeline(Readable.fromWeb(response.body as any), check, fs.createWriteStream(file, { flags: "wx" }), { signal });
+  await pipeline(Readable.fromWeb(response.body as any), check, fs.createWriteStream(file, { flags: "wx" }), { signal: bounded });
   if (sha256 && hash.digest("hex") !== sha256.toLowerCase()) throw new Error("Agent download failed its SHA-256 check");
 }
 
 /** Package-manager diagnostics can contain credentials; never forward their output. */
 export async function runInstaller(command: string, args: string[], directory: string, signal: AbortSignal,
-  env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  env: NodeJS.ProcessEnv = desktopEnvironment()): Promise<void> {
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd: directory, env, windowsHide: true, stdio: "ignore", detached: process.platform !== "win32" });
@@ -124,12 +127,14 @@ export async function prepareAgent(home: string, agent: RegistryAgent, progress:
   signal: AbortSignal = new AbortController().signal, dependencies: InstallDependencies = {}): Promise<InstalledAgent> {
   const distribution = distributionFor(agent);
   if (!distribution) throw new Error(`This agent has no distribution for ${platformTarget()}`);
-  const root = path.resolve(home, "agents", agent.id);
-  fs.mkdirSync(root, { recursive: true });
+  const requestedRoot = path.resolve(home, "agents", agent.id);
+  fs.mkdirSync(requestedRoot, { recursive: true });
+  const root = realPath(requestedRoot);
   const directory = fs.mkdtempSync(path.join(root, "install-"));
   const run = dependencies.run ?? runInstaller;
   try {
     let command: string;
+    let runtimePath: string | undefined;
     const spec = distribution.spec;
     if (distribution.kind === "binary") {
       const binary = distribution.spec;
@@ -151,7 +156,9 @@ export async function prepareAgent(home: string, agent: RegistryAgent, progress:
       const match = /^((?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+)(?:@[a-zA-Z0-9_.+-]+)?$/.exec(pkg);
       if (!match || pkg.startsWith(".")) throw new Error("Registry contains an invalid npm package");
       progress("Installing npm package…");
-      await run("npm", ["install", "--prefix", directory, "--no-audit", "--no-fund", "--progress=false", "--", pkg], directory, signal);
+      const env = dependencies.run ? desktopEnvironment() : await npmEnvironment(home, signal, progress);
+      await run("npm", ["install", "--prefix", directory, "--no-audit", "--no-fund", "--progress=false", "--", pkg], directory, signal, env);
+      if (process.platform === "darwin" && !dependencies.run) runtimePath = env.PATH;
       const pkgDir = path.join(directory, "node_modules", match[1]);
       const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
       const name = match[1].split("/").at(-1)!;
@@ -166,7 +173,7 @@ export async function prepareAgent(home: string, agent: RegistryAgent, progress:
       progress("Installing Python package…");
       const binDir = path.join(directory, "bin");
       await run("uv", ["tool", "install", "--no-progress", "--", pkg], directory, signal,
-        { ...process.env, UV_TOOL_DIR: path.join(directory, "tools"), UV_TOOL_BIN_DIR: binDir });
+        { ...desktopEnvironment(), UV_TOOL_DIR: path.join(directory, "tools"), UV_TOOL_BIN_DIR: binDir });
       const name = pkg.split("==")[0];
       const bins = fs.readdirSync(binDir).filter((entry) => process.platform !== "win32" || entry.endsWith(".exe"));
       const bin = bins.find((entry) => entry === name || entry === name + ".exe") ?? (bins.length === 1 ? bins[0] : undefined);
@@ -175,7 +182,7 @@ export async function prepareAgent(home: string, agent: RegistryAgent, progress:
     }
     signal.throwIfAborted();
     const result: InstalledAgent = { id: configAgentId(agent.id), name: agent.name, version: agent.version, directory,
-      config: { name: agent.name, command, args: spec.args, env: spec.env, enabled: true,
+      config: { name: agent.name, command, args: spec.args, env: { ...(runtimePath ? { PATH: runtimePath } : {}), ...spec.env }, enabled: true,
         ...(distribution.kind === "binary" ? { cwd: directory } : {}) } };
     writeFileAtomic(path.join(directory, "installed.json"), JSON.stringify({ id: agent.id, version: agent.version }));
     return result;
@@ -249,7 +256,9 @@ export class AgentInstaller {
         await this.commit(installed);
         this.status = { ...this.status, state: "succeeded", message: "Agent installed. Restart the bridge to apply it." };
       } catch (error) {
-        this.status = { ...this.status, state: "failed", message: error instanceof Error ? error.message : "Agent installation failed" };
+        const message = error instanceof Error ? error.message : "Agent installation failed";
+        this.status = { ...this.status, state: "failed", message: this.controller!.signal.aborted ? "Agent installation cancelled"
+          : /abort|timeout/i.test(message) ? "Agent download timed out. Check your internet connection and retry." : message };
       }
     })();
     return this.getStatus();

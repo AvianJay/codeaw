@@ -246,9 +246,13 @@ jobs:
             target: bun-windows-arm64
             arch: arm64
           - platform: macos-x64
+            runner: macos-15-intel
             target: bun-darwin-x64
+            arch: x64
           - platform: macos-arm64
+            runner: macos-latest
             target: bun-darwin-arm64
+            arch: arm64
     defaults:
       run:
         working-directory: bridge
@@ -275,7 +279,9 @@ jobs:
           BUILD_TARGET: ${{ matrix.platform }}
         run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$APP_BUILD_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
       - name: Build every package bin
-        run: npm run build:bin -- --target=${{ matrix.target }}
+        run: |
+          node --test ../scripts/macos-icon.test.mjs ../scripts/macos-dmg.test.mjs
+          npm run build:bin -- --target=${{ matrix.target }}
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')
         shell: pwsh
@@ -285,8 +291,14 @@ jobs:
         env:
           CODEAW_BUILD_VERSION: ${{ needs.prepare.outputs.version }}
         run: npm run build:installer -- --skip-build --arch=${{ matrix.arch }}
+      - name: Build macOS menu bar and installer
+        if: startsWith(matrix.platform, 'macos-')
+        env:
+          CODEAW_BUILD_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          npm run build:macos-installer -- --arch=${{ matrix.arch }}
       - name: Smoke test native executable
-        if: matrix.platform == 'linux-x64'
+        if: matrix.platform == 'linux-x64' || startsWith(matrix.platform, 'macos-')
         run: node scripts/background-smoke.mjs dist/bin/codeaw-bridge
       - name: Package Windows executables
         if: startsWith(matrix.platform, 'windows-')
@@ -308,6 +320,7 @@ jobs:
           mkdir -p ../dist
           cp ../LICENSE dist/bin/LICENSE
           tar -czf "../dist/codeaw-bridge-${PLATFORM}.tar.gz" -C dist/bin .
+          if [[ "$PLATFORM" == macos-* ]]; then cp dist/installer/*.dmg ../dist/; fi
       - name: Test Linux one-command installer
         if: matrix.platform == 'linux-x64'
         env:
@@ -396,6 +409,7 @@ jobs:
           - Web: mobile and desktop browser app, included with every bridge release and also available as codeaw-web.tar.gz.
           - Bridge: standalone Windows, Linux (glibc/musl), and macOS executables for x64 and ARM64.
           - Windows: per-user NSIS installers and portable ZIPs for x64 and ARM64.
+          - macOS: drag-to-Applications DMG installers and portable archives, with native menu bar, ACP installer and login startup.
           - Linux: run \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/master/install.sh | sh\` for a per-user installation with checksum verification (nightly by default; add \`-s -- --version latest\` after \`sh\` for stable).
           - Bridge still requires Tailscale and the chosen ACP agents to be installed separately.
           - Open the bridge's HTTPS URL from Tailscale Serve to use the browser app.

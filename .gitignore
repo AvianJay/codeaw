@@ -6,4 +6,5 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.codeaw-uploads/
 dist/

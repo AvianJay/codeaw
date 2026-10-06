@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { controlAddress, runningStatus } from "./control.js";
 import { TRAY_SCRIPT } from "./windows-tray.js";
+import { desktopEnvironment } from "../util/environment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -41,6 +42,7 @@ throw 'System tray startup timed out'
 
 /** Launch in the caller's interactive session, including when the bridge runs in SCM Session 0. */
 export async function launchDesktop(file: string): Promise<void> {
+  if (process.platform === "darwin") { await launchMacDesktop(file); return; }
   if (process.platform !== "win32") throw new Error("Native tray and windows are currently available on Windows");
   const directory = path.join(path.dirname(file), "runtime");
   fs.mkdirSync(directory, { recursive: true });
@@ -60,6 +62,34 @@ export async function launchDesktop(file: string): Promise<void> {
   } catch {
     throw new Error(`Cannot start the Windows system tray. See ${logFile}`);
   } finally { fs.rmSync(readyFile, { force: true }); }
+}
+
+async function launchMacDesktop(file: string): Promise<void> {
+  const candidates = [path.join(path.dirname(process.execPath), "codeaw-menu"),
+    fileURLToPath(new URL("../assets/codeaw-menu", import.meta.url)),
+    fileURLToPath(new URL("../../dist/assets/codeaw-menu", import.meta.url))];
+  const executable = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!executable) throw new Error("macOS menu bar helper not found. Install a macOS release or run npm run build:macos in bridge.");
+  const directory = path.join(path.dirname(file), "runtime");
+  fs.mkdirSync(directory, { recursive: true });
+  const readyFile = path.join(directory, `tray-ready-${crypto.randomUUID()}.json`);
+  const logFile = path.join(path.dirname(file), "desktop.log");
+  const log = fs.openSync(logFile, "a", 0o600);
+  let exited = false;
+  try {
+    const child = spawn(executable, ["--socket", controlAddress(file), "--ready", readyFile], {
+      detached: true, stdio: ["ignore", log, log], env: desktopEnvironment(),
+    });
+    child.once("error", () => { exited = true; });
+    child.once("exit", () => { exited = true; });
+    child.unref();
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (fs.existsSync(readyFile)) return;
+      if (exited) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`Cannot start the macOS menu bar. See ${logFile}`);
+  } finally { fs.closeSync(log); fs.rmSync(readyFile, { force: true }); }
 }
 
 /** Works for Node source/builds and Bun's standalone executable. */

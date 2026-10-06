@@ -5,8 +5,10 @@ import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
+import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/util/image_clipboard.dart';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -67,21 +69,51 @@ class _Client extends BridgeClient {
     ];
   }
   final prompts = <Map<String, dynamic>>[];
+  final uploads = <({String name, Uint8List bytes})>[];
+  bool failPrompt = false;
+  Completer<dynamic>? pendingPrompt;
+
+  @override
+  Future<UploadedFile> upload(
+    String name,
+    Uint8List bytes, {
+    String? mimeType,
+  }) async {
+    uploads.add((name: name, bytes: bytes));
+    return UploadedFile(
+      path: '/workspace/$name',
+      uri: 'file:///workspace/$name',
+      name: name,
+      size: bytes.length,
+    );
+  }
 
   @override
   Future<dynamic> request(String method, [Map<String, dynamic>? params]) async {
-    if (method == 'session/prompt') prompts.add(params!);
+    if (method == 'session/prompt') {
+      if (failPrompt) throw const FormatException('Connection lost');
+      prompts.add(params!);
+      if (pendingPrompt != null) return pendingPrompt!.future;
+    }
     return {};
   }
 }
 
-Widget _app(SessionController controller, _Clipboard clipboard) => MaterialApp(
+Widget _app(
+  SessionController controller,
+  _Clipboard clipboard, {
+  Future<List<XFile>> Function()? pickFiles,
+}) => MaterialApp(
   home: Scaffold(
     body: Column(
       children: [
         const TextField(key: ValueKey('other-field')),
         const Spacer(),
-        Composer(controller: controller, imageClipboard: clipboard),
+        Composer(
+          controller: controller,
+          imageClipboard: clipboard,
+          pickFiles: pickFiles,
+        ),
       ],
     ),
   ),
@@ -96,6 +128,7 @@ Future<({SessionController controller, _Client client})> _show(
   WidgetTester tester,
   _Clipboard clipboard, {
   bool images = true,
+  Future<List<XFile>> Function()? pickFiles,
 }) async {
   tester.view.physicalSize = const Size(834, 1112);
   tester.view.devicePixelRatio = 1;
@@ -106,7 +139,9 @@ Future<({SessionController controller, _Client client})> _show(
     controller.dispose();
     client.dispose();
   });
-  await tester.pumpWidget(_app(controller, clipboard));
+  await tester.pumpWidget(
+    _app(controller, clipboard, pickFiles: pickFiles),
+  );
   await tester.pumpAndSettle();
   return (controller: controller, client: client);
 }
@@ -185,33 +220,28 @@ void main() {
     );
   }
 
-  testWidgets(
-    'ordinary paste replaces only selected text and supports undo',
-    (tester) async {
-      final clipboard = _Clipboard();
-      await _show(tester, clipboard);
-      await tester.enterText(_input, 'abcXXdef');
-      await tester.pump(const Duration(seconds: 1));
-      tester.widget<TextField>(_input).controller!.selection =
-          const TextSelection(baseOffset: 3, extentOffset: 5);
-      clipboardText = ' pasted ';
-      await _pasteKey(tester);
-      expect(
-        tester.widget<TextField>(_input).controller!.text,
-        'abc pasted def',
-      );
-      expect(find.byType(Image), findsNothing);
-      await tester.pump(const Duration(seconds: 1));
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pumpAndSettle();
-      expect(tester.widget<TextField>(_input).controller!.text, 'abcXXdef');
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-    variant: TargetPlatformVariant({TargetPlatform.windows}),
-  );
+  testWidgets('ordinary paste replaces only selected text and supports undo', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    await _show(tester, clipboard);
+    await tester.enterText(_input, 'abcXXdef');
+    await tester.pump(const Duration(seconds: 1));
+    tester.widget<TextField>(_input).controller!.selection =
+        const TextSelection(baseOffset: 3, extentOffset: 5);
+    clipboardText = ' pasted ';
+    await _pasteKey(tester);
+    expect(tester.widget<TextField>(_input).controller!.text, 'abc pasted def');
+    expect(find.byType(Image), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(_input).controller!.text, 'abcXXdef');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  }, variant: TargetPlatformVariant({TargetPlatform.windows}));
 
   testWidgets(
     'image menu pastes without reading on focus and lets users remove the attachment',
@@ -329,43 +359,41 @@ void main() {
     },
   );
 
-  testWidgets(
-    'Android keyboard content becomes an image attachment',
-    (tester) async {
-      final clipboard = _Clipboard();
-      final h = await _show(tester, clipboard);
-      await tester.tap(_input);
-      await tester.showKeyboard(_input);
-      await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
-        'flutter/textinput',
-        const JSONMessageCodec().encodeMessage({
-          'method': 'TextInputClient.performAction',
-          'args': [
-            -1,
-            'TextInputAction.commitContent',
-            {
-              'mimeType': 'image/png',
-              'uri': 'content://fixture/image.png',
-              'data': _png.toList(),
-            },
-          ],
-        }),
-        (_) {},
-      );
-      await tester.pumpAndSettle();
-      expect(find.byType(Image), findsOneWidget);
-      await tester.tap(find.byTooltip('送出'));
-      await tester.pumpAndSettle();
-      expect(
-        (h.client.prompts.single['prompt'] as List).single['mimeType'],
-        'image/png',
-      );
-      expect(clipboard.reads, 0);
-      expect(tester.takeException(), isNull);
-      await tester.pumpWidget(const SizedBox());
-    },
-    variant: TargetPlatformVariant({TargetPlatform.android}),
-  );
+  testWidgets('Android keyboard content becomes an image attachment', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    await tester.tap(_input);
+    await tester.showKeyboard(_input);
+    await tester.binding.defaultBinaryMessenger.handlePlatformMessage(
+      'flutter/textinput',
+      const JSONMessageCodec().encodeMessage({
+        'method': 'TextInputClient.performAction',
+        'args': [
+          -1,
+          'TextInputAction.commitContent',
+          {
+            'mimeType': 'image/png',
+            'uri': 'content://fixture/image.png',
+            'data': _png.toList(),
+          },
+        ],
+      }),
+      (_) {},
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(Image), findsOneWidget);
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(
+      (h.client.prompts.single['prompt'] as List).single['mimeType'],
+      'image/png',
+    );
+    expect(clipboard.reads, 0);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  }, variant: TargetPlatformVariant({TargetPlatform.android}));
 
   testWidgets(
     'read failures show a safe message and release the loading state',
@@ -386,4 +414,148 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     },
   );
+
+  testWidgets(
+    'selected file bytes are uploaded and its resource is sent with the message',
+    (tester) async {
+      final bytes = Uint8List.fromList(utf8.encode('上傳內容'));
+      final h = await _show(
+        tester,
+        _Clipboard(),
+        pickFiles: () async => [
+          XFile.fromData(bytes, name: '資料.txt', path: '資料.txt'),
+        ],
+      );
+      await tester.enterText(_input, 'Read the attached file');
+      await tester.tap(find.byTooltip('附加'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('上傳檔案'));
+      await tester.pumpAndSettle();
+      expect(h.client.uploads.single.name, '資料.txt');
+      expect(h.client.uploads.single.bytes, bytes);
+      expect(find.text('資料.txt'), findsOneWidget);
+      await tester.tap(find.byTooltip('送出'));
+      await tester.pumpAndSettle();
+      expect(h.client.prompts.single['prompt'], [
+        {'type': 'text', 'text': 'Read the attached file'},
+        {
+          'type': 'resource_link',
+          'name': '資料.txt',
+          'uri': 'file:///workspace/資料.txt',
+          'size': bytes.length,
+        },
+      ]);
+      expect(find.text('資料.txt'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('failed send restores the draft and uploaded file for retry', (
+    tester,
+  ) async {
+    final h = await _show(
+      tester,
+      _Clipboard(),
+      pickFiles: () async => [
+        XFile.fromData(
+          Uint8List.fromList([1, 2]),
+          name: 'retry.txt',
+          path: 'retry.txt',
+        ),
+      ],
+    );
+    h.client.failPrompt = true;
+    await tester.enterText(_input, 'Keep this draft');
+    await tester.tap(find.byTooltip('附加'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('上傳檔案'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(_input).controller!.text,
+      'Keep this draft',
+    );
+    expect(find.text('retry.txt'), findsOneWidget);
+    h.client.failPrompt = false;
+    await tester.tap(find.byTooltip('送出'));
+    await tester.pumpAndSettle();
+    expect(h.client.prompts, hasLength(1));
+    expect(h.client.uploads, hasLength(1));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('a queued send stays cleared after socket loss and remount', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    h.client.pendingPrompt = Completer<dynamic>();
+    h.controller.timeline.state = 'running';
+    await tester.enterText(_input, 'Queue this once');
+    await tester.pump();
+    await tester.longPress(
+      find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded),
+    );
+    await tester.pumpAndSettle();
+    expect(h.client.prompts.single['_meta']['codeaw']['delivery'], 'queue');
+    expect(tester.widget<TextField>(_input).controller!.text, isEmpty);
+    h.client.pendingPrompt!.completeError(
+      RpcError(RpcError.connectionClosed, 'Connection closed'),
+    );
+    await tester.pumpAndSettle();
+    expect(h.controller.draft, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    await tester.pumpWidget(_app(h.controller, clipboard));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(_input).controller!.text, isEmpty);
+    expect(h.client.prompts, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('accepted queue never overwrites a new draft after disconnect', (
+    tester,
+  ) async {
+    final clipboard = _Clipboard();
+    final h = await _show(tester, clipboard);
+    h.client.pendingPrompt = Completer<dynamic>();
+    h.controller.timeline.state = 'running';
+    await tester.enterText(_input, 'Already queued');
+    await tester.pump();
+    await tester.longPress(
+      find.widgetWithIcon(IconButton, Icons.arrow_upward_rounded),
+    );
+    await tester.pumpAndSettle();
+    final id = h.client.prompts.single['_meta']['codeaw']['clientPromptId'];
+    h.controller.onMessage(
+      SessionMessage('_codeaw/event', {
+        'event': {
+          'type': 'prompt_receipt',
+          'promptId': id,
+          'status': 'received',
+        },
+      }),
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(_input, 'My next unsent draft');
+    h.client.pendingPrompt!.completeError(
+      RpcError(RpcError.connectionClosed, 'Connection closed'),
+    );
+    await tester.pumpAndSettle();
+    final next = SessionController(h.client, 'codex:next');
+    await tester.pumpWidget(_app(next, clipboard));
+    await tester.pumpAndSettle();
+    await tester.pumpWidget(_app(h.controller, clipboard));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<TextField>(_input).controller!.text,
+      'My next unsent draft',
+    );
+    expect(h.controller.draft, 'My next unsent draft');
+    expect(h.client.prompts, hasLength(1));
+    await tester.pumpWidget(const SizedBox());
+    next.dispose();
+  });
 }

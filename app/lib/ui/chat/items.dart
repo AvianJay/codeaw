@@ -15,6 +15,7 @@ import '../../util/diff.dart';
 import '../common/code_view.dart';
 import '../common/diff_view.dart';
 import '../common/markdown.dart';
+import '../common/image_preview.dart';
 import '../common/markdown_image.dart';
 import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
@@ -125,14 +126,34 @@ class UserMessageView extends StatelessWidget {
             ),
             child: _UserParts(m.parts),
           ),
-          if (badges.isNotEmpty)
+          if (badges.isNotEmpty || m.receipt != null)
             Padding(
               padding: const EdgeInsets.only(top: 3),
-              child: Text(badges.join(' · '), style: TextStyle(fontSize: 11, color: scheme.outline)),
+              child: Wrap(spacing: 5, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                if (badges.isNotEmpty) Text(badges.join(' · '), style: TextStyle(fontSize: 11, color: scheme.outline)),
+                if (m.receipt != null) _MessageReceipt(m.receipt!),
+              ]),
             ),
         ]),
       ),
     );
+  }
+}
+
+class _MessageReceipt extends StatelessWidget {
+  const _MessageReceipt(this.status);
+  final String status;
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final (icon, label, color) = switch (status) {
+      'read' => (Icons.done_all_rounded, 'AI 已開始處理', scheme.primary),
+      'received' => (Icons.check_rounded, '伺服器已收到', scheme.outline),
+      'failed' => (Icons.error_outline_rounded, '處理失敗，請查看錯誤', scheme.error),
+      'unknown' => (Icons.schedule_rounded, '送達結果未知，請確認聊天紀錄後再重試', scheme.outline),
+      _ => (Icons.schedule_rounded, '傳送中', scheme.outline),
+    };
+    return Tooltip(message: label, child: Icon(icon, size: 15, color: color, semanticLabel: label));
   }
 }
 
@@ -240,23 +261,21 @@ class BlockImage extends StatelessWidget {
   Widget build(BuildContext context) {
     final data = block['data'] as String? ?? '';
     final uri = block['uri'] as String? ?? '';
-    Widget img;
-    if (data.isNotEmpty) {
-      img = Image.memory(base64Decode(data), fit: BoxFit.contain);
-    } else if (uri.startsWith('codeaw-blob:')) {
-      final client = AppScope.of(context).client!;
-      img = Image.network(
-        client.httpUri('/api/blobs/${uri.substring(12)}').toString(),
-        headers: client.authHeaders,
-        fit: BoxFit.contain,
-        errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined),
-      );
-    } else {
-      img = const Icon(Icons.image_outlined);
-    }
+    final provider = markdownImageProvider(
+      data.isNotEmpty ? 'data:${block['mimeType'] ?? 'image/png'};base64,$data' : uri,
+      client: uri.startsWith('codeaw-blob:') ? AppScope.of(context).client : null,
+    );
+    if (provider == null) return const Icon(Icons.broken_image_outlined);
     return ClipRRect(
       borderRadius: BorderRadius.circular(10),
-      child: ConstrainedBox(constraints: BoxConstraints(maxHeight: maxHeight), child: img),
+      child: InkWell(
+        onTap: () => showImagePreview(context, provider),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxHeight),
+          child: Image(image: provider, fit: BoxFit.contain, semanticLabel: '圖片，點擊放大',
+            errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)),
+        ),
+      ),
     );
   }
 }

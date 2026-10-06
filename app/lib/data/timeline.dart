@@ -35,6 +35,8 @@ class MessageItem extends TimelineItem {
   String? promptId;
   bool queued = false;
   bool steered = false;
+  String? receipt;
+  bool optimistic = false;
 
   /// `started` / `cancelled` once a queued prompt left the queue.
   String? dequeued;
@@ -424,7 +426,19 @@ class Timeline extends ChangeNotifier {
     _activityAt = at;
   }
 
-  void clear() {
+  void addPendingPrompt(String promptId, List<Map<String, dynamic>> blocks) {
+    final mid = 'u-$promptId';
+    final item = _upsert('user_message_chunk:$mid', () => MessageItem('user_message_chunk:$mid', MessageRole.user, mid));
+    item.promptId = promptId;
+    item.parts.addAll(blocks.map(Map<String, dynamic>.of));
+    item.receipt = 'sending';
+    item.optimistic = true;
+    _touch(item);
+    flush();
+  }
+
+  void clear({bool preserveUnconfirmed = false}) {
+    final unconfirmed = preserveUnconfirmed ? items.whereType<MessageItem>().where((m) => m.optimistic).toList() : <MessageItem>[];
     items.clear();
     _byKey.clear();
     _dirty.clear();
@@ -443,6 +457,20 @@ class Timeline extends ChangeNotifier {
     setTurnState('idle');
     _structureChanged = true;
     _snapshotChanged = true;
+    for (final item in unconfirmed) {
+      _byKey[item.key] = item;
+      _add(item);
+      _touch(item);
+    }
+  }
+
+  /// Keep uncertain local sends after the authoritative history on a full replay.
+  void finishReplay() {
+    final unconfirmed = items.whereType<MessageItem>().where((m) => m.optimistic).toList();
+    if (unconfirmed.isEmpty) return;
+    items.removeWhere((item) => unconfirmed.contains(item));
+    items.addAll(unconfirmed);
+    _hierarchyDirty = _structureChanged = true;
   }
 
   T _upsert<T extends TimelineItem>(String key, T Function() make) {
@@ -501,18 +529,28 @@ class Timeline extends ChangeNotifier {
           _recordActivity(role == MessageRole.thought ? TurnActivity.thinking : TurnActivity.responding, at);
         }
         final parent = subagentParentId(u['_meta']);
-        final key = parent == null ? '$type:$mid' : '$type:subagent:${parent.length}:$parent:$mid';
+        final promptId = role == MessageRole.user ? (codeaw?['promptId'] as String?) : null;
+        final key = parent == null ? '$type:${promptId == null ? mid : 'u-$promptId'}' : '$type:subagent:${parent.length}:$parent:$mid';
         final item = _upsert(key, () => MessageItem(key, role, mid));
         if (item.parentToolCallId != parent) _hierarchyDirty = _structureChanged = true;
         item.parentToolCallId = parent;
         item.activityRevision = revision;
         if (codeaw != null) {
           item.promptId ??= codeaw['promptId'] as String?;
-          if (codeaw['queued'] == true) item.queued = true;
-          if (codeaw['steered'] == true) item.steered = true;
+          if (codeaw['queued'] is bool) item.queued = codeaw['queued'] as bool;
+          if (codeaw['steered'] is bool) item.steered = codeaw['steered'] as bool;
+          if (codeaw['receipt'] == 'read') item.receipt = 'read';
+          if (codeaw['replace'] == true && codeaw['partIndex'] == 0) item.parts.clear();
         }
         final content = u['content'];
         if (content is Map<String, dynamic>) {
+          if (item.optimistic) {
+            item.parts.clear();
+            item.optimistic = false;
+            items.remove(item);
+            items.add(item);
+            _hierarchyDirty = _structureChanged = true;
+          }
           final last = item.parts.isEmpty ? null : item.parts.last;
           if (content['type'] == 'text' && last != null && last['type'] == 'text') {
             last['text'] = '${last['text'] ?? ''}${content['text'] ?? ''}';
@@ -641,6 +679,17 @@ class Timeline extends ChangeNotifier {
           item.dequeued = e['cancelled'] == true ? 'cancelled' : 'started';
           _touch(item);
         }
+      case 'prompt_receipt':
+        final mid = 'u-${e['promptId']}';
+        final item = _byKey['user_message_chunk:$mid'];
+        // Older desktop epochs can contain receipts without a correlated message.
+        // Do not fabricate an empty user bubble for those historic ids.
+        if (item is! MessageItem) return;
+        item.promptId = e['promptId'] as String?;
+        final status = e['status'] as String?;
+        if (item.receipt != 'read' || status == 'read') item.receipt = status;
+        if (status == 'read' && item.queued) item.dequeued = 'started';
+        _touch(item);
     }
   }
 

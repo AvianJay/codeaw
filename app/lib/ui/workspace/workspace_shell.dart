@@ -28,8 +28,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
   Widget build(BuildContext context) {
     final state = AppScope.of(context);
     final width = MediaQuery.sizeOf(context).width;
-    final desktop = width >= desktopBreakpoint;
-    final tablet = width >= tabletBreakpoint && !desktop;
+    final desktop = useWideLayout(context) && width >= desktopBreakpoint;
+    final tablet = useWideLayout(context) && !desktop;
     final scheme = Theme.of(context).colorScheme;
     if (widget.location.path == '/session') {
       _sessionId = widget.location.queryParameters['id'];
@@ -76,9 +76,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       backgroundColor: scheme.surfaceContainerLow,
                       labelType: NavigationRailLabelType.all,
                       selectedIndex: widget.location.path == '/settings'
-                          ? 2
-                          : widget.location.path == '/terminal'
+                          ? 3
+                          : widget.location.path == '/usage'
                           ? 1
+                          : widget.location.path == '/terminal'
+                          ? 2
                           : 0,
                       leading: Column(
                         children: [
@@ -103,14 +105,19 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                       ),
                       onDestinationSelected: (index) {
                         if (index == 0) _scaffold.currentState?.openDrawer();
-                        if (index == 1) context.go('/terminal');
-                        if (index == 2) context.go('/settings');
+                        if (index == 1) context.go('/usage');
+                        if (index == 2) context.go('/terminal');
+                        if (index == 3) context.go('/settings');
                       },
                       destinations: const [
                         NavigationRailDestination(
                           icon: Icon(Icons.chat_bubble_outline_rounded),
                           selectedIcon: Icon(Icons.chat_bubble_rounded),
                           label: Text('對話'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.donut_large_rounded),
+                          label: Text('用量'),
                         ),
                         NavigationRailDestination(
                           icon: Icon(Icons.terminal_rounded),
@@ -148,7 +155,7 @@ class WorkspaceHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (MediaQuery.sizeOf(context).width < tabletBreakpoint) {
+    if (!useWideLayout(context)) {
       return const SessionsPage();
     }
     final state = AppScope.of(context);
