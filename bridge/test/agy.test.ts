@@ -110,6 +110,21 @@ describe("AGY NDJSON backend", () => {
     expect(state).not.toContain("synthetic-private-key");
   });
 
+  it("cancels while AGY is initializing without leaving a new process or starting the prompt", async () => {
+    const root = home(); const updates: any[] = [];
+    const a = backend(root, updates, { env: { AGY_FIXTURE_HOME: root, AGY_FIXTURE_SLOW_INIT: "1" } });
+    const s = await a.request<any>("session/new", { cwd: root });
+    const starting = prompt(a, s.sessionId, "should not run");
+    await waitFor(() => fs.existsSync(path.join(root, "launches.jsonl")));
+    await a.notify("session/cancel", { sessionId: s.sessionId });
+    expect((await starting).stopReason).toBe("cancelled");
+    expect(updates).toHaveLength(0);
+    expect(a.inflight).toBe(0);
+    await prompt(a, s.sessionId, "after cancel");
+    expect(updates.at(-2).update.content.text).toBe("after cancel");
+    expect(launches(root)).toHaveLength(2);
+  });
+
   it("rejects inline images before starting AGY and preserves explicit uploaded file references", async () => {
     const root = home(); const updates: any[] = []; const a = backend(root, updates);
     const s = await a.request<any>("session/new", { cwd: root });

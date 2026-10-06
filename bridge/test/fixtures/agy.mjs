@@ -19,6 +19,7 @@ const file = path.join(process.env.AGY_FIXTURE_HOME, nativeId + '.json');
 let state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : { word: '', turns: 0 };
 fs.appendFileSync(path.join(process.env.AGY_FIXTURE_HOME, 'launches.jsonl'), JSON.stringify({ nativeId, args, cwd: process.cwd(), endpoint: process.env.GOOGLE_GEMINI_BASE_URL }) + '\n');
 const emit = (e) => process.stdout.write(JSON.stringify(e) + '\n');
+if (process.env.AGY_FIXTURE_SLOW_INIT) await new Promise((resolve) => setTimeout(resolve, 500));
 emit({ event: 'init', conversation_id: nativeId, init: { cwd: process.cwd(), model: arg('--model'), permission_mode: 'request-review' } });
 
 async function turn(line) {

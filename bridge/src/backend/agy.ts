@@ -299,6 +299,7 @@ export class AgyBackend implements AgentBackend {
     const options = this.launchOptions(s);
     if (s.child && s.applied === options.fingerprint) return;
     await this.closeProcess(s);
+    if (s.cancelled) return;
     if (s.nativeId) options.args.push("--conversation", s.nativeId);
     s.stderr = "";
     s.applied = options.fingerprint;
@@ -356,7 +357,7 @@ export class AgyBackend implements AgentBackend {
     try { await s.starting; }
     catch (error) { if (!s.cancelled) throw error; }
     finally { s.starting = undefined; }
-    if (s.cancelled) return { stopReason: "cancelled" };
+    if (s.cancelled) { await this.closeProcess(s, true); return { stopReason: "cancelled" }; }
     return new Promise<acp.PromptResponse>((resolve, reject) => {
       s.turn = { resolve, reject, text: "" };
       s.child!.stdin!.write(JSON.stringify({ event: "user", message: { content: text } }) + "\n", (error) => {
@@ -402,7 +403,11 @@ export class AgyBackend implements AgentBackend {
     await this.starting?.catch(() => undefined);
     const generation = this.generation;
     this.status = "stopped";
-    await Promise.all([...this.sessions.values()].map((s) => this.closeProcess(s, true)));
+    await Promise.all([...this.sessions.values()].map(async (s) => {
+      await this.closeProcess(s, true);
+      await s.starting?.catch(() => undefined);
+      await this.closeProcess(s, true);
+    }));
     this.handlers.onExit(this.id, generation, reason);
   }
 }
