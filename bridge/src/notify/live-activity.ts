@@ -12,11 +12,13 @@ export interface ActivitySnapshot {
   turnPromptId?: string; turnStartedAt?: number; completedTurn?: CompletedTurn; work: WorkStatus;
 }
 export interface ActivityContent {
-  project: string; agent: string; state: string; phase: string; summary: string;
+  title?: string; backgroundUpdates?: boolean; project: string; agent: string; state: string; phase: string; summary: string;
   startedAt: number; endedAt?: number; updatedAt: number;
 }
 export function activityContent(s: ActivitySnapshot, details: boolean, startedAt: number): ActivityContent {
   return {
+    title: details ? concise(s.title?.trim() || s.work.project, 100) : "Codeaw",
+    backgroundUpdates: true,
     project: details ? concise(s.work.project, 60) : "Codeaw", agent: concise(s.agentId, 30),
     state: s.state, phase: s.work.phase,
     summary: details ? concise(s.work.summary) : s.work.phase === "error" ? "執行失敗" : s.work.phase === "cancelled" ? "已停止" : s.work.phase === "disconnected" ? "等待重新同步" : s.state === "idle" ? "已完成" : s.state === "requires_action" ? "等待你的回覆" : "AI 正在工作…",
@@ -89,7 +91,7 @@ export class LiveActivityPush {
     const previous = this.registrations.get(id);
     if (previous) this.remove(previous);
     const owned = [...this.registrations.values()].filter((r) => r.deviceId === deviceId);
-    if (owned.length >= 4 || this.registrations.size >= 64) throw new Error("Too many Live Activities");
+    if (owned.length >= 16 || this.registrations.size >= 64) throw new Error("Too many Live Activities");
     const now = Date.now();
     const r: Registration = { deviceId, activityId, sessionId, turnId, token: pushToken.toLowerCase(),
       includeDetails: params.includeDetails === true, startedAt: s.turnStartedAt ?? s.completedTurn?.startedAt ?? now,

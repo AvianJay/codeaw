@@ -88,7 +88,7 @@ class ChatHeaderTitle extends StatelessWidget {
                         ),
                         const SizedBox(height: 3),
                         _HeaderBar(
-                          label: '5hr',
+                          label: '5小時',
                           average: average?.fiveHour,
                           total: average?.totalAccounts ?? 0,
                         ),

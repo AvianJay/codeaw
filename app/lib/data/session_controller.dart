@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../acp/jsonrpc.dart';
 import 'bridge_client.dart';
 import 'models.dart';
+import 'history_cache.dart';
 import 'timeline.dart';
 
 /// A permission or elicitation request the bridge is waiting on.
@@ -34,8 +35,13 @@ class PendingRequest {
 /// Everything about one open session: its timeline, connection to the bridge's log
 /// (lastSeq/epoch for delta replay), open requests, and actions.
 class SessionController extends ChangeNotifier {
-  SessionController(this.client, this.sessionId, {String? cwd})
-    : cwd = cwd ?? '' {
+  SessionController(
+    this.client,
+    this.sessionId, {
+    String? cwd,
+    HistoryCache? cache,
+  }) : cwd = cwd ?? '',
+       cache = cache ?? HistoryCache(client.host) {
     _connSub = client.connected.listen((_) {
       if (_wantAttached) unawaited(attach());
     });
@@ -44,6 +50,7 @@ class SessionController extends ChangeNotifier {
 
   final BridgeClient client;
   final String sessionId;
+  final HistoryCache cache;
   String cwd;
 
   /// Unsent text survives navigating between recently opened conversations.
@@ -69,6 +76,13 @@ class SessionController extends ChangeNotifier {
 
   bool _wantAttached = false;
   bool _replayingFull = false;
+  Timeline? _incoming;
+  String? _incomingEpoch;
+  Future<void>? _restoring;
+  Future<void>? _attaching;
+  Timer? _saveTimer;
+  int _cacheRevision = 0;
+  int _savedRevision = -1;
   Timer? _flushTimer;
   StreamSubscription<void>? _connSub;
   bool _disposed = false;
@@ -81,6 +95,7 @@ class SessionController extends ChangeNotifier {
       .toList();
 
   void _onClientChange() {
+    if (client.status != ConnStatus.online) _abortReplay();
     if (client.status != ConnStatus.online && attached) {
       attached = false;
       desktopConnected = false;
@@ -96,7 +111,56 @@ class SessionController extends ChangeNotifier {
   /// Attach to the session: full replay the first time, only missed entries afterwards.
   Future<void> attach() async {
     _wantAttached = true;
-    if (!client.isOnline) return;
+    final previous = _attaching;
+    if (previous != null) return previous;
+    final operation = _attach();
+    _attaching = operation;
+    try {
+      await operation;
+    } finally {
+      if (identical(_attaching, operation)) _attaching = null;
+    }
+  }
+
+  Future<void> restore() => _restoring ??= _restore();
+
+  Future<void> _restore() async {
+    final saved = await cache.read(sessionId);
+    if (_disposed ||
+        saved == null ||
+        epoch != null ||
+        lastSeq != 0 ||
+        _replayingFull ||
+        timeline.items.isNotEmpty) {
+      return;
+    }
+    try {
+      final restored = Timeline.fromSnapshot(
+        saved['timeline'] as Map<String, dynamic>,
+      );
+      final cursor = (saved['lastSeq'] as num).toInt();
+      final savedEpoch = saved['epoch'] as String;
+      if (cursor < 0 || savedEpoch.isEmpty) return;
+      for (final message in restored.items.whereType<MessageItem>()) {
+        if (message.optimistic && message.receipt == 'sending') {
+          message.receipt = 'unknown';
+        }
+      }
+      timeline.replaceWith(restored);
+      lastSeq = cursor;
+      epoch = savedEpoch;
+      if (cwd.isEmpty) cwd = saved['cwd'] as String? ?? '';
+      desktopSync = saved['desktopSync'] == true;
+      _savedRevision = _cacheRevision;
+      _notify();
+    } catch (_) {
+      await cache.remove(sessionId);
+    }
+  }
+
+  Future<void> _attach() async {
+    await restore(); // Also restores while offline; never wait for the network to display history.
+    if (_disposed || !_wantAttached || !client.isOnline) return;
     loading = true;
     error = null;
     _notify();
@@ -108,6 +172,7 @@ class SessionController extends ChangeNotifier {
                 'mcpServers': const [],
                 '_meta': {
                   'codeaw': {
+                    'lazyHistory': true,
                     if (epoch != null && lastSeq > 0) ...{
                       'afterSeq': lastSeq,
                       'epoch': epoch,
@@ -116,13 +181,25 @@ class SessionController extends ChangeNotifier {
                 },
               })
               as Map<String, dynamic>;
+      if (_disposed || !_wantAttached) {
+        client.notify('_codeaw/session/detach', {'sessionId': sessionId});
+        return;
+      }
       final m = (resp['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
       desktopSync = m['connection'] == 'desktop';
       desktopConnected = m['desktopConnected'] == true;
-      _replayingFull = false;
+      if (_replayingFull) {
+        if (m['epoch'] == _incomingEpoch) _completeReplay(m);
+      } else if (epoch == null || m['epoch'] == epoch) {
+        lastSeq = max(lastSeq, (m['lastSeq'] as num?)?.toInt() ?? 0);
+        epoch = m['epoch'] as String? ?? epoch;
+      }
+      if (m['epoch'] != null && m['epoch'] != epoch) {
+        // A live history reset can finish while the original load response is in flight.
+        attached = true;
+        return;
+      }
       timeline.finishReplay();
-      lastSeq = (m['lastSeq'] as num?)?.toInt() ?? lastSeq;
-      epoch = m['epoch'] as String? ?? epoch;
       if (m['cwd'] is String) cwd = m['cwd'] as String;
       if (m['title'] is String && timeline.title == null) {
         timeline.title = m['title'] as String;
@@ -144,13 +221,17 @@ class SessionController extends ChangeNotifier {
       }
       timeline.queued = (m['queued'] as num?)?.toInt() ?? timeline.queued;
       attached = true;
+      _scheduleSave();
     } on RpcError catch (e) {
       error = e.detail;
     } catch (e) {
       error = '$e';
     } finally {
       loading = false;
-      timeline.flush();
+      if (!_disposed) {
+        if (!attached) _abortReplay();
+        timeline.flush();
+      }
       _notify();
     }
   }
@@ -158,7 +239,7 @@ class SessionController extends ChangeNotifier {
   /// Stop receiving live updates (screen closed). The log keeps going on the bridge.
   void detach() {
     _wantAttached = false;
-    if (attached) {
+    if (attached || loading) {
       client.notify('_codeaw/session/detach', {'sessionId': sessionId});
     }
     attached = false;
@@ -168,17 +249,17 @@ class SessionController extends ChangeNotifier {
     if (_disposed) return;
     if (msg.method == '_codeaw/replay') {
       if (msg.params['mode'] == 'full') {
-        timeline.clear(preserveUnconfirmed: true);
-        lastSeq = 0;
+        _incoming = Timeline();
+        _incomingEpoch = msg.params['epoch'] as String?;
         _replayingFull = true;
       } else if (msg.params['mode'] == 'complete') {
-        lastSeq = (msg.params['lastSeq'] as num?)?.toInt() ?? lastSeq;
-        _replayingFull = false;
-        timeline.finishReplay();
-        timeline.flush();
+        if (_replayingFull && msg.params['epoch'] == _incomingEpoch) {
+          _completeReplay(msg.params);
+        }
         _notify();
+      } else {
+        epoch = msg.params['epoch'] as String? ?? epoch;
       }
-      epoch = msg.params['epoch'] as String? ?? epoch;
       return;
     }
     final seq =
@@ -200,8 +281,109 @@ class SessionController extends ChangeNotifier {
         desktopConnected = event?['desktopConnected'] == true;
       }
     }
-    timeline.apply(msg.method, msg.params);
-    _scheduleFlush();
+    (_incoming ?? timeline).apply(msg.method, msg.params);
+    if (!_replayingFull) {
+      _scheduleFlush();
+      _scheduleSave();
+    }
+  }
+
+  void _completeReplay(Map params) {
+    final incoming = _incoming;
+    if (incoming == null) return;
+    timeline.replaceWith(incoming);
+    epoch = _incomingEpoch;
+    lastSeq = (params['lastSeq'] as num?)?.toInt() ?? 0;
+    _incoming = null;
+    _incomingEpoch = null;
+    _replayingFull = false;
+    _scheduleSave();
+  }
+
+  void _abortReplay() {
+    _incoming = null;
+    _incomingEpoch = null;
+    _replayingFull = false;
+  }
+
+  void _scheduleSave() {
+    _cacheRevision++;
+    _saveTimer ??= Timer(const Duration(seconds: 2), () {
+      _saveTimer = null;
+      unawaited(persist());
+    });
+  }
+
+  /// Background/eviction saves use the same complete cursor as the visible snapshot.
+  Future<void> persist() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    if (_replayingFull || epoch == null || _savedRevision == _cacheRevision) {
+      return;
+    }
+    _savedRevision = _cacheRevision;
+    await cache.write(sessionId, {
+      'epoch': epoch,
+      'lastSeq': lastSeq,
+      'cwd': cwd,
+      'desktopSync': desktopSync,
+      'timeline': timeline.toSnapshot(),
+    });
+  }
+
+  Future<void> loadToolDetails(ToolItem tool) async {
+    if (!tool.detailsDeferred || tool.loadingDetails) return;
+    tool.loadingDetails = true;
+    tool.detailError = null;
+    tool.markDirty();
+    tool.flush();
+    final requestedEpoch = epoch;
+    try {
+      final response =
+          await client.request('_codeaw/history/tool', {
+                'sessionId': sessionId,
+                'epoch': requestedEpoch,
+                'toolCallId': tool.toolCallId,
+              })
+              as Map;
+      if (_disposed ||
+          epoch != requestedEpoch ||
+          response['epoch'] != epoch ||
+          !timeline.items.contains(tool)) {
+        return;
+      }
+      final seq = (response['seq'] as num).toInt();
+      if (seq < tool.activityRevision) throw StateError('工具仍在更新，請重試');
+      tool.content = null;
+      tool.rawOutput = null;
+      tool.terminalOutput = '';
+      tool.meta.clear();
+      timeline.apply('session/update', {
+        'update': {
+          ...Map<String, dynamic>.from(response['update'] as Map),
+          'sessionUpdate': 'tool_call',
+        },
+        '_meta': {
+          'codeaw': {'seq': seq, 't': response['t']},
+        },
+      });
+      tool.hydratedThroughSeq = seq;
+      tool.deferredSeq = null;
+      tool.deferredDiff = false;
+      tool.deferredExitCode = null;
+      timeline.flush();
+      _scheduleSave();
+    } catch (_) {
+      if (!_disposed) {
+        tool.detailError = client.isOnline ? '無法讀取完整輸出，點此重試' : '連上電腦後可讀取完整輸出';
+      }
+    } finally {
+      tool.loadingDetails = false;
+      if (!_disposed) {
+        tool.markDirty();
+        tool.flush();
+      }
+    }
   }
 
   void _scheduleFlush() {
@@ -384,6 +566,7 @@ class SessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    unawaited(persist());
     _disposed = true;
     detach();
     _flushTimer?.cancel();
@@ -401,23 +584,34 @@ class SessionController extends ChangeNotifier {
 /// Routes bridge messages and requests to the open [SessionController]s and keeps a few
 /// recently used ones alive so switching back is instant.
 class SessionHub {
-  SessionHub(this.client) {
+  SessionHub(this.client, {HistoryCache? cache})
+    : cache = cache ?? HistoryCache(client.host) {
     _sub = client.messages.listen(
       (m) => _controllers[m.sessionId]?.onMessage(m),
     );
     client.onServerRequest = _onServerRequest;
+    _activitySub = client.activity.listen((event) {
+      if (event['deleted'] == true && event['sessionId'] is String) {
+        final id = event['sessionId'] as String;
+        _controllers.remove(id)?.dispose();
+        _lru.remove(id);
+        unawaited(this.cache.remove(id));
+      }
+    });
   }
 
   final BridgeClient client;
+  final HistoryCache cache;
   final _controllers = <String, SessionController>{};
   final _lru = <String>[];
   late final StreamSubscription<SessionMessage> _sub;
+  late final StreamSubscription<Map<String, dynamic>> _activitySub;
   static const _keep = 4;
 
   SessionController open(String sessionId, {String? cwd}) {
     var c = _controllers[sessionId];
     if (c == null) {
-      c = SessionController(client, sessionId, cwd: cwd);
+      c = SessionController(client, sessionId, cwd: cwd, cache: cache);
       _controllers[sessionId] = c;
       unawaited(c.attach());
     } else {
@@ -442,7 +636,7 @@ class SessionHub {
     String cwd,
     Map<String, dynamic> newSessionResponse,
   ) {
-    final c = SessionController(client, sessionId, cwd: cwd);
+    final c = SessionController(client, sessionId, cwd: cwd, cache: cache);
     final m =
         (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
     c.lastSeq = (m['lastSeq'] as num?)?.toInt() ?? 0;
@@ -454,6 +648,8 @@ class SessionHub {
     }
     c.attached = true;
     c._wantAttached = true;
+    c._restoring = Future.value();
+    c._scheduleSave();
     _controllers[sessionId] = c;
     _lru.add(sessionId);
     return c;
@@ -473,8 +669,21 @@ class SessionHub {
     return c.onServerRequest(method, params, token);
   }
 
+  Future<void> persist() =>
+      Future.wait(_controllers.values.map((c) => c.persist()));
+
+  Future<void> clearCache() async {
+    for (final c in _controllers.values) {
+      c._saveTimer?.cancel();
+      c._saveTimer = null;
+      c._savedRevision = c._cacheRevision;
+    }
+    await cache.clear();
+  }
+
   void dispose() {
     _sub.cancel();
+    _activitySub.cancel();
     for (final c in _controllers.values) {
       c.dispose();
     }

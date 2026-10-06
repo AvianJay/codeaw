@@ -22,13 +22,29 @@ const snapshot: ActivitySnapshot = { sessionId: "codex:s", agentId: "codex", sta
 const registration = { activityId: "activity", sessionId: "codex:s", turnId: "turn", pushToken: "a".repeat(64), includeDetails: true };
 
 describe("APNs Live Activities", () => {
+  it("supports five concurrent sessions and completing one leaves the others registered", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(100_000);
+    const send = vi.fn<ActivityTransport>(async () => ({ status: 200 }));
+    const snapshots = new Map(Array.from({ length: 5 }, (_, i) => [`codex:${i}`, { ...snapshot, sessionId: `codex:${i}`, title: `Chat ${i}` }]));
+    const service = new LiveActivityPush(config(), () => true, (id) => snapshots.get(id), send); services.push(service);
+    for (let i = 0; i < 5; i++) service.register("phone", { ...registration, sessionId: `codex:${i}`, activityId: `activity-${i}` });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(5);
+    expect(send.mock.calls.map((c) => (c[2] as any).aps["content-state"].title)).toEqual(["Chat 0", "Chat 1", "Chat 2", "Chat 3", "Chat 4"]);
+    service.observe({ ...snapshots.get("codex:0")!, state: "idle", completedTurn: { promptId: "turn", startedAt: 1000, endedAt: 2000 } });
+    await vi.advanceTimersByTimeAsync(1001);
+    service.observe({ ...snapshots.get("codex:4")!, title: "Renamed chat" });
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect((send.mock.calls.at(-1)![2] as any).aps["content-state"]).toMatchObject({ title: "Renamed chat", state: "running", backgroundUpdates: true });
+  });
   it("builds matching bounded content and explicit end/stale dates; redacts details", () => {
-    const content = activityContent(snapshot, true, 1000);
+    const content = activityContent({ ...snapshot, title: "Fix history loading" }, true, 1000);
+    expect(content.title).toBe("Fix history loading");
     expect(content).toMatchObject({ project: "Codeaw", summary: "npm test", startedAt: 1000 });
     const update: any = activityPayload(content, 200_000);
     expect(update.aps).toMatchObject({ event: "update", timestamp: 200, "stale-date": 320 });
     const redacted = activityContent({ ...snapshot, work: { ...snapshot.work, project: "secret", summary: "secret command" } }, false, 1000);
-    expect(redacted.project).toBe("Codeaw"); expect(redacted.summary).not.toContain("secret");
+    expect(redacted.project).toBe("Codeaw"); expect(redacted.title).toBe("Codeaw"); expect(redacted.summary).not.toContain("secret");
     const end: any = activityPayload(activityContent({ ...snapshot, state: "idle", completedTurn: { promptId: "turn", startedAt: 1000, endedAt: 3000 } }, true, 1000), 200_000);
     expect(end.aps).toMatchObject({ event: "end", "dismissal-date": 260, "content-state": { endedAt: 3000 } });
     expect(Buffer.byteLength(JSON.stringify(update))).toBeLessThan(4096);
@@ -104,6 +120,26 @@ describe("APNs Live Activities", () => {
     const service = new LiveActivityPush(cfg, () => true, () => snapshot); services.push(service);
     expect(service.info()).toMatchObject({ enabled: true, ready: false });
     expect(service.register("phone", registration)).toMatchObject({ registered: false });
+  });
+
+  it("publishes generated native-list chat titles to unattached activity clients", async () => {
+    const tb = await startTestBridge();
+    const sender = await TestClient.connect(tb.url, tb.tokenFor("A"));
+    const watcher = await TestClient.connect(tb.url, tb.tokenFor("B"));
+    const backend = tb.bridge.registry.get("fake");
+    const request = backend.request.bind(backend);
+    try {
+      const session = await newFakeSession(sender, tb.home);
+      vi.spyOn(backend, "request").mockImplementation(async (method, params, options) => {
+        if (method === "session/list") return { sessions: [{ sessionId: session.sessionId.split(":")[1], cwd: tb.home, title: "Generated chat title" }] } as any;
+        return request(method, params, options);
+      });
+      await watcher.request("session/list", {});
+      await watcher.waitFor(() => watcher.received.some((r) => r.method === "_codeaw/activity" && r.params.title === "Generated chat title"));
+      const list: any = await watcher.request("_codeaw/activity/list", {});
+      expect(list.activities.find((a: any) => a.sessionId === session.sessionId).title).toBe("Generated chat title");
+      expect(watcher.received.some((r) => r.method === "session/update")).toBe(false);
+    } finally { vi.restoreAllMocks(); sender.close(); watcher.close(); await tb.stop(); }
   });
 
   it("defaults APNs off and exposes running work to unattached authenticated phones", async () => {

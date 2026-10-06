@@ -155,6 +155,12 @@ class LiveActivityController extends ChangeNotifier {
     final id = snapshot['sessionId'];
     if (id is! String) return;
     _snapshots[id] = snapshot;
+    if (snapshot['work'] is Map &&
+        snapshot['state'] != 'idle' &&
+        snapshot['deleted'] != true) {
+      // Track concurrent work across the paired bridge, even without opening each chat.
+      _followed.add(id);
+    }
     _scheduleHeartbeat();
     if (!supported || !enabled || !_followed.contains(id)) return;
     final hostKey = _hostKey;
@@ -169,6 +175,9 @@ class LiveActivityController extends ChangeNotifier {
       'hostKey': hostKey,
       'sessionId': id,
       'turnId': turnId,
+      'title': showDetails
+          ? (snapshot['title'] ?? work?['project'] ?? '聊天')
+          : 'Codeaw',
       'project': showDetails ? (work?['project'] ?? '專案') : 'Codeaw',
       'agent': snapshot['agentId'] ?? '',
       'state': idle ? 'idle' : snapshot['state'],
@@ -190,6 +199,12 @@ class LiveActivityController extends ChangeNotifier {
       'endedAt': completed?['endedAt'],
       'updatedAt': DateTime.now().millisecondsSinceEpoch,
       'usePush': remoteReady,
+      'backgroundUpdates': _tokens.entries.any(
+        (entry) =>
+            _registered.containsKey(entry.key) &&
+            entry.value['sessionId'] == id &&
+            entry.value['turnId'] == turnId,
+      ),
     };
     _serial = _serial.then((_) async {
       if (_disposed || generation != _generation || !enabled) return;
@@ -249,6 +264,8 @@ class LiveActivityController extends ChangeNotifier {
               as Map;
       if (identical(client, _client) && result['registered'] == true) {
         _registered[id] = identity;
+        final snapshot = _snapshots[token['sessionId']];
+        if (snapshot != null) accept(snapshot);
         _changed();
       }
     } catch (_) {

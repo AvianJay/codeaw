@@ -4,6 +4,8 @@ import Foundation
 @available(iOS 16.2, *)
 struct CodeawActivityAttributes: ActivityAttributes {
   struct ContentState: Codable, Hashable {
+    var title: String?
+    var backgroundUpdates: Bool?
     var project: String
     var agent: String
     var state: String

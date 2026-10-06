@@ -305,8 +305,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
   Widget build(BuildContext context) {
     final t = widget.t;
     final scheme = Theme.of(context).colorScheme;
-    final hasDiff = (t.content ?? const []).any((c) => c['type'] == 'diff');
+    final hasDiff = t.deferredDiff || (t.content ?? const []).any((c) => c['type'] == 'diff');
     final open = _open ?? (hasDiff && t.kind == 'edit' && t.status != 'failed');
+    if (open && t.detailsDeferred && !t.loadingDetails && t.detailError == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.controller.loadToolDetails(t);
+      });
+    }
     final status = t.status ?? 'pending';
     final Widget statusIcon = switch (status) {
       'completed' => Icon(Icons.check_circle_rounded, size: 16, color: Colors.green.shade600),
@@ -343,7 +348,18 @@ class _ToolCallCardState extends State<ToolCallCard> {
               ]),
             ),
           ),
-          if (open) _ToolDetails(t),
+          if (open && t.detailsDeferred)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: t.loadingDetails
+                ? const LinearProgressIndicator()
+                : TextButton.icon(
+                    onPressed: () => widget.controller.loadToolDetails(t),
+                    icon: const Icon(Icons.download_rounded, size: 16),
+                    label: Text(t.detailError ?? '讀取完整輸出'),
+                  ),
+            ),
+          if (open && !t.detailsDeferred) _ToolDetails(t),
         ]),
       ),
     );

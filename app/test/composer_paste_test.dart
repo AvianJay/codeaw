@@ -555,7 +555,8 @@ void main() {
     );
     expect(h.controller.draft, 'My next unsent draft');
     expect(h.client.prompts, hasLength(1));
-    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 2));
+      await tester.pumpWidget(const SizedBox());
     next.dispose();
   });
 }

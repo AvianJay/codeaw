@@ -122,6 +122,12 @@ class _PanelClient extends BridgeClient {
 }
 
 class _PanelHarness {
+  bool _disposed = false;
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    state.dispose();
+  }
   _PanelHarness() {
     final host = HostConfig(name: 'test', urls: ['ws://localhost:1'], token: 'fixture', deviceId: 'fixture', deviceName: 'fixture');
     final client = _PanelClient(host);
@@ -470,7 +476,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final h = _PanelHarness();
-    addTearDown(h.state.dispose);
+    addTearDown(h.dispose);
     await tester.pumpWidget(h.app());
     await tester.pump();
     expect(find.byType(SubagentPanel), findsNothing);
@@ -499,6 +505,7 @@ void main() {
     expect(find.byType(SubagentPanel), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
+    h.dispose();
   });
 
   testWidgets('desktop sidebar toggles and updates when a child continues after launch completed', (tester) async {
@@ -506,7 +513,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final h = _PanelHarness();
-    addTearDown(h.state.dispose);
+    addTearDown(h.dispose);
     await tester.pumpWidget(h.app(brightness: Brightness.dark));
     await tester.pump();
     expect(find.byType(SubagentPanel), findsOneWidget);
@@ -525,6 +532,7 @@ void main() {
     expect(find.text('共 2 個 · 0 個未結束'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
+    h.dispose();
   });
 
   testWidgets('phone panel fits large text and keeps terminal and git in the menu', (tester) async {
@@ -532,7 +540,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final h = _PanelHarness();
-    addTearDown(h.state.dispose);
+    addTearDown(h.dispose);
     await tester.pumpWidget(h.app(scale: 1.6));
     await tester.pump();
     expect(tester.takeException(), isNull);
@@ -541,6 +549,7 @@ void main() {
     expect(find.byType(SubagentPanel), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
+    h.dispose();
   });
 
   testWidgets('renders subagent phone preview', (tester) async {

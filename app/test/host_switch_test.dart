@@ -311,6 +311,7 @@ void main() {
       expect(find.text('second conversation'), findsNothing);
       expect((await HostStore().load()).activeHost!.name, 'first');
       expect(tester.takeException(), isNull);
+      await tester.pump(const Duration(seconds: 2));
       await tester.pumpWidget(const SizedBox());
     },
   );

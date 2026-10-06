@@ -260,7 +260,7 @@ void main() {
             find.descendant(
               of: row,
               matching: find.text(
-                '5hr: ${(entry.value[1] as double).toStringAsFixed(1)}%',
+                '5小時: ${(entry.value[1] as double).toStringAsFixed(1)}%',
               ),
             ),
             findsOneWidget,
@@ -414,7 +414,7 @@ void main() {
             findsOneWidget,
           );
           expect(
-            find.descendant(of: row, matching: find.text('5hr: $label')),
+            find.descendant(of: row, matching: find.text('5小時: $label')),
             findsOneWidget,
           );
           if (expectedColor != null) {
@@ -500,6 +500,104 @@ void main() {
     expect(c.settings!.endpoint, 'https://new.example.com');
     expect(c.accounts, isEmpty);
   });
+
+  test(
+    'publishes quotas together after slow and failed accounts settle',
+    () async {
+      var delayed = false;
+      final pending = <String, Completer<Map<String, dynamic>>>{};
+      final c = CpaController(
+        request: (method, params) async {
+          if (method == '_codeaw/cpa/accounts') {
+            return {
+              'accounts': [
+                for (final id in ['c1', 'c2', 'c3']) account(id, 'codex'),
+                account('claude', 'claude'),
+              ],
+            };
+          }
+          final id = params['accountId'] as String;
+          if (delayed) {
+            return (pending[id] = Completer<Map<String, dynamic>>()).future;
+          }
+          return {
+            'status': 'ok',
+            'windows': [
+              {
+                'id': 'weekly',
+                'remainingPercent': {
+                  'c1': 97,
+                  'c2': 23,
+                  'c3': 20,
+                  'claude': 80,
+                }[id],
+              },
+              {'id': 'five-hour', 'remainingPercent': 50},
+            ],
+          };
+        },
+      );
+      addTearDown(c.dispose);
+      await c.configure(settings);
+      final before = cpaProviderAverages(c.accounts, c.quotas);
+      final oldTimestamp = c.updatedAt;
+      delayed = true;
+      final refresh = c.refresh();
+      await Future<void>.delayed(Duration.zero);
+      expect(c.loading, isTrue);
+      expect(c.updatedAt, oldTimestamp);
+      final observed = <double?>[];
+      c.addListener(
+        () => observed.add(
+          cpaProviderAverages(
+            c.accounts,
+            c.quotas,
+          ).first.weekly.remainingPercent,
+        ),
+      );
+      pending['c2']!.complete({
+        'status': 'ok',
+        'windows': [
+          {'id': 'weekly', 'remainingPercent': 20},
+          {'id': 'five-hour', 'remainingPercent': 40},
+        ],
+      });
+      await Future<void>.delayed(Duration.zero);
+      pending['claude']!.complete({
+        'status': 'ok',
+        'windows': [
+          {'id': 'weekly', 'remainingPercent': 60},
+          {'id': 'five-hour', 'remainingPercent': 70},
+        ],
+      });
+      pending['c1']!.complete({
+        'status': 'ok',
+        'windows': [
+          {'id': 'weekly', 'remainingPercent': 10},
+          {'id': 'five-hour', 'remainingPercent': 20},
+        ],
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        observed.every((v) => v == before.first.weekly.remainingPercent),
+        isTrue,
+      );
+      expect(c.quotas['claude']!.windows.first.remainingPercent, 80);
+      expect(c.loading, isTrue);
+      pending['c3']!.completeError(StateError('quota unavailable'));
+      await refresh;
+      final after = cpaProviderAverages(c.accounts, c.quotas);
+      expect(after.first.weekly.remainingPercent, 15);
+      expect(after.first.fiveHour.remainingPercent, 30);
+      expect(after.first.weekly.accountCount, 2);
+      expect(after[1].weekly.remainingPercent, 60);
+      expect(after[1].fiveHour.remainingPercent, 70);
+      expect(c.quotas['c3']!.status, 'error');
+      expect(observed.last, 15);
+      expect(c.loading, isFalse);
+      expect(c.loadingQuotas, isEmpty);
+    },
+  );
 
   test(
     'does not fabricate a quota or automatically replenish it after its reset time',

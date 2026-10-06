@@ -397,7 +397,7 @@ class _ProviderAverageRow extends StatelessWidget {
                 );
                 final fiveHour = _AverageBar(
                   provider: average,
-                  label: '5hr',
+                  label: '5小時',
                   average: average.fiveHour,
                 );
                 if (constraints.maxWidth <

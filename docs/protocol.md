@@ -94,15 +94,19 @@ Response: the agent's `NewSessionResponse` with `sessionId` rewritten and
 
 ### `session/load` (attach + replay)
 
-Params: standard plus optional `_meta.codeaw.afterSeq` and `_meta.codeaw.epoch`.
+Params: standard plus optional `_meta.codeaw.afterSeq`, `_meta.codeaw.epoch`,
+and `_meta.codeaw.lazyHistory: true`.
 
 1. The bridge first sends `_codeaw/replay` `{sessionId, mode: "full"|"delta", epoch}`.
    - `delta` when the client passed `afterSeq` and the same `epoch`: only log
-     entries with `seq > afterSeq` follow, unmodified.
-   - `full` otherwise: the client must clear its timeline; a **compacted**
+     entries with `seq > afterSeq` follow in log order, with the negotiated
+     deferred-output projection when `lazyHistory` is enabled.
+   - `full` otherwise: the client stages a replacement timeline; a **compacted**
      history follows (message chunks merged, tool calls folded into their final
      state, terminal output concatenated, snapshot-type updates reduced to the
      last one).
+     Keep the previous visible history and cursor until the load response or a
+     matching `mode: "complete"` boundary arrives; discard an interrupted replacement.
 2. Replayed entries are sent as `session/update` / `_codeaw/event`
    notifications carrying their `seq` (see below).
 3. The response is sent after the replay:
@@ -130,6 +134,35 @@ replay. Such a replay ends with `_codeaw/replay` `{mode: "complete", epoch,
 lastSeq}`; clients clear their replay flag and advance the cursor at this
 boundary without waiting for a load response. Duplicate/replayed text is not
 appended twice.
+
+Desktop attach returns the owner's current snapshot immediately. If older turns
+are incomplete, the bridge requests them in the background and delivers the
+authoritative replacement when ready instead of blocking the initial load.
+
+### Deferred tool history and local cache
+
+Clients opting into `lazyHistory` receive transport projections for replayed tool
+outputs over 16 KiB. Inputs, title, status, locations, parent attribution and
+lifecycle revisions remain inline; bulky content, raw output and terminal bytes
+are replaced by `update._meta.codeaw.deferredTool =
+{seq, bytes, hasDiff, exitCode?}`. Collaboration identity/lifecycle reports remain
+inline. Ordinary live updates and the durable log are unchanged. Clients that
+omit this option still receive full output, including on older bridges.
+
+Authenticated `_codeaw/history/tool` with `{sessionId, epoch, toolCallId}` returns
+`{epoch, seq, t, update}` containing the exact folded output from the current log.
+Stale epochs and missing tools are rejected. A hydrated tool can be ahead of
+pending stream notifications; ignore already-folded updates for that tool through
+the returned seq, without advancing the session cursor past unrelated entries.
+
+The app persists complete timeline snapshots and reconnect cursors by paired host.
+Native platforms use app-private compressed files; Web uses IndexedDB. It restores
+history and the session list before network attachment, then requests delta replay.
+Writes are debounced for two seconds and flushed on background/eviction. A host
+cache is bounded to 32 snapshots (including the session list) and 128 MiB; older
+cache entries may be evicted. Image/file references are retained, but fetching
+their bytes and deferred tool output requires the bridge. Forgetting a pairing or
+the Settings cache control removes its local cache; bridge history is unaffected.
 
 Desktop turns can start outside codeaw, so state events may refer to native
 turn ids. Desktop-origin messages are echoed from the desktop stream rather
@@ -464,7 +497,7 @@ Authenticated requests:
 The bridge's optional `notifications.liveActivity` configuration holds APNs
 team/key/bundle/environment values and a **PC-local** private-key path. It sends
 HTTP/2 ActivityKit updates with the app bundle's `.push-type.liveactivity` topic.
-Content state fields are `{project, agent, state, phase, summary, startedAt,
+Content state fields are `{title?, backgroundUpdates?, project, agent, state, phase, summary, startedAt,
 endedAt?, updatedAt}`, with Unix **milliseconds** for its three time fields.
 Only APNs `timestamp`, `stale-date` and `dismissal-date` are Unix seconds.
 Details require consent in both PC config and phone settings. Push updates are
@@ -472,6 +505,11 @@ coalesced for 15 seconds, use 120-second stale dates and 60-second heartbeats;
 end events retain the final display for 60 seconds. Registrations survive socket
 disconnects but are in memory and must be renewed after bridge restart.
 See [iOS Live Activities](live-activities.md) for signing/device prerequisites.
+`title` is the chat title (falling back to project). Both are redacted when details
+are hidden. `backgroundUpdates` is true on APNs payloads and on local updates only
+after that activity's token was registered successfully. The app tracks all running
+snapshots and requests multiple activities; ActivityKit controls the device limit.
+Registrations are limited to 16 per paired device and 64 across the bridge.
 
 ### ntfy
 

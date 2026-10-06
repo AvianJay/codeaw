@@ -5,35 +5,38 @@ minimal and expanded Dynamic Island presentations. Dynamic Island requires a
 device that has it; other supported iPhones show the Lock Screen presentation.
 Android Live Progress is outside this change.
 
-An opened chat's running turn starts an activity while the app is foregrounded.
-The view shows the working-directory project name, agent, elapsed time, current
+Each running chat starts an activity while the app is foregrounded, including
+chats not currently open. The view shows the chat title, working-directory project name, agent, elapsed time, current
 command or a short excerpt of an agent-provided thought/progress summary.
 It never calls another model to invent a summary or requests hidden reasoning.
 Waiting for approval is orange, completion green, error red, active work cyan,
 and stale content gray. Tapping opens that session. Completion freezes the
 timer and retains the final Lock Screen card for 60 seconds.
 
-The app tracks opened chats, including when leaving the chat for settings, and
-supports at most four concurrent activities. Closing the app screen does not
+The app tracks all running chats, including when leaving the chat for settings,
+and supports concurrent activities up to the device's ActivityKit limit. Closing the app screen does not
 stop an AI turn. User-dismissed activities are not restarted for the same turn.
 Switching computers, disabling the feature, or deleting a session removes its
 activities. Settings persist the feature and project/detail visibility switches.
-Hiding details redacts project names as well as commands and summary excerpts.
+Hiding details redacts chat titles and project names as well as commands and summary excerpts.
 
 ## Background updates
 
 The timer is rendered by iOS and keeps ticking without app execution. Command,
 summary, approval and completion updates use the connected app, or optional
 ActivityKit APNs pushes from the PC. An ordinary WebSocket does not keep an iOS
-app running after suspension. Without APNs, the last content becomes stale
-after two minutes and says to open Codeaw to synchronize. While foregrounded,
+app running after suspension. Without APNs, the last content and system timer
+remain visible with an explicit last-sync time instead of expiring after two
+minutes. This does not make command/completion updates continue in the background.
+While foregrounded,
 the app refreshes every 60 seconds so a long, quiet command does not falsely
 become stale. APNs update coalescing is 15 seconds, with approval/end updates
 sent sooner; a 60-second bridge heartbeat maintains freshness. Apple's own
 delivery budget and network conditions can delay updates.
 
-The app must have started the activity before suspension. This change does not
-remotely start new activities for chats never opened on the phone. APNs
+The app must have started the activity before suspension. It starts activities
+for running chats discovered in the bridge's activity list without opening each
+chat, but cannot remotely start an activity for a turn beginning after suspension. APNs
 subscriptions survive a phone WebSocket disconnect, expire after eight hours,
 and re-register on resume/reconnect. A bridge restart requires a phone reconnect
 to register its tokens again. Revoking a paired device stops subsequent pushes.
@@ -79,6 +82,11 @@ be overridden to that path with `CODEAW_APNS_ENVIRONMENT=production` or
 `development`. The extension's provisioning/signing must also be valid.
 LCSign imports/signs/installs the IPA; APNs still requires a certificate/profile
 that supports Push Notifications and retention of the widget extension.
+Purchased UDID-bound signing can support local activities. A reported
+`aps-environment = production` is encouraging, but check the installed app's
+actual entitlements and matching App ID; the distribution certificate does not
+replace an APNs provider key for the signing team. Never send signing passwords
+or private keys through chat. Keep provider credentials in PC-local files.
 Launching Codeaw as a LiveContainer guest cannot register the guest extension;
 use a normal installed app for this feature.
 
@@ -117,13 +125,15 @@ over the shared nightly release.
 
 On iPhone verify:
 
-1. Start a long command in an opened chat; check project, readable status and
+1. Start long commands in two chats; check chat title, project, readable status and
    continuing timer on the Lock Screen and all Dynamic Island presentations.
+   Both sessions should have activities; iOS chooses which appear in the compact Island.
 2. Tap the activity to reopen the right chat. Check completion/approval colors,
    frozen final time and removal after completion or disabling the setting.
 3. Hide details and confirm project/command/summary are redacted. Dismiss an
    activity and confirm it stays dismissed for that turn.
-4. Without APNs, lock for over two minutes and confirm the stale label; reopen
+4. Without APNs, lock for over two minutes and confirm the continuing timer and
+   last-sync label; reopen
    and confirm recovery. With valid APNs signing/config, confirm a **different
    command and completion arrive while locked**, then test a phone reconnect.
 5. Scroll up during streaming, tap “捲到最底”, and check portrait/landscape plus

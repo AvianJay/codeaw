@@ -254,6 +254,20 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                     ],
                     const _Section('其他'),
+                    ListTile(
+                      leading: const Icon(Icons.history_rounded),
+                      title: const Text('清除這台電腦的本機聊天快取'),
+                      subtitle: const Text('重開 App 先顯示已保存的歷史，再同步新訊息。只清除本機資料。'),
+                      onTap: () async {
+                        state.sessions?.discardPendingCache();
+                        await state.hub?.clearCache();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('已清除本機聊天快取')),
+                          );
+                        }
+                      },
+                    ),
                     if (!kIsWeb)
                       ListTile(
                         leading: const Icon(Icons.notifications_outlined),

@@ -15,17 +15,21 @@ struct CodeawLiveActivity: Widget {
           .frame(width: 34, height: 34).background(tint(context).opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
         VStack(alignment: .leading, spacing: 6) {
           HStack {
-            Text(context.state.project).font(.headline).lineLimit(1).privacySensitive()
+            Text(chatTitle(context.state)).font(.headline).lineLimit(1).privacySensitive()
             Spacer(minLength: 8)
             elapsed(context.state).font(.subheadline).frame(maxWidth: 76, alignment: .trailing)
           }
           HStack(spacing: 5) {
             Circle().fill(tint(context)).frame(width: 5, height: 5)
-            Text("\(agentName(context.state.agent)) · \(label(context))").font(.caption).foregroundStyle(.secondary)
+            Text("\(context.state.project) · \(agentName(context.state.agent)) · \(label(context))")
+              .font(.caption).foregroundStyle(.secondary).lineLimit(1).privacySensitive()
           }
           Text(context.isStale ? "打開 Codeaw 同步最新狀態" : context.state.summary)
             .font(context.state.phase == "command" ? .system(.caption, design: .monospaced) : .caption)
             .lineLimit(2).privacySensitive()
+          if context.state.backgroundUpdates != true && context.state.endedAt == nil {
+            lastSync(context.state)
+          }
         }
       }
       .padding(14)
@@ -36,7 +40,7 @@ struct CodeawLiveActivity: Widget {
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          Label(context.state.project, systemImage: "folder.fill").font(.caption).lineLimit(1).privacySensitive()
+          Label(chatTitle(context.state), systemImage: "text.bubble.fill").font(.caption).lineLimit(1).privacySensitive()
         }
         DynamicIslandExpandedRegion(.trailing) {
           elapsed(context.state).font(.caption).frame(maxWidth: 76)
@@ -47,6 +51,9 @@ struct CodeawLiveActivity: Widget {
             Text(context.isStale ? "打開 Codeaw 同步最新狀態" : context.state.summary)
               .font(context.state.phase == "command" ? .system(.caption, design: .monospaced) : .caption)
               .lineLimit(2).privacySensitive()
+            if context.state.backgroundUpdates != true && context.state.endedAt == nil {
+              lastSync(context.state)
+            }
           }.frame(maxWidth: .infinity, alignment: .leading)
         }
       } compactLeading: {
@@ -72,6 +79,18 @@ struct CodeawLiveActivity: Widget {
       Text(timerInterval: start...max(start, start.addingTimeInterval(8 * 3600)), countsDown: false)
         .monospacedDigit().minimumScaleFactor(0.7)
     }
+  }
+
+  private func chatTitle(_ state: CodeawActivityAttributes.ContentState) -> String {
+    let title = state.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return title.isEmpty ? state.project : title
+  }
+
+  private func lastSync(_ state: CodeawActivityAttributes.ContentState) -> some View {
+    HStack(spacing: 3) {
+      Text("本機同步 · 上次")
+      Text(Date(timeIntervalSince1970: state.updatedAt / 1000), style: .time)
+    }.font(.caption2).foregroundStyle(.secondary)
   }
 
   private func symbol(_ context: ActivityViewContext<CodeawActivityAttributes>) -> String {

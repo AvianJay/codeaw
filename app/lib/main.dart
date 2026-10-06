@@ -140,6 +140,8 @@ class _CodeawAppState extends State<CodeawApp> {
     widget.state.liveActivity.foreground = foreground;
     widget.state.client?.setForeground(foreground);
     if (foreground) unawaited(widget.state.liveActivity.refresh());
+    if (!foreground) unawaited(widget.state.hub?.persist() ?? Future.value());
+    if (!foreground) unawaited(widget.state.sessions?.persist() ?? Future.value());
   }
 
   void _onLink(Uri uri) {

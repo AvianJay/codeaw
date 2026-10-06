@@ -126,6 +126,7 @@ HostConfig _host(String name) => HostConfig(
 );
 
 class _Harness {
+  bool _closed = false;
   final state = AppState(
     HostStore(),
     openSession: (_) {},
@@ -166,8 +167,10 @@ class _Harness {
     c.timeline.flush();
     router = createAppRouter(state, initialLocation: location);
     addTearDown(() {
-      router.dispose();
-      state.dispose();
+      if (!_closed) {
+        router.dispose();
+        state.dispose();
+      }
     });
     await tester.pumpWidget(
       AppScope(
@@ -190,8 +193,12 @@ class _Harness {
     await tester.pumpAndSettle();
   }
 
-  Future<void> close(WidgetTester tester) =>
-      tester.pumpWidget(const SizedBox());
+  Future<void> close(WidgetTester tester) async {
+    await tester.pumpWidget(const SizedBox());
+    router.dispose();
+    state.dispose();
+    _closed = true;
+  }
 }
 
 Finder get _input => find.descendant(

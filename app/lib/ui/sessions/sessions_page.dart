@@ -56,7 +56,7 @@ class _SessionsPageState extends State<SessionsPage> {
       builder: (context, _) {
         final scheme = Theme.of(context).colorScheme;
         final all = model.sessions.where(
-          (s) => client.agent(s.agentId) != null,
+          (s) => !client.isOnline || client.agent(s.agentId) != null,
         );
         final visible = all
             .where(

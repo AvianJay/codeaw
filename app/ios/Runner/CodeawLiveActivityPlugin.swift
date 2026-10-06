@@ -101,7 +101,10 @@ final class CodeawActivityManager {
       ($0.activityState == .active || $0.activityState == .stale)
     }
     let now = Date().timeIntervalSince1970 * 1000
+    let backgroundUpdates = params["backgroundUpdates"] as? Bool == true
     let state = CodeawActivityAttributes.ContentState(
+      title: String((params["title"] as? String ?? params["project"] as? String ?? "Codeaw").prefix(100)),
+      backgroundUpdates: backgroundUpdates,
       project: String((params["project"] as? String ?? "專案").prefix(60)),
       agent: String((params["agent"] as? String ?? "AI").prefix(30)),
       state: params["state"] as? String ?? "running", phase: params["phase"] as? String ?? "thinking",
@@ -109,7 +112,9 @@ final class CodeawActivityManager {
       startedAt: (params["startedAt"] as? NSNumber)?.doubleValue ?? activities.first?.content.state.startedAt ?? now,
       endedAt: idle ? (params["endedAt"] as? NSNumber)?.doubleValue ?? now : nil,
       updatedAt: (params["updatedAt"] as? NSNumber)?.doubleValue ?? now)
-    let content = ActivityContent(state: state, staleDate: idle ? nil : Date().addingTimeInterval(120))
+    // Local-only signing cannot receive pushes after suspension. Keep the timer
+    // visible with an explicit last-sync time instead of expiring every two minutes.
+    let content = ActivityContent(state: state, staleDate: idle || !backgroundUpdates ? nil : Date().addingTimeInterval(120))
     if idle {
       for activity in activities where turnId == nil || activity.attributes.turnId == turnId {
         await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(60)))
@@ -128,7 +133,6 @@ final class CodeawActivityManager {
     }
     // iOS allows in-app starts only in the foreground. Resume triggers a fresh snapshot.
     guard UIApplication.shared.applicationState == .active else { return ["deferred": true] }
-    if Activity<CodeawActivityAttributes>.activities.filter({ $0.activityState == .active || $0.activityState == .stale }).count >= 4 { return [:] }
     do {
       let push = params["usePush"] as? Bool == true
       let activity: Activity<CodeawActivityAttributes>

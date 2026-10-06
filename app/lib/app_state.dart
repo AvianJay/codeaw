@@ -6,6 +6,7 @@ import 'data/app_updater.dart';
 import 'data/bridge_client.dart';
 import 'data/cpa_usage.dart';
 import 'data/host.dart';
+import 'data/history_cache.dart';
 import 'data/notifications.dart';
 import 'data/live_activity.dart';
 import 'data/session_controller.dart';
@@ -98,6 +99,7 @@ class AppState extends ChangeNotifier {
       _hosts = next;
       _unbind();
       host = null;
+      await HistoryCache(current).clear();
       if (next.isNotEmpty) _bind(next.first);
       notifyListeners();
     } finally {
@@ -110,7 +112,7 @@ class AppState extends ChangeNotifier {
     final c = _createClient(h)..start();
     client = c;
     hub = SessionHub(c);
-    sessions = SessionsModel(c);
+    sessions = SessionsModel(c, cache: hub!.cache);
     liveActivity.bind(c);
     terminals = TerminalHub(c);
     final usage = CpaController(

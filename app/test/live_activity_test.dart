@@ -52,9 +52,11 @@ Map<String, dynamic> work({
   String turn = 'turn',
   String state = 'running',
   String summary = 'npm test',
+  String title = 'Fix chat history',
 }) => {
   'sessionId': session,
   'agentId': 'codex',
+  'title': title,
   'state': state,
   if (state != 'idle') ...{'turnPromptId': turn, 'turnStartedAt': 1000},
   if (state == 'idle')
@@ -71,7 +73,7 @@ void main() {
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
   test(
-    'follows opened chats only and serializes running / completed snapshots',
+    'tracks concurrent chats without opening them and serializes completion independently',
     () async {
       final native = <({String method, Map<String, dynamic>? params})>[];
       final controller = LiveActivityController(
@@ -89,13 +91,21 @@ void main() {
       await controller.refresh();
       controller.accept(work(session: 'codex:other'));
       await controller.settled;
-      expect(native.where((c) => c.method == 'sync'), isEmpty);
+      expect(
+        native.where((c) => c.method == 'sync').single.params!['sessionId'],
+        'codex:other',
+      );
       controller.follow('codex:one');
       controller.accept(work());
       controller.accept(work(state: 'idle'));
       await controller.settled;
       final sync = native.where((c) => c.method == 'sync').toList();
-      expect(sync.map((c) => c.params!['state']), ['running', 'idle']);
+      expect(sync.map((c) => c.params!['state']), [
+        'running',
+        'running',
+        'idle',
+      ]);
+      expect(sync.last.params!['title'], 'Fix chat history');
       expect(sync.last.params, containsPair('startedAt', 1000));
       expect(sync.last.params, containsPair('endedAt', 5000));
       expect(sync.every((c) => c.params!['hostKey'] == 'PC-A'), isTrue);
@@ -124,6 +134,7 @@ void main() {
       await controller.configure(showDetails: false);
       final sync = native.lastWhere((c) => c.method == 'sync').params!;
       expect(sync['project'], 'Codeaw');
+      expect(sync['title'], 'Codeaw');
       expect(sync['summary'], 'AI 正在工作…');
       expect(sync.values, isNot(contains('private command')));
       await controller.configure(enabled: false);
@@ -193,6 +204,37 @@ void main() {
         (c) => c.method == '_codeaw/live_activity/register',
       );
       expect(registrations.last.params!['includeDetails'], isFalse);
+      controller.dispose();
+      await controller.settled;
+      client.dispose();
+    },
+  );
+
+  test(
+    'tracks five distinct running sessions and updates titles without ending the others',
+    () async {
+      final native = <Map<String, dynamic>>[];
+      final controller = LiveActivityController(
+        platformSupported: true,
+        nativeCall: (method, params) async {
+          if (method == 'sync') native.add(params!);
+          return {};
+        },
+      );
+      final client = _Client('PC-A');
+      controller.bind(client);
+      for (var i = 0; i < 5; i++) {
+        controller.accept(work(session: 'codex:$i', title: 'Chat $i'));
+      }
+      await controller.settled;
+      expect(native.map((s) => s['sessionId']).toSet().length, 5);
+      expect(native.every((s) => s['backgroundUpdates'] == false), isTrue);
+      controller.accept(work(session: 'codex:0', title: 'Renamed chat'));
+      controller.accept(work(session: 'codex:1', state: 'idle'));
+      await controller.settled;
+      expect(native[native.length - 2]['title'], 'Renamed chat');
+      expect(native.last['sessionId'], 'codex:1');
+      expect(native.last['state'], 'idle');
       controller.dispose();
       await controller.settled;
       client.dispose();
