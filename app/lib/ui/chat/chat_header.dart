@@ -41,8 +41,7 @@ class ChatHeaderTitle extends StatelessWidget {
             : null;
         // Windows the provider never reports stay hidden instead of showing —.
         final bars = [
-          if (average?.weekly.remainingPercent != null)
-            ('週', average!.weekly),
+          if (average?.weekly.remainingPercent != null) ('一週', average!.weekly),
           if (average?.fiveHour.remainingPercent != null)
             ('5小時', average!.fiveHour),
         ];
@@ -81,7 +80,8 @@ class ChatHeaderTitle extends StatelessWidget {
                 key: const ValueKey('chat-usage-bars'),
                 width: 84,
                 child: Tooltip(
-                  message: '${average!.label} 平均剩餘額度，點擊查看帳號詳情',
+                  message:
+                      '${average!.label} 平均剩餘額度，點擊查看帳號詳情${average.weekly.staleCount > 0 || average.fiveHour.staleCount > 0 ? '；* 含查詢限流前的上次成功資料' : ''}',
                   child: InkWell(
                     onTap: onUsageTap,
                     borderRadius: BorderRadius.circular(4),
@@ -127,10 +127,12 @@ class _HeaderBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final value = average.remainingPercent!;
-    final text = '${value.toStringAsFixed(1)}%';
+    final text =
+        '${value.toStringAsFixed(1)}%${average.staleCount > 0 ? '*' : ''}';
     final color = cpaQuotaColor(context, value);
     return Semantics(
-      label: '$label 平均剩餘 $text，有效帳號 ${average.accountCount}/$total',
+      label:
+          '$label 平均剩餘 $text，有效帳號 ${average.accountCount}/$total${average.staleCount > 0 ? '，${average.staleCount} 個帳號為限流前的上次成功資料' : ''}',
       excludeSemantics: true,
       child: Column(
         mainAxisSize: MainAxisSize.min,

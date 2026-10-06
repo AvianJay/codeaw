@@ -22,6 +22,9 @@ class _Choice {
   final String? description;
 }
 
+bool _allowsCustom(Map<String, dynamic> schema) =>
+    ((schema['_meta'] as Map?)?['codeaw'] as Map?)?['allowCustom'] == true;
+
 List<_Choice> _choices(Map<String, dynamic> schema) {
   final out = <_Choice>[];
   for (final key in const ['oneOf', 'anyOf']) {
@@ -70,6 +73,7 @@ class _ElicitationForm extends StatefulWidget {
 class _ElicitationFormState extends State<_ElicitationForm> {
   final values = <String, Object?>{};
   final texts = <String, TextEditingController>{};
+  final custom = <String>{};
   String? _error;
 
   Map<String, dynamic> get schema =>
@@ -86,12 +90,12 @@ class _ElicitationFormState extends State<_ElicitationForm> {
       final p = raw as Map<String, dynamic>;
       if (p.containsKey('default')) values[key] = p['default'];
       if (p['type'] == 'array') values[key] ??= <String>[];
-      if (_choices(p).isEmpty &&
+      if ((_choices(p).isEmpty || _allowsCustom(p)) &&
           (p['type'] == 'string' ||
               p['type'] == 'number' ||
               p['type'] == 'integer')) {
         texts[key] = TextEditingController(
-          text: p['default']?.toString() ?? '',
+          text: _choices(p).isEmpty ? p['default']?.toString() ?? '' : '',
         );
       }
     });
@@ -114,7 +118,7 @@ class _ElicitationFormState extends State<_ElicitationForm> {
       final p = entry.value as Map<String, dynamic>;
       Object? v = values[entry.key];
       final t = texts[entry.key];
-      if (t != null) {
+      if (t != null && (_choices(p).isEmpty || custom.contains(entry.key))) {
         final s = t.text.trim();
         if (p['type'] == 'number') {
           v = s.isEmpty ? null : num.tryParse(s);
@@ -196,8 +200,12 @@ class _ElicitationFormState extends State<_ElicitationForm> {
       if (choices.isNotEmpty) {
         fields.add(
           RadioGroup<String>(
-            groupValue: values[key] as String?,
-            onChanged: (v) => setState(() => values[key] = v),
+            groupValue: custom.contains(key) ? null : values[key] as String?,
+            onChanged: (v) => setState(() {
+              custom.remove(key);
+              values[key] = v;
+              FocusManager.instance.primaryFocus?.unfocus();
+            }),
             child: Column(
               children: [
                 for (final c in choices)
@@ -214,10 +222,29 @@ class _ElicitationFormState extends State<_ElicitationForm> {
             ),
           ),
         );
+        if (_allowsCustom(p)) {
+          fields.add(
+            TextField(
+              key: ValueKey('elicitation-custom-$key'),
+              controller: texts[key],
+              minLines: 1,
+              maxLines: 4,
+              onTap: () => setState(() => custom.add(key)),
+              onChanged: (_) => setState(() => custom.add(key)),
+              decoration: InputDecoration(
+                labelText: '自訂回答',
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.edit_outlined),
+                helperText: custom.contains(key) ? '將送出自訂內容' : '也可以自行填寫',
+              ),
+            ),
+          );
+        }
         return;
       }
       fields.add(
         TextField(
+          key: ValueKey('elicitation-text-$key'),
           controller: texts[key],
           keyboardType: p['type'] == 'number' || p['type'] == 'integer'
               ? TextInputType.number
@@ -239,6 +266,7 @@ class _ElicitationFormState extends State<_ElicitationForm> {
       ),
       child: ListView(
         shrinkWrap: true,
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         children: [
           Text(
             widget.req.params['message'] as String? ?? '請回答',

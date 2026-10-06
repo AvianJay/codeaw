@@ -44,6 +44,45 @@ CpaController _usage() {
 }
 
 void main() {
+  testWidgets(
+    'stale header keeps colored values with a visible marker at phone width',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final c = _usage();
+      addTearDown(c.dispose);
+      c.quotas['c1'] = CpaQuota.fromJson({
+        'status': 'stale',
+        'windows': [
+          {'id': 'weekly', 'remainingPercent': 97},
+          {'id': 'five-hour', 'remainingPercent': 100},
+        ],
+      });
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            appBar: AppBar(
+              title: ChatHeaderTitle(
+                title: '很長的聊天標題',
+                subtitle: 'Codeaw',
+                agentId: 'codex',
+                agentName: 'Codex',
+                usage: c,
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(find.text('一週: 46.7%*'), findsOneWidget);
+      expect(find.text('5小時: 50.0%*'), findsOneWidget);
+      expect(
+        find.byTooltip('Codex 平均剩餘額度，點擊查看帳號詳情；* 含查詢限流前的上次成功資料'),
+        findsOneWidget,
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
   for (final size in [
     const Size(320, 640),
     const Size(390, 844),
@@ -96,7 +135,7 @@ void main() {
             expect(bars, findsNothing);
             continue;
           }
-          for (final (label, value) in [('週', weekly), ('5小時', five)]) {
+          for (final (label, value) in [('一週', weekly), ('5小時', five)]) {
             expect(
               find.descendant(
                 of: bars,
@@ -165,13 +204,15 @@ void main() {
       await tester.pumpAndSettle();
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(body: ChatHeaderTitle(
-            title: 'Chat',
-            subtitle: '',
-            agentId: 'codex',
-            agentName: 'Codex',
-            usage: c,
-          )),
+          home: Scaffold(
+            body: ChatHeaderTitle(
+              title: 'Chat',
+              subtitle: '',
+              agentId: 'codex',
+              agentName: 'Codex',
+              usage: c,
+            ),
+          ),
         ),
       );
       await tester.pump(const Duration(seconds: 30));

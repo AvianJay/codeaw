@@ -1,5 +1,6 @@
 import path from "node:path";
 import type * as acp from "@agentclientprotocol/sdk";
+import { desktopQuestionReplies } from "./codex-desktop-questions.js";
 
 export interface DesktopRecord { key: string; update: acp.SessionUpdate }
 export interface DesktopState {
@@ -76,6 +77,8 @@ function textOf(value: any): string {
 }
 
 export function inputBlocks(input: any): acp.ContentBlock[] {
+  const replies = desktopQuestionReplies(input);
+  if (replies.length) return [{ type: "text", text: replies.map((reply) => reply.answer || "（略過問題）").join("\n") }];
   if (typeof input === "string") return [{ type: "text", text: input }];
   if (!Array.isArray(input)) return [];
   const blocks: acp.ContentBlock[] = [];

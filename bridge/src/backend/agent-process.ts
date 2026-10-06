@@ -10,7 +10,7 @@ import { logger, type Logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import type { AgentBackend } from "./backend.js";
 import type { DesktopState } from "./codex-desktop-state.js";
-import { desktopEnvironment, resolveCommand } from "../util/environment.js";
+import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/environment.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -129,7 +129,9 @@ export class AgentProcess implements AgentBackend {
     this.stderrTail = "";
     const generation = ++this.generation;
     const { command, args, env } = this.config;
-    const environment = desktopEnvironment({ ...process.env, ...env });
+    const inherited = desktopEnvironment({ ...process.env, ...env });
+    const environment = this.id === "codex" ? recoverCodexPath(inherited) : inherited;
+    if (environment.CODEX_PATH !== inherited.CODEX_PATH) this.log.warn("Codex desktop's old WindowsApps executable disappeared; using the current installed Codex CLI");
     if (!resolveCommand(command, environment)) {
       return this.fail(generation, `ACP executable not found: ${command}. Install this agent from the ACP installer or fix its command in settings.`);
     }

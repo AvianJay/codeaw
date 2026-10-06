@@ -253,7 +253,7 @@ void main() {
             find.descendant(
               of: row,
               matching: find.text(
-                '週: ${(entry.value[0] as double).toStringAsFixed(1)}%',
+                '一週: ${(entry.value[0] as double).toStringAsFixed(1)}%',
               ),
             ),
             findsOneWidget,
@@ -286,7 +286,7 @@ void main() {
         // A provider with only a weekly window shows no five-hour bar.
         final grok = find.byKey(const ValueKey('cpa-average-grok'));
         expect(
-          find.descendant(of: grok, matching: find.text('週: 64.0%')),
+          find.descendant(of: grok, matching: find.text('一週: 64.0%')),
           findsOneWidget,
         );
         expect(
@@ -302,7 +302,7 @@ void main() {
         );
         await tester.enterText(find.byType(TextField), 'claude');
         await tester.pumpAndSettle();
-        expect(find.text('週: 46.7%'), findsOneWidget);
+        expect(find.text('一週: 46.7%'), findsOneWidget);
         expect(find.text('3 個帳號'), findsOneWidget);
         await tester.tap(find.byTooltip('清除搜尋'));
         await tester.pumpAndSettle();
@@ -324,8 +324,8 @@ void main() {
           -150,
           scrollable: listScroll,
         );
-        expect(find.text('週: 81.0%'), findsOneWidget);
-        expect(find.text('週: 46.7%'), findsOneWidget);
+        expect(find.text('一週: 81.0%'), findsOneWidget);
+        expect(find.text('一週: 46.7%'), findsOneWidget);
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox.shrink());
         c.dispose();
@@ -433,7 +433,7 @@ void main() {
           );
           final label = '${value.toStringAsFixed(1)}%';
           expect(
-            find.descendant(of: row, matching: find.text('週: $label')),
+            find.descendant(of: row, matching: find.text('一週: $label')),
             findsOneWidget,
           );
           expect(
@@ -517,6 +517,70 @@ void main() {
     expect(c.settings!.endpoint, 'https://new.example.com');
     expect(c.accounts, isEmpty);
   });
+
+  testWidgets(
+    'keeps rate-limited Claude values marked stale and separate from Codex',
+    (tester) async {
+      var limited = false;
+      final c = CpaController(
+        request: (method, params) async {
+          if (method == '_codeaw/cpa/accounts') {
+            return {
+              'accounts': [
+                account('claude', 'claude'),
+                account('codex', 'codex'),
+              ],
+            };
+          }
+          final id = params['accountId'] as String;
+          return {
+            ...quota(id),
+            'status': limited && id == 'claude' ? 'stale' : 'ok',
+            'checkedAt': '2026-10-06T00:00:00Z',
+            if (limited && id == 'claude') ...{
+              'message': '查詢暫停（HTTP 429）；冷卻後自動重試',
+              'retryAt': '2026-10-06T00:10:00Z',
+            },
+          };
+        },
+      )..initialized = true;
+      await c.configure(settings);
+      limited = true;
+      await c.refresh();
+      final averages = cpaProviderAverages(c.accounts, c.quotas);
+      expect(averages.first.provider, 'codex');
+      expect(averages.first.weekly.staleCount, 0);
+      expect(averages[1].weekly.remainingPercent, 96);
+      expect(averages[1].weekly.staleCount, 1);
+      expect(c.quotas['claude']!.checkedAt, DateTime.utc(2026, 10, 6));
+      tester.view.physicalSize = const Size(320, 640);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(home: CpaUsagePage(controller: c)));
+      await tester.pumpAndSettle();
+      expect(find.text('一週: 96.0%*'), findsOneWidget);
+      expect(find.text('一週: 96.0%'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.textContaining('* 上次成功'),
+        150,
+        scrollable: find
+            .descendant(
+              of: find.byType(ListView),
+              matching: find.byType(Scrollable),
+            )
+            .first,
+      );
+      expect(find.textContaining('HTTP 429'), findsOneWidget);
+      expect(find.textContaining('後重試'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      limited = false;
+      await c.refreshAccount('claude');
+      expect(c.quotas['claude']!.status, 'ok');
+      expect(cpaProviderAverages(c.accounts, c.quotas)[1].weekly.staleCount, 0);
+      await tester.pumpWidget(const SizedBox.shrink());
+      c.dispose();
+    },
+  );
 
   test(
     'publishes quotas together after slow and failed accounts settle',

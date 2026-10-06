@@ -62,12 +62,13 @@ class CpaQuota {
       ),
       status = j['status'] as String? ?? 'error',
       message = j['message'] as String?,
+      retryAt = DateTime.tryParse(j['retryAt'] as String? ?? ''),
       checkedAt = DateTime.tryParse(j['checkedAt'] as String? ?? '');
   final List<CpaWindow> windows;
   final int? resetsRemaining;
   final String? plan, message;
   final String status;
-  final DateTime? subscriptionUntil, checkedAt;
+  final DateTime? subscriptionUntil, checkedAt, retryAt;
 }
 
 class CpaAccount {
@@ -99,9 +100,14 @@ class CpaAccount {
 }
 
 class CpaUsageAverage {
-  const CpaUsageAverage(this.remainingPercent, this.accountCount);
+  const CpaUsageAverage(
+    this.remainingPercent,
+    this.accountCount, {
+    this.staleCount = 0,
+  });
   final double? remainingPercent;
   final int accountCount;
+  final int staleCount;
 }
 
 class CpaProviderAverage {
@@ -129,9 +135,12 @@ List<CpaProviderAverage> cpaProviderAverages(
   }
   CpaUsageAverage average(List<CpaAccount> group, String id, int seconds) {
     final values = <double>[];
+    var staleCount = 0;
     for (final account in group) {
       final quota = quotas[account.id];
-      if (account.disabled || account.unavailable || quota?.status != 'ok') {
+      if (account.disabled ||
+          account.unavailable ||
+          !['ok', 'stale'].contains(quota?.status)) {
         continue;
       }
       final mainWindows = quota!.windows.where((w) => w.id == id).toList();
@@ -149,11 +158,13 @@ List<CpaProviderAverage> cpaProviderAverages(
           .toList();
       if (remaining.isNotEmpty) {
         values.add(remaining.reduce((a, b) => a + b) / remaining.length);
+        if (quota.status == 'stale') staleCount++;
       }
     }
     return CpaUsageAverage(
       values.isEmpty ? null : values.reduce((a, b) => a + b) / values.length,
       values.length,
+      staleCount: staleCount,
     );
   }
 

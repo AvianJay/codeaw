@@ -360,6 +360,8 @@ jobs:
         run: node scripts/installer-smoke.mjs dist/download/codeaw-bridge-windows-x64-setup.exe
       - name: Test tray survives CLI exit
         run: node scripts/tray-smoke.mjs dist/bin/codeaw-bridge.exe
+      - name: Test bridge and tray survive desktop job shutdown
+        run: node scripts/background-job-smoke.mjs dist/bin/codeaw-bridge.exe
       - run: npm ci
       - name: Render packaged desktop windows including updater
         run: npm run smoke:desktop -- dist/desktop-smoke/packaged-tray.ps1

@@ -6,6 +6,7 @@ import { AgentProcess, type AgentHandlers, type AgentInfo } from "./agent-proces
 import { CodexDesktopIpc, DesktopIpcRequestError, type DesktopIpcMessage } from "./codex-desktop-ipc.js";
 import { applyDesktopPatches, codexInput, inputBlocks, desktopRecordChanges, desktopRequests, projectDesktopConversation, type DesktopRecord, type DesktopState } from "./codex-desktop-state.js";
 import { desktopConfigOptions, desktopModels, desktopRestoreMessage, desktopSettingsPatch } from "./codex-desktop-settings.js";
+import { desktopAsyncReply, desktopAsyncRequests, type DesktopAsyncQuestion } from "./codex-desktop-questions.js";
 
 interface DesktopSession {
   id: string;
@@ -22,6 +23,7 @@ interface DesktopSession {
   requests: Map<string, AbortController>;
   messagePromptIds?: Map<string, string>;
   steering?: Map<string, { before: Set<string>; blocks: string }>;
+  answeredQuestions?: Set<string>;
 }
 
 /** Prefer the current desktop owner; retain ACP for sessions the desktop does not own. */
@@ -135,16 +137,7 @@ export class CodexDesktopBackend implements AgentBackend {
         return { configOptions: this.configOptions(session) } as T;
       }
       if (method === "_session/steering") {
-        const input = codexInput(params.prompt);
-        const clientUserMessageId = params._meta?.codeaw?.promptId ?? randomUUID();
-        (session.steering ??= new Map()).set(clientUserMessageId, { before: new Set(session.records?.map((r) => r.key)), blocks: JSON.stringify(inputBlocks(input)) });
-        const response = await this.ipc.request("thread-follower-steer-turn", { conversationId: id, input, attachments: [], clientUserMessageId,
-          restoreMessage: desktopRestoreMessage(session.conversation, input, clientUserMessageId) }, { targetClientId: session.owner });
-        const wrapper = response.result?.result ?? response.result;
-        const result = wrapper?.result ?? wrapper;
-        if (result === false || result?.outcome === "promptRequired") return { outcome: "promptRequired" } as T;
-        if (!result || (typeof result.turnId !== "string" && result !== true && result.outcome !== "injected")) throw new Error("Codex desktop did not confirm steering; check desktop before sending again");
-        return { outcome: "injected" } as T;
+        return await this.steer(session, codexInput(params.prompt), params._meta?.codeaw?.promptId ?? randomUUID()) as T;
       }
       throw new Error("This operation is not available for a desktop-linked session");
     }
@@ -332,14 +325,19 @@ export class CodexDesktopBackend implements AgentBackend {
   }
 
   private syncRequests(session: DesktopSession): void {
-    const requests = desktopRequests(session.conversation);
-    const keys = new Set(requests.map((request) => `${request.method}:${request.id}`));
+    const asyncRequests = desktopAsyncRequests(session.conversation).map((request) => ({ ...request,
+      params: { questions: request.params.questions.filter((question) => !session.answeredQuestions?.has(question.id)) } })).filter((request) => request.params.questions.length);
+    const requests = [...desktopRequests(session.conversation), ...asyncRequests];
+    // A partial desktop reply withdraws the old form; unanswered questions reopen.
+    const requestKey = (request: any) => JSON.stringify([request.method, request.id,
+      ...(request.method === "codeaw/async-question" ? [request.params.questions.map((question: DesktopAsyncQuestion) => question.id)] : [])]);
+    const keys = new Set(requests.map(requestKey));
     for (const [key, controller] of session.requests) {
       if (!keys.has(key)) { controller.abort("desktop-resolved"); session.requests.delete(key); }
     }
     for (const request of requests) {
       if (typeof request.id !== "string" && typeof request.id !== "number") continue;
-      const key = `${request.method}:${request.id}`;
+      const key = requestKey(request);
       if (session.requests.has(key)) continue;
       const params = request.params ?? {};
       const controller = new AbortController();
@@ -363,10 +361,19 @@ export class CodexDesktopBackend implements AgentBackend {
           const accepted = response.outcome.outcome === "selected" && response.outcome.optionId === "allow";
           return { method: approval, payload: approval.includes("permissions-request") ? { response: { permissions: accepted ? params.permissions ?? {} : {}, scope: "turn" } } : { decision: accepted ? "accept" : "decline" } };
         });
+      } else if (request.method === "codeaw/async-question") {
+        const properties = Object.fromEntries(params.questions.map((question: DesktopAsyncQuestion) => [question.id, {
+          type: "string", title: question.title, ...(question.options.length ? { enum: question.options, default: question.options[0], _meta: { codeaw: { allowCustom: true } } } : {}),
+        }]));
+        answer = this.handlers.onElicitation(this.id, { sessionId: session.id, mode: "form", message: "請回答",
+          requestedSchema: { type: "object", properties, required: params.questions.map((question: DesktopAsyncQuestion) => question.id) },
+          _meta: { codeaw: { async: true, questionIds: params.questions.map((question: DesktopAsyncQuestion) => question.id) } },
+        } as any, controller.signal).then((response) => ({ method: "codeaw/async-question", payload: { response, questions: params.questions } }));
       } else if (request.method === "item/tool/requestUserInput" && Array.isArray(params.questions) && !params.questions.some((question: any) => question.isSecret)) {
         const properties = Object.fromEntries(params.questions.map((question: any) => [question.id, {
           type: "string", title: question.header ?? question.question, description: question.question,
-          ...(Array.isArray(question.options) && question.options.length && !question.isOther ? { enum: question.options.map((option: any) => option.label) } : {}),
+          ...(Array.isArray(question.options) && question.options.length ? { oneOf: question.options.map((option: any) => ({ const: option.label, title: option.label, ...(option.description ? { description: option.description } : {}) })),
+            ...(question.isOther ? { _meta: { codeaw: { allowCustom: true } } } : {}) } : {}),
         }]));
         answer = this.handlers.onElicitation(this.id, { sessionId: session.id, mode: "form", message: params.questions.map((question: any) => question.question).join("\n"), requestedSchema: { type: "object", properties, required: params.questions.map((question: any) => question.id) } } as any, controller.signal).then((response) => {
           const content = (response as any).content ?? {};
@@ -378,11 +385,45 @@ export class CodexDesktopBackend implements AgentBackend {
       session.requests.set(key, controller);
       void answer.then(async (result) => {
         if (!result || controller.signal.aborted || session.requests.get(key) !== controller || !session.connected) return;
+        if (result.method === "codeaw/async-question") {
+          await this.replyAsync(session, result.payload.questions, result.payload.response);
+          return;
+        }
         await this.ipc.request(result.method, { conversationId: session.id, requestId: request.id, ...result.payload }, { targetClientId: session.owner });
       }).catch(() => {
         if (!controller.signal.aborted) this.handlers.onSessionError?.(this.id, session.id, "Codex desktop did not confirm the reply. Check desktop before answering again");
       });
     }
+  }
+
+  private async steer(session: DesktopSession, input: any[], clientUserMessageId: string, restore?: Record<string, any>): Promise<{ outcome: "promptRequired" | "injected" }> {
+    (session.steering ??= new Map()).set(clientUserMessageId, { before: new Set(session.records?.map((r) => r.key)), blocks: JSON.stringify(inputBlocks(input)) });
+    const response = await this.ipc.request("thread-follower-steer-turn", { conversationId: session.id, input, attachments: [], clientUserMessageId,
+      restoreMessage: restore ?? desktopRestoreMessage(session.conversation, input, clientUserMessageId) }, { targetClientId: session.owner });
+    const wrapper = response.result?.result ?? response.result;
+    const result = wrapper?.result ?? wrapper;
+    if (result === false || result?.outcome === "promptRequired") { session.steering?.delete(clientUserMessageId); return { outcome: "promptRequired" }; }
+    if (!result || (typeof result.turnId !== "string" && result !== true && result.outcome !== "injected")) throw new Error("Codex desktop did not confirm steering; check desktop before sending again");
+    return { outcome: "injected" };
+  }
+
+  private async replyAsync(session: DesktopSession, questions: DesktopAsyncQuestion[], response: any): Promise<void> {
+    const reply = desktopAsyncReply(questions, response);
+    const blocks: acp.ContentBlock[] = [{ type: "text", text: reply.text }];
+    const input = codexInput(blocks);
+    const id = randomUUID();
+    if (projectDesktopConversation(session.conversation).state.turnId) {
+      const restore = desktopRestoreMessage(session.conversation, input, id) as Record<string, any>;
+      restore.text = reply.summary;
+      restore.context.prompt = reply.summary;
+      restore.context.turnTrigger = "send_user_message_async_question";
+      const result = await this.steer(session, input, id, restore);
+      // Only an explicit idle result permits starting a turn. A timeout might
+      // already have delivered the answer, so never retry it as a new prompt.
+      if (result.outcome === "promptRequired") await this.prompt(session, blocks, id);
+    } else await this.prompt(session, blocks, id);
+    for (const question of questions) (session.answeredQuestions ??= new Set()).add(question.id);
+    this.syncRequests(session);
   }
 
   private async prompt(session: DesktopSession, blocks: acp.ContentBlock[], promptId?: string): Promise<acp.PromptResponse> {

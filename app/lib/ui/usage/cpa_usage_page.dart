@@ -117,9 +117,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
             IconButton(
               tooltip: '重新整理額度',
               onPressed:
-                  c.settings != null &&
-                      !c.loading &&
-                      c.loadingQuotas.isEmpty
+                  c.settings != null && !c.loading && c.loadingQuotas.isEmpty
                   ? c.refresh
                   : null,
               icon: const Icon(Icons.refresh_rounded),
@@ -147,8 +145,9 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                   Text(
                     '你的帳號額度，一眼看清',
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall
-                        ?.copyWith(fontWeight: FontWeight.w700),
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Text(
@@ -191,11 +190,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                   ],
                   Row(
                     children: [
-                      Icon(
-                        Icons.hub_outlined,
-                        size: 17,
-                        color: scheme.primary,
-                      ),
+                      Icon(Icons.hub_outlined, size: 17, color: scheme.primary),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
@@ -232,10 +227,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         FocusManager.instance.primaryFocus?.unfocus(),
                     decoration: InputDecoration(
                       hintText: '搜尋帳號、類型或方案',
-                      prefixIcon: const Icon(
-                        Icons.search_rounded,
-                        size: 20,
-                      ),
+                      prefixIcon: const Icon(Icons.search_rounded, size: 20),
                       isDense: true,
                       suffixIcon: query.isEmpty
                           ? null
@@ -259,15 +251,12 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                             _Filter(
                               label: '全部',
                               selected: _provider == null,
-                              onTap: () =>
-                                  setState(() => _provider = null),
+                              onTap: () => setState(() => _provider = null),
                             ),
                             for (final provider in providers)
                               _Filter(
                                 label: c.accounts
-                                    .firstWhere(
-                                      (a) => a.provider == provider,
-                                    )
+                                    .firstWhere((a) => a.provider == provider)
                                     .providerLabel,
                                 selected: _provider == provider,
                                 onTap: () =>
@@ -298,8 +287,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         ],
                       ),
                     ),
-                  if (c.loading)
-                    const LinearProgressIndicator(minHeight: 2),
+                  if (c.loading) const LinearProgressIndicator(minHeight: 2),
                   if (!c.loading && accounts.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 48),
@@ -326,10 +314,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                       padding: const EdgeInsets.only(top: 16),
                       child: Text(
                         '百分比代表剩餘額度。重置時間依裝置時區顯示；服務商未提供的值會標示未知。',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: scheme.outline,
-                        ),
+                        style: TextStyle(fontSize: 11, color: scheme.outline),
                       ),
                     ),
                 ],
@@ -401,7 +386,7 @@ class _ProviderAverageRow extends StatelessWidget {
                     ? null
                     : _AverageBar(
                         provider: average,
-                        label: '週',
+                        label: '一週',
                         average: average.weekly,
                       );
                 final fiveHour = average.fiveHour.remainingPercent == null
@@ -454,7 +439,8 @@ class _AverageBar extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final value = average.remainingPercent!;
     final color = cpaQuotaColor(context, value);
-    final formatted = '${value.toStringAsFixed(1)}%';
+    final formatted =
+        '${value.toStringAsFixed(1)}%${average.staleCount > 0 ? '*' : ''}';
     final coverage = average.accountCount < provider.totalAccounts
         ? ' (${average.accountCount}/${provider.totalAccounts})'
         : '';
@@ -462,7 +448,8 @@ class _AverageBar extends StatelessWidget {
         '${provider.label} $label 平均剩餘額度：$formatted。'
         '有效帳號 ${average.accountCount}/${provider.totalAccounts}；'
         '未知、失敗、停用或不可用帳號不納入，搜尋與篩選不影響平均。'
-        '${provider.provider == 'antigravity' ? 'AGY 先平均各帳號的模型群組，再平均帳號。' : ''}';
+        '${provider.provider == 'antigravity' ? 'AGY 先平均各帳號的模型群組，再平均帳號。' : ''}'
+        '${average.staleCount > 0 ? '* ${average.staleCount} 個帳號為查詢限流前的上次成功資料。' : ''}';
     return Tooltip(
       message: explanation,
       child: Semantics(
@@ -639,6 +626,14 @@ class _AccountRow extends StatelessWidget {
               style: TextStyle(
                 fontSize: 12,
                 color: quota?.status == 'error' ? scheme.error : scheme.outline,
+              ),
+            ),
+          if (quota?.status == 'stale' || quota?.retryAt != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '${quota?.message ?? '查詢暫停'}${quota?.status == 'stale' ? ' · * 上次成功 ${cpaResetDate(quota!.checkedAt)}' : ''}${quota?.retryAt != null ? ' · ${cpaResetDate(quota!.retryAt)} 後重試' : ''}',
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
               ),
             ),
           if (account.provider == 'codex' || quota?.subscriptionUntil != null)
