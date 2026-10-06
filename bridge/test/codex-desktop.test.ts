@@ -407,6 +407,44 @@ describe("Codex desktop synchronization", () => {
     expect(a.events(nativeId, "elicitation_resolved").at(-1)?.event.action).toBe("cancel");
   });
 
+  it("does not restore superseded questions from canonical history", () => {
+    const question = { type: "agentMessage", id: "historical-question", delivery: "async", questions: [{ title: "Old question" }] };
+    const old = { turnId: "historical-turn", status: "completed", items: [question] };
+    const conversation = { turnHistory: { kind: "canonical", history: {
+      islands: [{ entries: [{ value: "old" }] }], entitiesByKey: { old },
+    } }, turns: [{ turnId: "current-turn", status: "inProgress", items: [] }] };
+    expect(desktopAsyncRequests(conversation)).toEqual([]);
+    // A newer idle turn still supersedes the question after history is loaded.
+    conversation.turns[0].status = "completed";
+    expect(desktopAsyncRequests(conversation)).toEqual([]);
+    conversation.turns = [];
+    expect(desktopAsyncRequests(conversation).map((request) => request.id)).toEqual(["historical-question"]);
+  });
+
+  it.each(["interrupted", "failed", "error", "cancelled", "canceled"])("does not restore questions from a %s turn", (status) => {
+    expect(desktopAsyncRequests({ turns: [{ turnId: "latest-turn", status, items: [
+      { type: "agentMessage", id: "obsolete-question", delivery: "async", questions: [{ title: "Obsolete question" }] },
+    ] }] })).toEqual([]);
+  });
+
+  it("withdraws a superseded form and reconnects only the latest unanswered question", async () => {
+    const { a, desktop, bridge } = await setup(); await load(a);
+    const question = (id: string) => ({ type: "agentMessage", id, delivery: "async", questions: [{ title: id, options: ["A", "B"] }] });
+    desktop.patch([{ op: "add", path: ["turns", 0, "items", 1], value: question("obsolete-question") }]);
+    await a.waitFor(() => a.received.some((message) => message.method === "elicitation/create"));
+    desktop.begin();
+    await a.waitFor(() => a.events(nativeId, "elicitation_resolved").some((message) => message.event.action === "cancel"));
+    expect(desktop.requests.some((message) => ["thread-follower-start-turn", "thread-follower-steer-turn"].includes(message.method))).toBe(false);
+    desktop.patch([{ op: "add", path: ["turns", 1, "items", 1], value: question("latest-question") }]);
+    await a.waitFor(() => a.received.filter((message) => message.method === "elicitation/create").length === 2);
+    desktop.finish();
+    const b = await TestClient.connect(bridge.url, bridge.tokenFor("fresh")); clients.push(b); await load(b);
+    await b.waitFor(() => b.received.some((message) => message.method === "elicitation/create"));
+    const forms = b.received.filter((message) => message.method === "elicitation/create");
+    expect(forms).toHaveLength(1);
+    expect(forms[0].params.requestedSchema.required).toEqual([JSON.stringify(["request_user_input_async", "latest-question", 0])]);
+  });
+
   it("persists desktop affinity across bridge restarts and refuses to resume an unavailable owner through ACP", async () => {
     const { a, desktop, bridge: first } = await setup(); await load(a);
     const home = first.home;
