@@ -8,6 +8,7 @@ import 'package:codeaw/data/host.dart';
 import 'package:codeaw/main.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/settings/update_page.dart';
+import 'package:codeaw/ui/settings/update_prompt.dart';
 import 'package:codeaw/util/apk_installer_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -64,6 +65,7 @@ AppUpdater _updater({
   ApkInstall? installApk,
   UpdateUrlLauncher? openUrl,
   bool isWeb = false,
+  DateTime Function()? now,
 }) => AppUpdater(
   client:
       client ??
@@ -85,6 +87,7 @@ AppUpdater _updater({
   isWeb: isWeb,
   installApk: installApk,
   openUrl: openUrl,
+  now: now,
 );
 
 void main() {
@@ -310,6 +313,276 @@ void main() {
   });
 
   test(
+    'custom installer encodes the IPA URL and rejects invalid templates',
+    () {
+      final download = Uri.parse('https://example.com/a%20b.ipa?token=x%26y');
+      final url = IosInstaller.custom.installUri(
+        download,
+        customTemplate: 'mysigner://import?url={url}&source=codeaw',
+      );
+      expect(url.scheme, 'mysigner');
+      expect(url.queryParameters['url'], download.toString());
+      expect(url.queryParameters['source'], 'codeaw');
+      for (final template in [
+        '',
+        'mysigner://import',
+        '/import?url={url}',
+        'file:///tmp/{url}',
+        'javascript:{url}',
+        'data:text/plain,{url}',
+      ]) {
+        expect(
+          () => customInstallUri(download, template),
+          throwsA(isA<UpdateException>()),
+        );
+      }
+    },
+  );
+
+  test(
+    'custom iOS method persists, opens on demand and falls back to download',
+    () async {
+      final urls = <Uri>[];
+      final updater = _updater(
+        platform: TargetPlatform.iOS,
+        openUrl: (uri) async {
+          urls.add(uri);
+          return uri.scheme == 'https';
+        },
+      );
+      await updater.initialize();
+      await updater.setIosInstaller(IosInstaller.custom);
+      await updater.setCustomIosInstaller('mysigner://import?url={url}');
+      expect(urls, isEmpty);
+      await updater.install();
+      expect(urls.map((u) => u.scheme), ['mysigner', 'https']);
+      expect(urls.first.queryParameters['url'], _ipaUrl.toString());
+      expect(updater.message, contains('已改用瀏覽器'));
+      updater.dispose();
+      final reopened = _updater(platform: TargetPlatform.iOS);
+      addTearDown(reopened.dispose);
+      await reopened.initialize();
+      expect(reopened.iosInstaller, IosInstaller.custom);
+      expect(reopened.customIosInstaller, 'mysigner://import?url={url}');
+      expect(reopened.customIosInstallerError, isNull);
+      await reopened.setCustomIosInstaller('invalid');
+      await reopened.install();
+      expect(reopened.error, contains('{url}'));
+    },
+  );
+
+  test(
+    'resume check is throttled including failed requests; manual check retries',
+    () async {
+      var time = DateTime(2026, 10, 6);
+      var requests = 0;
+      final updater = _updater(
+        now: () => time,
+        client: MockClient((_) async {
+          requests++;
+          return http.Response('', 503);
+        }),
+      );
+      addTearDown(updater.dispose);
+      await updater.initialize();
+      await updater.checkIfStale();
+      expect(requests, 1);
+      time = time.add(const Duration(minutes: 15));
+      await updater.checkIfStale();
+      expect(requests, 2);
+      await updater.check();
+      expect(requests, 3);
+    },
+  );
+
+  testWidgets(
+    'new release prompts once, dismissal survives restart and a later version prompts',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      var build = 42;
+      var installs = 0;
+      AppUpdater make() => _updater(
+        installApk: (_, _) async {
+          installs++;
+        },
+        client: MockClient(
+          (_) async => http.Response(jsonEncode(_manifest(build: build)), 200),
+        ),
+      );
+      var updater = make();
+      await _pumpUpdatePrompt(tester, updater);
+      await tester.pumpAndSettle();
+      expect(find.text('發現新版本'), findsOneWidget);
+      expect(installs, 0);
+      await tester.tap(find.text('稍後'));
+      await tester.pumpAndSettle();
+      await updater.check();
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      await tester.pumpWidget(const SizedBox());
+      updater.dispose();
+      updater = make();
+      await _pumpUpdatePrompt(tester, updater);
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      build = 43;
+      await updater.check();
+      await tester.pumpAndSettle();
+      expect(find.text('發現新版本'), findsOneWidget);
+      expect(find.textContaining('0.1.0+43'), findsOneWidget);
+      expect(installs, 0);
+      await tester.tap(find.text('稍後'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      updater.dispose();
+    },
+  );
+
+  testWidgets(
+    'prompt opens update page on narrow iPhone and allows a custom method',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      tester.view.physicalSize = const Size(320, 760);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final updater = _updater(platform: TargetPlatform.iOS);
+      final state = AppState(HostStore(), openSession: (_) {}, updater: updater)
+        ..loaded = true;
+      addTearDown(state.dispose);
+      final router = createAppRouter(state, initialLocation: '/pair');
+      addTearDown(router.dispose);
+      await tester.pumpWidget(
+        AppScope(
+          state: state,
+          child: MaterialApp.router(
+            routerConfig: router,
+            builder: (_, child) => AppUpdatePrompt(
+              updater: updater,
+              navigatorKey: router.routerDelegate.navigatorKey,
+              routes: router.routerDelegate,
+              isUpdatePage: () => router.state.uri.path == '/updates',
+              openUpdates: () => unawaited(router.push('/updates')),
+              child: child!,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('開啟檢查更新'));
+      await tester.pumpAndSettle();
+      expect(find.byType(UpdatePage), findsOneWidget);
+      expect(find.byType(AlertDialog), findsNothing);
+      final dropdown = find.byType(DropdownButtonFormField<IosInstaller>);
+      await tester.ensureVisible(dropdown);
+      await tester.tap(dropdown);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('自訂安裝工具').last);
+      await tester.pumpAndSettle();
+      final template = find.byType(TextFormField);
+      await tester.ensureVisible(template);
+      await tester.enterText(template, 'mysigner://import?url={url}');
+      await tester.pumpAndSettle();
+      expect(updater.iosInstaller, IosInstaller.custom);
+      expect(updater.customIosInstallerError, isNull);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'background update waits for foreground and does not recheck on every resume',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      final response = Completer<http.Response>();
+      var requests = 0;
+      final updater = _updater(
+        client: MockClient((_) {
+          requests++;
+          return response.future;
+        }),
+      );
+      await _pumpUpdatePrompt(tester, updater);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      response.complete(http.Response(jsonEncode(_manifest()), 200));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+      expect(find.text('發現新版本'), findsOneWidget);
+      expect(requests, 1);
+      await tester.tap(find.text('稍後'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      updater.dispose();
+    },
+  );
+
+  testWidgets('update page does not get a second popup over its controls', (
+    tester,
+  ) async {
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    final updater = _updater();
+    await _pumpUpdatePrompt(tester, updater, isUpdatePage: () => true);
+    await tester.pumpAndSettle();
+    expect(updater.updateAvailable, isTrue);
+    expect(find.byType(AlertDialog), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+    updater.dispose();
+  });
+
+  testWidgets(
+    'an open prompt remains valid during another check and rotation',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      var published = true;
+      final response = Completer<http.Response>();
+      final updater = _updater(
+        client: MockClient(
+          (_) async => published
+              ? http.Response(jsonEncode(_manifest()), 200)
+              : response.future,
+        ),
+      );
+      await _pumpUpdatePrompt(tester, updater);
+      await tester.pumpAndSettle();
+      published = false;
+      final checking = updater.check();
+      await tester.pump();
+      expect(updater.release, isNull);
+      tester.view.physicalSize = const Size(760, 320);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpAndSettle();
+      expect(find.text('發現新版本'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      response.complete(http.Response('', 503));
+      await checking;
+      await tester.tap(find.text('稍後'));
+      await tester.pumpAndSettle();
+      await tester.pumpWidget(const SizedBox());
+      updater.dispose();
+    },
+  );
+
+  testWidgets(
+    'current version, failed check and web never show an update popup',
+    (tester) async {
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      for (final updater in [
+        _updater(loadPackage: () => _package(build: '42')),
+        _updater(client: MockClient((_) async => http.Response('', 503))),
+        _updater(isWeb: true),
+      ]) {
+        await _pumpUpdatePrompt(tester, updater);
+        await tester.pumpAndSettle();
+        expect(find.byType(AlertDialog), findsNothing);
+        await tester.pumpWidget(const SizedBox());
+        updater.dispose();
+      }
+    },
+  );
+
+  test(
     'prevents duplicate installs and changing channels during a download',
     () async {
       final done = Completer<void>();
@@ -480,6 +753,27 @@ void main() {
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });
+}
+
+Future<void> _pumpUpdatePrompt(
+  WidgetTester tester,
+  AppUpdater updater, {
+  bool Function()? isUpdatePage,
+}) async {
+  final key = GlobalKey<NavigatorState>();
+  await tester.pumpWidget(
+    MaterialApp(
+      navigatorKey: key,
+      builder: (_, child) => AppUpdatePrompt(
+        updater: updater,
+        navigatorKey: key,
+        openUpdates: () {},
+        isUpdatePage: isUpdatePage,
+        child: child!,
+      ),
+      home: const Scaffold(body: Text('Chat')),
+    ),
+  );
 }
 
 class _BrokenDownload extends http.BaseClient {

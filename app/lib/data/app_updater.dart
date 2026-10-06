@@ -34,12 +34,13 @@ enum IosInstaller {
   sideStore('SideStore'),
   liveContainer('LiveContainer'),
   lcSign('LCSign'),
+  custom('自訂安裝工具'),
   browser('瀏覽器下載');
 
   const IosInstaller(this.label);
   final String label;
 
-  Uri installUri(Uri download) => switch (this) {
+  Uri installUri(Uri download, {String? customTemplate}) => switch (this) {
     altStore || sideStore || liveContainer => Uri(
       scheme: switch (this) {
         altStore => 'altstore',
@@ -49,9 +50,30 @@ enum IosInstaller {
       host: 'install',
       queryParameters: {'url': download.toString()},
     ),
-    lcSign => Uri(scheme: 'loadcontroller', host: 'import', queryParameters: {'url': download.toString()}),
+    lcSign => Uri(
+      scheme: 'loadcontroller',
+      host: 'import',
+      queryParameters: {'url': download.toString()},
+    ),
+    custom => customInstallUri(download, customTemplate ?? ''),
     browser => download,
   };
+}
+
+Uri customInstallUri(Uri download, String template) {
+  final value = template.trim();
+  if (!value.contains('{url}')) {
+    throw const UpdateException('安裝連結需要包含 {url}，用來代入 IPA 下載連結');
+  }
+  final uri = Uri.tryParse(
+    value.replaceAll('{url}', Uri.encodeComponent(download.toString())),
+  );
+  if (uri == null ||
+      !uri.hasScheme ||
+      ['file', 'data', 'javascript'].contains(uri.scheme.toLowerCase())) {
+    throw const UpdateException('請輸入安裝工具提供的完整 URL Scheme 或 HTTPS 連結');
+  }
+  return uri;
 }
 
 class UpdateException implements Exception {
@@ -152,13 +174,15 @@ class AppUpdater extends ChangeNotifier {
     UpdateUrlLauncher? openUrl,
     TargetPlatform? platform,
     bool? isWeb,
+    DateTime Function()? now,
   }) : _client = client ?? http.Client(),
        buildChannel = buildChannel ?? UpdateChannel.forBuild,
        _loadPackage = loadPackage ?? PackageInfo.fromPlatform,
        _installApk = installApk ?? downloadAndInstallApk,
        _openUrl = openUrl ?? _launchExternal,
        platform = platform ?? defaultTargetPlatform,
-       isWeb = isWeb ?? kIsWeb {
+       isWeb = isWeb ?? kIsWeb,
+       _now = now ?? DateTime.now {
     channel = this.buildChannel;
   }
 
@@ -170,8 +194,10 @@ class AppUpdater extends ChangeNotifier {
   final UpdateUrlLauncher _openUrl;
   final TargetPlatform platform;
   final bool isWeb;
+  final DateTime Function() _now;
   late UpdateChannel channel;
   IosInstaller iosInstaller = IosInstaller.browser;
+  String customIosInstaller = '';
   PackageInfo? installed;
   AppRelease? release;
   DateTime? checkedAt;
@@ -182,6 +208,7 @@ class AppUpdater extends ChangeNotifier {
   String? message;
   SharedPreferences? _preferences;
   Future<void>? _initializing;
+  DateTime? _lastCheckAttempt;
   bool _disposed = false;
 
   bool get supported =>
@@ -204,6 +231,24 @@ class AppUpdater extends ChangeNotifier {
         _ => '',
       }];
   String get _channelKey => 'codeaw.updater.channel.${buildChannel.name}';
+  String get _promptKey =>
+      'codeaw.updater.prompted.${buildChannel.name}.${channel.name}';
+  String? get availableUpdateId =>
+      supported && updateAvailable && asset != null && !checking && !installing
+      ? '${channel.name}:${release!.displayVersion}'
+      : null;
+  bool get shouldPromptUpdate =>
+      availableUpdateId != null &&
+      _preferences?.getString(_promptKey) != availableUpdateId;
+  String? get customIosInstallerError {
+    try {
+      customInstallUri(asset?.url ?? releasePage, customIosInstaller);
+      return null;
+    } on UpdateException catch (e) {
+      return e.message;
+    }
+  }
+
   Uri get releasePage => Uri.https(
     'github.com',
     '/$repository/releases/${channel == UpdateChannel.nightly ? 'tag/nightly' : 'latest'}',
@@ -212,7 +257,7 @@ class AppUpdater extends ChangeNotifier {
     'github.com',
     '/$repository/releases/${channel == UpdateChannel.nightly ? 'download/nightly' : 'latest/download'}/app-update.json',
     // Nightly assets are replaced in place. Avoid a cached manifest.
-    {'t': DateTime.now().millisecondsSinceEpoch.toString()},
+    {'t': _now().millisecondsSinceEpoch.toString()},
   );
 
   static Future<bool> _launchExternal(Uri url) =>
@@ -240,6 +285,8 @@ class AppUpdater extends ChangeNotifier {
         (value) => value.name == prefs.getString('codeaw.updater.iosInstaller'),
         orElse: () => IosInstaller.browser,
       );
+      customIosInstaller =
+          prefs.getString('codeaw.updater.customIosInstaller') ?? '';
       _emit();
       if (supported) await check();
     } catch (_) {
@@ -282,6 +329,35 @@ class AppUpdater extends ChangeNotifier {
     _emit();
   }
 
+  Future<void> setCustomIosInstaller(String value) async {
+    if (busy || _disposed) return;
+    customIosInstaller = value.trim();
+    _emit();
+    if (!await _preferences!.setString(
+          'codeaw.updater.customIosInstaller',
+          customIosInstaller,
+        ) &&
+        !_disposed) {
+      error = '無法儲存自訂安裝方式，請重試';
+      _emit();
+    }
+  }
+
+  Future<void> markUpdatePromptShown() async {
+    final id = availableUpdateId;
+    if (id != null) await _preferences?.setString(_promptKey, id);
+  }
+
+  Future<void> checkIfStale({
+    Duration minAge = const Duration(minutes: 15),
+  }) async {
+    if (_lastCheckAttempt != null &&
+        _now().difference(_lastCheckAttempt!) < minAge) {
+      return;
+    }
+    await check();
+  }
+
   Future<void> check() async {
     if (_disposed || checking || installing || !supported) return;
     if (installed == null) {
@@ -289,6 +365,7 @@ class AppUpdater extends ChangeNotifier {
       return;
     }
     checking = true;
+    _lastCheckAttempt = _now();
     release = null;
     error = null;
     message = null;
@@ -311,7 +388,7 @@ class AppUpdater extends ChangeNotifier {
         throw const FormatException('Manifest channel mismatch');
       }
       release = found;
-      checkedAt = DateTime.now();
+      checkedAt = _now();
     } on UpdateException catch (e) {
       error = e.message;
     } on FormatException {
@@ -348,7 +425,10 @@ class AppUpdater extends ChangeNotifier {
         });
         message = '已開啟 APK 安裝器，請完成系統安裝確認';
       } else {
-        final installerUrl = iosInstaller.installUri(download.url);
+        final installerUrl = iosInstaller.installUri(
+          download.url,
+          customTemplate: customIosInstaller,
+        );
         var opened = false;
         try {
           opened = await _openUrl(installerUrl);

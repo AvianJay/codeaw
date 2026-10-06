@@ -15,6 +15,7 @@ import 'ui/files/git_page.dart';
 import 'ui/pair/pair_page.dart';
 import 'ui/settings/settings_page.dart';
 import 'ui/settings/update_page.dart';
+import 'ui/settings/update_prompt.dart';
 import 'ui/terminal/terminal_page.dart';
 import 'ui/usage/cpa_usage_page.dart';
 import 'ui/workspace/workspace_shell.dart';
@@ -209,6 +210,14 @@ class _CodeawAppState extends State<CodeawApp> {
             darkTheme: _theme(Brightness.dark),
             themeMode: widget.state.themeMode,
             routerConfig: widget.router,
+            builder: (context, child) => AppUpdatePrompt(
+              updater: widget.state.updater,
+              navigatorKey: widget.router.routerDelegate.navigatorKey,
+              routes: widget.router.routerDelegate,
+              isUpdatePage: () => widget.router.state.uri.path == '/updates',
+              openUpdates: () => unawaited(widget.router.push('/updates')),
+              child: child!,
+            ),
           );
         },
       ),
