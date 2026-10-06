@@ -634,6 +634,9 @@ class Timeline extends ChangeNotifier {
         for (final e in _agentStates.entries)
           e.key: {'revision': e.value.revision, 'state': e.value.state},
       },
+      'detachedPromptEvents': {
+        for (final e in _detachedPromptEvents.entries) e.key: e.value.toList(),
+      },
       'revision': _revision,
       'anon': _anon,
       'plan': plan,
@@ -766,6 +769,9 @@ class Timeline extends ChangeNotifier {
         revision: (value['revision'] as num).toInt(),
         state: value['state'] as Map,
       );
+    }
+    for (final e in (map(s['detachedPromptEvents']) ?? const {}).entries) {
+      timeline._detachedPromptEvents[e.key] = maps(e.value);
     }
     timeline
       .._revision = (s['revision'] as num).toInt()
@@ -1096,6 +1102,7 @@ class Timeline extends ChangeNotifier {
           _touch(item);
         } else {
           (_detachedPromptEvents['${e['promptId']}'] ??= []).add(e);
+          _snapshotChanged = true;
         }
       case 'prompt_receipt':
         final mid = 'u-${e['promptId']}';
@@ -1105,6 +1112,7 @@ class Timeline extends ChangeNotifier {
         // message may also be in a history page that is loaded later.
         if (item is! MessageItem) {
           (_detachedPromptEvents['${e['promptId']}'] ??= []).add(e);
+          _snapshotChanged = true;
           return;
         }
         item.promptId = e['promptId'] as String?;

@@ -31,7 +31,7 @@ const original = loadConfig(values.config);
 const source = new SessionStore(original.dataDir);
 const originalEntries = source.readEntries(values.session);
 const compact = compactLog(originalEntries);
-const projected = compact.map(lazyToolEntry);
+const projected = compact.map((entry) => lazyToolEntry(entry));
 const bytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v));
 const checks: any[] = [{ phase: "durable-history", entries: originalEntries.length,
   fullBytes: bytes(compact), lazyBytes: bytes(projected),
@@ -73,6 +73,7 @@ async function connect(compress = true) {
     .onNotification("session/update", record("session/update"))
     .onNotification("_codeaw/event", any, record("_codeaw/event"))
     .onNotification("_codeaw/replay", any, record("_codeaw/replay"))
+    .onNotification("_codeaw/history/page", any, record("_codeaw/history/page"))
     .onNotification("_codeaw/activity", any, record("_codeaw/activity"))
     .onRequest("session/request_permission", (ctx) => {
       const once = ctx.params.options.find((o) => o.kind === "allow_once");
@@ -111,12 +112,12 @@ async function waitFor(pred: () => boolean, timeout = 120000) {
 }
 try {
   const full = await connect(false), lazy = await connect(); cleanupClient = lazy;
-  const load = async (client: typeof full, deferred: boolean) => {
+  const load = async (client: typeof full, deferred: boolean, pageBytes?: number) => {
     client.received.length = 0;
     const wireStart = client.wireBytes();
     const start = performance.now();
     const result = await client.request("session/load", { sessionId: values.session, cwd: values.cwd, mcpServers: [],
-      _meta: { codeaw: { lazyHistory: deferred } } });
+      _meta: { codeaw: { lazyHistory: deferred, ...(pageBytes ? { pageBytes, lazyHistoryBytes: 2048 } : {}) } } });
     await waitFor(() => client.received.some((r) => r.method === "_codeaw/replay" && r.params.sessionId === values.session), 15000);
     const entries = client.received.filter((r) => r.params.sessionId === values.session && ["session/update", "_codeaw/event"].includes(r.method));
     return { result, entries, milliseconds: performance.now() - start, bytes: bytes(entries), wireBytes: client.wireBytes() - wireStart };
@@ -145,6 +146,24 @@ try {
     fullLoadMs: fullReplay.milliseconds, lazyLoadMs: lazyReplay.milliseconds,
     hydrationExact: true, knownChatTitleMatches: !!knownTitle, hydrationBytes: bytes(contents(detail.update)),
     hydrationSha256: createHash("sha256").update(JSON.stringify(contents(detail.update))).digest("hex") });
+  const paged = await connect();
+  const firstPage = await load(paged, true, 48 * 1024);
+  const boundary = paged.received.find((r) => r.method === "_codeaw/replay" && r.params.sessionId === values.session)?.params;
+  assert.ok(Number.isInteger(boundary.before), "Real long history must have an older page");
+  assert.ok(firstPage.wireBytes < lazyReplay.wireBytes / 2, "First page must reduce the initial transfer");
+  const pageWireStart = paged.wireBytes();
+  await paged.request("_codeaw/history/page", { sessionId: values.session, epoch: firstPage.result._meta.codeaw.epoch,
+    before: boundary.before, pageBytes: 48 * 1024 });
+  await waitFor(() => paged.received.some((r) => r.method === "_codeaw/history/page" && r.params.requested === boundary.before), 15000);
+  const older = paged.received.find((r) => r.method === "_codeaw/history/page" && r.params.requested === boundary.before)!.params;
+  assert.ok(older.entries.length);
+  assert.ok(older.before === undefined || older.before < boundary.before, "Older-page cursor must progress");
+  checks.push({ phase: "real-paged-history", status: "passed", dataSaver: true, pageBudget: 48 * 1024,
+    firstPageWireBytes: firstPage.wireBytes, firstPageEntries: firstPage.entries.length,
+    olderPageWireBytes: paged.wireBytes() - pageWireStart, olderPageEntries: older.entries.length,
+    cursorProgressed: true, firstPageLoadMs: firstPage.milliseconds });
+  await paged.conn.agent.notify("_codeaw/session/detach", { sessionId: values.session } as never).catch(() => {});
+  paged.conn.close();
   const cursor = { ...lazyReplay.result._meta.codeaw };
   for (const r of lazy.received) {
     if (r.params.sessionId !== values.session) continue;
