@@ -235,7 +235,7 @@ class BridgeClient extends ChangeNotifier {
   void _handleNotification(String method, Map<String, dynamic> params) {
     if (_disposed) return;
     switch (method) {
-      case 'session/update' || '_codeaw/event' || '_codeaw/replay':
+      case 'session/update' || '_codeaw/event' || '_codeaw/replay' || '_codeaw/history/page':
         _messages.add(SessionMessage(method, params));
       case '_codeaw/activity':
         _activity.add(params);

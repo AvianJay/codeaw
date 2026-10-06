@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type http from "node:http";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -12,6 +13,25 @@ const MIME: Record<string, string> = {
   ".png": "image/png", ".jpg": "image/jpeg", ".svg": "image/svg+xml", ".ico": "image/x-icon",
   ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
 };
+
+const COMPRESSIBLE = new Set([".html", ".js", ".mjs", ".json", ".css", ".wasm", ".svg", ".ttf", ".otf"]);
+const MIN_GZIP_BYTES = 1024;
+const MAX_GZIP_CACHE = 64;
+/** Built assets rarely change, so each version is compressed once. */
+const gzipped = new Map<string, Promise<Buffer>>();
+
+function gzip(file: string, tag: string): Promise<Buffer> {
+  const key = `${tag}${file}`;
+  let data = gzipped.get(key);
+  if (!data) {
+    data = fs.promises.readFile(file).then((raw) => new Promise<Buffer>((resolve, reject) =>
+      zlib.gzip(raw, { level: 9 }, (error, out) => error ? reject(error) : resolve(out))));
+    data.catch(() => gzipped.delete(key));
+    if (gzipped.size >= MAX_GZIP_CACHE) gzipped.delete(gzipped.keys().next().value!);
+    gzipped.set(key, data);
+  }
+  return data;
+}
 
 export function findWebRoot(): string | undefined {
   const candidates = [
@@ -45,13 +65,31 @@ export function serveWeb(req: http.IncomingMessage, res: http.ServerResponse, pa
   }
   if (!inside(fs.realpathSync(file))) return false;
   const st = fs.statSync(file);
-  res.writeHead(200, {
-    "Content-Type": MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream",
-    "Content-Length": st.size,
+  const ext = path.extname(file).toLowerCase();
+  // Revalidated on every load, but unchanged assets cost a 304 instead of megabytes.
+  const tag = `W/"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+  const compressible = COMPRESSIBLE.has(ext);
+  const headers: http.OutgoingHttpHeaders = {
+    "Content-Type": MIME[ext] ?? "application/octet-stream",
     "Cache-Control": "no-cache",
+    ETag: tag,
+    ...(compressible ? { Vary: "Accept-Encoding" } : {}),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
-  });
+  };
+  if (req.headers["if-none-match"]?.split(",").some((value) => value.trim() === tag)) {
+    res.writeHead(304, headers);
+    res.end();
+    return true;
+  }
+  if (compressible && st.size >= MIN_GZIP_BYTES && /\bgzip\b/.test(String(req.headers["accept-encoding"] ?? ""))) {
+    gzip(file, tag).then((data) => {
+      res.writeHead(200, { ...headers, "Content-Encoding": "gzip", "Content-Length": data.length });
+      res.end(req.method === "HEAD" ? undefined : data);
+    }, () => res.destroy());
+    return true;
+  }
+  res.writeHead(200, { ...headers, "Content-Length": st.size });
   if (req.method === "HEAD") res.end();
   else fs.createReadStream(file).on("error", () => res.destroy()).pipe(res);
   return true;

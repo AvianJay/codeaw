@@ -8,9 +8,15 @@ const KEEP_LAST = new Set(["plan", "available_commands_update", "current_mode_up
 
 type Slot =
   | { kind: "entry"; entry: LogEntry }
-  | { kind: "message"; seq: number; t: number; first: any; parts: any[] }
-  | { kind: "tool"; seq: number; t: number; state: ToolCallState; agentStatesSeq?: number; statusSeq?: number; lifecycleSeq?: number }
-  | { kind: "info"; seq: number; t: number; update: Record<string, any> };
+  | { kind: "message"; seq: number; t: number; at: number; first: any; parts: any[] }
+  | { kind: "tool"; seq: number; t: number; at: number; state: ToolCallState; agentStatesSeq?: number; statusSeq?: number; lifecycleSeq?: number }
+  | { kind: "info"; seq: number; t: number; at: number; update: Record<string, any> };
+
+/** One compacted item and the seq where it first appeared, which orders pages stably within an epoch. */
+export interface CompactGroup {
+  first: number;
+  entries: LogEntry[];
+}
 
 /**
  * Produces a shorter log whose reduction (see toolcall.ts / the app reducer) equals the
@@ -23,6 +29,10 @@ type Slot =
  * Output entries keep the highest `seq` they absorbed, so seqs are not monotonic.
  */
 export function compactLog(entries: LogEntry[]): LogEntry[] {
+  return compactGroups(entries).flatMap((g) => g.entries);
+}
+
+export function compactGroups(entries: LogEntry[]): CompactGroup[] {
   const lastIndex = new Map<string, number>();
   let lastState = -1;
   entries.forEach((e, i) => {
@@ -56,7 +66,7 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
       const key = JSON.stringify([u.sessionUpdate, parentToolCallId(u), mid]);
       let slot = messages.get(key);
       if (!slot) {
-        slot = { kind: "message", seq: e.seq, t: e.t, first: u, parts: [] };
+        slot = { kind: "message", seq: e.seq, t: e.t, at: e.seq, first: u, parts: [] };
         messages.set(key, slot);
         slots.push(slot);
       }
@@ -80,7 +90,7 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
     if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
       let slot = tools.get(u.toolCallId);
       if (!slot) {
-        slot = { kind: "tool", seq: e.seq, t: e.t, state: emptyToolCall(u.toolCallId) };
+        slot = { kind: "tool", seq: e.seq, t: e.t, at: e.seq, state: emptyToolCall(u.toolCallId) };
         tools.set(u.toolCallId, slot);
         slots.push(slot);
       }
@@ -97,7 +107,7 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
     if (u.sessionUpdate === "session_info_update") {
       const merged = { ...(info?.update ?? {}), ...u, _meta: { ...(info?.update._meta ?? {}), ...(u._meta ?? {}) } };
       if (info) slots.splice(slots.indexOf(info), 1);
-      info = { kind: "info", seq: e.seq, t: e.t, update: merged };
+      info = { kind: "info", seq: e.seq, t: e.t, at: e.seq, update: merged };
       slots.push(info);
       return;
     }
@@ -105,21 +115,24 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
     slots.push({ kind: "entry", entry: e });
   });
 
-  const out: LogEntry[] = [];
+  const out: CompactGroup[] = [];
   for (const slot of slots) {
     switch (slot.kind) {
       case "entry":
-        out.push(slot.entry);
+        out.push({ first: slot.entry.seq, entries: [slot.entry] });
         break;
-      case "message":
+      case "message": {
+        const entries: LogEntry[] = [];
         for (const [partIndex, part] of slot.parts.entries()) {
           const meta = codeawMeta(slot.first);
           const update = { ...slot.first, content: part,
             ...(meta.replace === true ? { _meta: { ...slot.first._meta, codeaw: { ...meta, partIndex } } } : {}),
           };
-          out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
+          entries.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
         }
+        out.push({ first: slot.at, entries });
         break;
+      }
       case "tool": {
         const update = toolCallToUpdate(slot.state);
         // A later title/status update must not make an old child-state snapshot
@@ -131,11 +144,11 @@ export function compactLog(entries: LogEntry[]): LogEntry[] {
             ...(slot.lifecycleSeq !== undefined ? { toolLifecycleSeq: slot.lifecycleSeq } : {}),
           } };
         }
-        out.push({ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry);
+        out.push({ first: slot.at, entries: [{ seq: slot.seq, t: slot.t, kind: "update", update } as UpdateEntry] });
         break;
       }
       case "info":
-        out.push({ seq: slot.seq, t: slot.t, kind: "update", update: slot.update } as UpdateEntry);
+        out.push({ first: slot.at, entries: [{ seq: slot.seq, t: slot.t, kind: "update", update: slot.update } as UpdateEntry] });
         break;
     }
   }

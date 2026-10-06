@@ -11,6 +11,12 @@ import 'models.dart';
 import 'history_cache.dart';
 import 'timeline.dart';
 
+/// Replay sizes negotiated with the bridge. Data saver trades taps for bytes:
+/// smaller history pages and tool output above 2 KiB fetched on expansion.
+const historyPageBytes = 192 * 1024;
+const dataSaverPageBytes = 48 * 1024;
+const dataSaverToolBytes = 2 * 1024;
+
 /// A permission or elicitation request the bridge is waiting on.
 class PendingRequest {
   PendingRequest(this.method, this.params, this.token);
@@ -43,8 +49,10 @@ class SessionController extends ChangeNotifier {
     String? cwd,
     this.projectless = false,
     HistoryCache? cache,
+    bool Function()? dataSaver,
   }) : cwd = cwd ?? '',
-       cache = cache ?? HistoryCache(client.host) {
+       cache = cache ?? HistoryCache(client.host),
+       _dataSaver = dataSaver ?? (() => false) {
     _connSub = client.connected.listen((_) {
       if (_wantAttached) unawaited(attach());
     });
@@ -78,6 +86,13 @@ class SessionController extends ChangeNotifier {
   String? error;
   final pending = <String, PendingRequest>{};
 
+  /// Older history is paged in from the bridge before this cursor; null when
+  /// the timeline starts at the beginning of the conversation.
+  int? olderBefore;
+  bool loadingOlder = false;
+  String? olderError;
+  bool get hasOlder => olderBefore != null;
+
   /// One-shot messages for the UI (snackbars): errors from prompts, config changes, …
   final _toasts = StreamController<String>.broadcast();
   Stream<String> get toasts => _toasts.stream;
@@ -86,6 +101,8 @@ class SessionController extends ChangeNotifier {
   bool _replayingFull = false;
   Timeline? _incoming;
   String? _incomingEpoch;
+  int? _incomingBefore;
+  final bool Function() _dataSaver;
   Future<void>? _restoring;
   Future<void>? _attaching;
   Timer? _saveTimer;
@@ -104,7 +121,13 @@ class SessionController extends ChangeNotifier {
       .toList();
 
   void _onClientChange() {
-    if (client.status != ConnStatus.online) _abortReplay();
+    if (client.status != ConnStatus.online) {
+      _abortReplay();
+      if (loadingOlder) {
+        loadingOlder = false;
+        _notify();
+      }
+    }
     if (client.status != ConnStatus.online && attached) {
       attached = false;
       desktopConnected = false;
@@ -161,6 +184,7 @@ class SessionController extends ChangeNotifier {
       if (cwd.isEmpty) cwd = saved['cwd'] as String? ?? '';
       projectless = saved['projectless'] == true;
       desktopSync = saved['desktopSync'] == true;
+      olderBefore = (saved['before'] as num?)?.toInt();
       _savedRevision = _cacheRevision;
       _notify();
     } catch (_) {
@@ -183,6 +207,8 @@ class SessionController extends ChangeNotifier {
                 '_meta': {
                   'codeaw': {
                     'lazyHistory': true,
+                    if (_dataSaver()) 'lazyHistoryBytes': dataSaverToolBytes,
+                    'pageBytes': _pageBytes,
                     if (epoch != null && lastSeq > 0) ...{
                       'afterSeq': lastSeq,
                       'epoch': epoch,
@@ -258,12 +284,19 @@ class SessionController extends ChangeNotifier {
 
   void onMessage(SessionMessage msg) {
     if (_disposed) return;
+    if (msg.method == '_codeaw/history/page') {
+      _applyOlderPage(msg.params);
+      return;
+    }
     if (msg.method == '_codeaw/replay') {
       if (msg.params['mode'] == 'full') {
         _incoming = Timeline();
         _incomingEpoch = msg.params['epoch'] as String?;
+        _incomingBefore = (msg.params['before'] as num?)?.toInt();
         _replayingFull = true;
       } else if (msg.params['mode'] == 'complete') {
+        // Live replays learn their page cursor once the rebuilt log is sent.
+        if (msg.params['before'] is num) _incomingBefore = (msg.params['before'] as num).toInt();
         if (_replayingFull && msg.params['epoch'] == _incomingEpoch) {
           _completeReplay(msg.params);
         }
@@ -305,8 +338,12 @@ class SessionController extends ChangeNotifier {
     timeline.replaceWith(incoming);
     epoch = _incomingEpoch;
     lastSeq = (params['lastSeq'] as num?)?.toInt() ?? 0;
+    olderBefore = _incomingBefore;
+    olderError = null;
+    loadingOlder = false;
     _incoming = null;
     _incomingEpoch = null;
+    _incomingBefore = null;
     _replayingFull = false;
     _scheduleSave();
   }
@@ -314,6 +351,7 @@ class SessionController extends ChangeNotifier {
   void _abortReplay() {
     _incoming = null;
     _incomingEpoch = null;
+    _incomingBefore = null;
     _replayingFull = false;
   }
 
@@ -340,8 +378,56 @@ class SessionController extends ChangeNotifier {
       'cwd': cwd,
       'projectless': projectless,
       'desktopSync': desktopSync,
+      'before': olderBefore,
       'timeline': timeline.toSnapshot(),
     });
+  }
+
+  int get _pageBytes => _dataSaver() ? dataSaverPageBytes : historyPageBytes;
+
+  /// Requests the page before the oldest loaded message. The bridge sends it as a
+  /// notification in order with live updates; see [_applyOlderPage].
+  Future<void> loadOlder() async {
+    final before = olderBefore;
+    if (_disposed || before == null || loadingOlder || !attached || _replayingFull || !client.isOnline) return;
+    loadingOlder = true;
+    olderError = null;
+    _notify();
+    try {
+      await client.request('_codeaw/history/page', {
+        'sessionId': sessionId,
+        'epoch': epoch,
+        'before': before,
+        'pageBytes': _pageBytes,
+      });
+    } catch (e) {
+      if (_disposed || olderBefore != before || !loadingOlder) return;
+      loadingOlder = false;
+      olderError = e is RpcError && e.code != RpcError.connectionClosed ? '無法載入較早的訊息，點此重試' : null;
+      _notify();
+    }
+  }
+
+  void _applyOlderPage(Map<String, dynamic> params) {
+    final requested = (params['requested'] as num?)?.toInt();
+    if (_replayingFull || params['epoch'] != epoch || requested == null || requested != olderBefore) return;
+    final page = Timeline(anonScope: 'p$requested:');
+    for (final entry in (params['entries'] as List? ?? const []).whereType<Map<String, dynamic>>()) {
+      final meta = {
+        'codeaw': {'seq': entry['seq'], 't': entry['t']},
+      };
+      if (entry['update'] is Map<String, dynamic>) {
+        page.apply('session/update', {'update': entry['update'], '_meta': meta});
+      } else if (entry['event'] is Map<String, dynamic>) {
+        page.apply('_codeaw/event', {'event': entry['event'], '_meta': meta});
+      }
+    }
+    timeline.prependHistory(page);
+    olderBefore = (params['before'] as num?)?.toInt();
+    loadingOlder = false;
+    olderError = null;
+    _scheduleSave();
+    _notify();
   }
 
   Future<void> loadToolDetails(ToolItem tool) async {
@@ -628,8 +714,9 @@ class SessionController extends ChangeNotifier {
 /// Routes bridge messages and requests to the open [SessionController]s and keeps a few
 /// recently used ones alive so switching back is instant.
 class SessionHub {
-  SessionHub(this.client, {HistoryCache? cache})
-    : cache = cache ?? HistoryCache(client.host) {
+  SessionHub(this.client, {HistoryCache? cache, bool Function()? dataSaver})
+    : cache = cache ?? HistoryCache(client.host),
+      _dataSaver = dataSaver ?? (() => false) {
     _sub = client.messages.listen(
       (m) => _controllers[m.sessionId]?.onMessage(m),
     );
@@ -644,6 +731,7 @@ class SessionHub {
 
   final BridgeClient client;
   final HistoryCache cache;
+  final bool Function() _dataSaver;
   final _controllers = <String, SessionController>{};
   final _lru = <String>[];
   late final StreamSubscription<SessionMessage> _sub;
@@ -653,7 +741,7 @@ class SessionHub {
   SessionController open(String sessionId, {String? cwd, bool? projectless}) {
     var c = _controllers[sessionId];
     if (c == null) {
-      c = SessionController(client, sessionId, cwd: cwd, projectless: projectless ?? false, cache: cache);
+      c = SessionController(client, sessionId, cwd: cwd, projectless: projectless ?? false, cache: cache, dataSaver: _dataSaver);
       _controllers[sessionId] = c;
       unawaited(c.attach());
     } else {
@@ -689,7 +777,7 @@ class SessionHub {
     String cwd,
     Map<String, dynamic> newSessionResponse,
   ) {
-    final c = SessionController(client, sessionId, cwd: cwd, cache: cache);
+    final c = SessionController(client, sessionId, cwd: cwd, cache: cache, dataSaver: _dataSaver);
     final m =
         (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
     if (m['cwd'] is String) c.cwd = m['cwd'] as String;

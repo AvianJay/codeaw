@@ -113,6 +113,7 @@ export class TestClient {
       .onNotification("session/update", record("session/update"))
       .onNotification("_codeaw/event", any, record("_codeaw/event"))
       .onNotification("_codeaw/replay", any, record("_codeaw/replay"))
+      .onNotification("_codeaw/history/page", any, record("_codeaw/history/page"))
       .onNotification("_codeaw/activity", any, record("_codeaw/activity"))
       .onNotification("_codeaw/terminal/event", any, record("_codeaw/terminal/event"))
       .onRequest("session/request_permission", async (ctx) => {

@@ -54,6 +54,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Smaller history pages, tool output and images on request (mobile data).
+  bool dataSaver = false;
+  Future<void> setDataSaver(bool enabled) async {
+    await store.saveDataSaver(enabled);
+    dataSaver = enabled;
+    notifyListeners();
+  }
+
   /// A pairing link received before/while the pair screen is shown (QR scanned by the system camera).
   PairingLink? pendingPairing;
 
@@ -62,6 +70,7 @@ class AppState extends ChangeNotifier {
   Future<void> load() async {
     final library = await store.load();
     final appearance = await store.loadAppearance();
+    dataSaver = await store.loadDataSaver();
     themeMode =
         ThemeMode.values.where((mode) => mode.name == appearance).firstOrNull ??
         ThemeMode.system;
@@ -124,7 +133,7 @@ class AppState extends ChangeNotifier {
     host = h;
     final c = _createClient(h)..start();
     client = c;
-    hub = SessionHub(c);
+    hub = SessionHub(c, dataSaver: () => dataSaver);
     sessions = SessionsModel(c, cache: hub!.cache);
     liveActivity.bind(c);
     androidLiveActivity.bind(c, sessions!, hub!);

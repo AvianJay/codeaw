@@ -294,7 +294,8 @@ class _TimelineList extends StatelessWidget {
   Widget build(BuildContext context) {
     final items = controller.timeline.rootItems;
     final running = controller.running;
-    if (items.isEmpty && !running) {
+    final older = controller.hasOlder;
+    if (items.isEmpty && !running && !older) {
       return Center(
         child: controller.loading
             ? const CircularProgressIndicator()
@@ -313,7 +314,7 @@ class _TimelineList extends StatelessWidget {
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
         reverse: true,
         padding: padding,
-        itemCount: items.length + extra,
+        itemCount: items.length + extra + (older ? 1 : 0),
         itemBuilder: (context, index) {
           if (running && index == 0) {
             return WorkingIndicator(
@@ -321,6 +322,9 @@ class _TimelineList extends StatelessWidget {
               timeline: controller.timeline,
               waitingForInput: controller.pending.values.any((req) => !req.isPermission),
             );
+          }
+          if (index == items.length + extra) {
+            return _OlderHistory(key: ValueKey('older:${controller.sessionId}'), controller: controller);
           }
           final i = items.length - 1 - (index - extra);
           final item = items[i];
@@ -332,6 +336,34 @@ class _TimelineList extends StatelessWidget {
           );
         },
         ),
+      ),
+    );
+  }
+}
+
+/// The top of a paged history. The list builds it only near the viewport, so
+/// building it fetches the previous page; a failed page waits for a tap.
+class _OlderHistory extends StatelessWidget {
+  const _OlderHistory({super.key, required this.controller});
+  final SessionController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final ready = c.client.isOnline && c.attached;
+    if (ready && !c.loadingOlder && c.olderError == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => c.loadOlder());
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Center(
+        child: c.loadingOlder
+            ? const SizedBox.square(dimension: 20, child: CircularProgressIndicator(strokeWidth: 2))
+            : TextButton.icon(
+                onPressed: ready ? c.loadOlder : null,
+                icon: const Icon(Icons.history_rounded, size: 18),
+                label: Text(c.olderError ?? (ready ? '載入較早的訊息' : '連上電腦後可載入較早的訊息')),
+              ),
       ),
     );
   }

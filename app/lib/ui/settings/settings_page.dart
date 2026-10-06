@@ -107,6 +107,23 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                     ),
+                    const _Section('數據用量'),
+                    SwitchListTile(
+                      secondary: const Icon(Icons.data_saver_on_rounded),
+                      title: const Text('節省數據'),
+                      subtitle: const Text('對話分更小段載入，歷史中超過 2 KiB 的工具輸出展開時才讀取，圖片點擊後才下載。適合行動網路。'),
+                      value: state.dataSaver,
+                      onChanged: (enabled) async {
+                        final messenger = ScaffoldMessenger.of(context);
+                        try {
+                          await state.setDataSaver(enabled);
+                        } catch (_) {
+                          messenger.showSnackBar(
+                            const SnackBar(content: Text('無法儲存數據用量設定')),
+                          );
+                        }
+                      },
+                    ),
                     const _Section('用量與帳號'),
                     ListTile(
                       leading: Icon(

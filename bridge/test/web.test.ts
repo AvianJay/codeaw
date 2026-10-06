@@ -52,6 +52,39 @@ describe("bridge-hosted web app", () => {
     }
   });
 
+  it("revalidates unchanged assets and gzips large text and wasm for browsers that accept it", async () => {
+    const bridge = await fixture();
+    const big = "window.codeaw = { assets: true };\n".repeat(4000);
+    fs.writeFileSync(path.join(home!, "web", "main.dart.js"), big);
+    const plain = await fetch(bridge.http + "/main.dart.js", { headers: { "Accept-Encoding": "identity" } });
+    expect(plain.headers.get("content-encoding")).toBeNull();
+    expect(Number(plain.headers.get("content-length"))).toBe(Buffer.byteLength(big));
+    const tag = plain.headers.get("etag")!;
+    expect(tag).toMatch(/^W\/".+"$/);
+    expect(await plain.text()).toBe(big);
+
+    const http = await import("node:http");
+    const gzipped = await new Promise<{ status?: number; headers: Record<string, unknown>; body: Buffer }>((resolve, reject) => {
+      http.get(bridge.http + "/main.dart.js", { headers: { "Accept-Encoding": "gzip, deflate, br" } }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      }).on("error", reject);
+    });
+    expect(gzipped.status).toBe(200);
+    expect(gzipped.headers["content-encoding"]).toBe("gzip");
+    expect(gzipped.headers.vary).toBe("Accept-Encoding");
+    expect(gzipped.body.length).toBeLessThan(Buffer.byteLength(big) / 20);
+    expect((await import("node:zlib")).gunzipSync(gzipped.body).toString()).toBe(big);
+
+    const revalidated = await fetch(bridge.http + "/main.dart.js", { headers: { "If-None-Match": tag } });
+    expect(revalidated.status).toBe(304);
+    expect(await revalidated.text()).toBe("");
+    // Small files are not worth compressing.
+    const index = await fetch(bridge.http + "/", { headers: { "Accept-Encoding": "gzip" } });
+    expect(index.headers.get("content-encoding")).toBeNull();
+  });
+
   it("keeps APIs private and supports browser query authentication after pairing", async () => {
     const bridge = await fixture();
     expect((await fetch(bridge.http + "/api/fs/raw?path=x")).status).toBe(401);
@@ -79,6 +112,7 @@ describe("bridge-hosted web app", () => {
         ws.once("open", () => ws.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } })));
       });
       expect((await initialized).result.agentInfo.name).toBe("codeaw-bridge");
+      expect(ws.extensions).toContain("permessage-deflate");
       const file = path.join(bridge.home, "browser.txt");
       fs.writeFileSync(file, "browser file");
       const raw = await fetch(`${bridge.http}/api/fs/raw?${new URLSearchParams({ path: file, token })}`);

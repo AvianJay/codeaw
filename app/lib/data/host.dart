@@ -87,6 +87,8 @@ class HostLibrary {
 class HostStore {
   Future<String?> loadAppearance() => _storage.read(key: 'codeaw.appearance');
   Future<void> saveAppearance(String mode) => _storage.write(key: 'codeaw.appearance', value: mode);
+  Future<bool> loadDataSaver() async => await _storage.read(key: 'codeaw.dataSaver') == 'true';
+  Future<void> saveDataSaver(bool enabled) => _storage.write(key: 'codeaw.dataSaver', value: '$enabled');
   static const _key = 'codeaw.host';
   final _storage = const FlutterSecureStorage();
   Future<void> _pendingWrite = Future.value();

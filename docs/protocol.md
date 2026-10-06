@@ -28,6 +28,11 @@ the extra screens (files, git, pairing).
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.
 
+WebSocket compression is described under the local cache below. Web app assets
+carry a weak `ETag` and answer `If-None-Match` with 304. Text, JSON and wasm
+assets of at least 1 KiB are gzipped for clients that send
+`Accept-Encoding: gzip`.
+
 ### Pairing
 
 `codeaw-bridge pair` (or the first start without paired devices) prints a QR
@@ -126,16 +131,20 @@ deleting session history preserves working files. This is not an agent sandbox.
 ### `session/load` (attach + replay)
 
 Params: standard plus optional `_meta.codeaw.afterSeq`, `_meta.codeaw.epoch`,
-and `_meta.codeaw.lazyHistory: true`.
+`_meta.codeaw.lazyHistory: true`, `_meta.codeaw.lazyHistoryBytes` and
+`_meta.codeaw.pageBytes` (see [Paged history](#paged-history)).
 
-1. The bridge first sends `_codeaw/replay` `{sessionId, mode: "full"|"delta", epoch}`.
+1. The bridge first sends `_codeaw/replay` `{sessionId, mode: "full"|"delta", epoch, before?}`.
    - `delta` when the client passed `afterSeq` and the same `epoch`: only log
      entries with `seq > afterSeq` follow in log order, with the negotiated
-     deferred-output projection when `lazyHistory` is enabled.
+     deferred-output projection when `lazyHistory` is enabled. A paging client
+     whose delta would exceed two pages gets a paged `full` replay instead,
+     because deltas carry uncompacted streaming chunks.
    - `full` otherwise: the client stages a replacement timeline; a **compacted**
      history follows (message chunks merged, tool calls folded into their final
      state, terminal output concatenated, snapshot-type updates reduced to the
-     last one).
+     last one). With `pageBytes`, only the newest page follows and `before` is set
+     when older history remains.
      Keep the previous visible history and cursor until the load response or a
      matching `mode: "complete"` boundary arrives; discard an interrupted replacement.
 2. Replayed entries are sent as `session/update` / `_codeaw/event`
@@ -162,8 +171,9 @@ These fields are also included in state events and activity notifications.
 The desktop's snapshot and revisioned patches are authoritative. A historical
 edit or newly loaded older history can trigger a new epoch and a live full
 replay. Such a replay ends with `_codeaw/replay` `{mode: "complete", epoch,
-lastSeq}`; clients clear their replay flag and advance the cursor at this
-boundary without waiting for a load response. Duplicate/replayed text is not
+lastSeq, before?}`; clients clear their replay flag and advance the cursor at this
+boundary without waiting for a load response. Paging clients receive only the
+newest page, and `before` is the page cursor. Duplicate/replayed text is not
 appended twice.
 
 Desktop attach returns the owner's current snapshot immediately. If older turns
@@ -173,7 +183,8 @@ authoritative replacement when ready instead of blocking the initial load.
 ### Deferred tool history and local cache
 
 Clients opting into `lazyHistory` receive transport projections for replayed tool
-updates over 4 KiB. Small inputs (at most 1 KiB), bounded titles (256 characters),
+updates over 4 KiB, or over `lazyHistoryBytes` (512 B–4 KiB) when given; the
+app's data saver uses 2 KiB. Small inputs (at most 1 KiB), bounded titles (256 characters),
 status, locations, parent attribution and lifecycle revisions remain inline;
 bulky inputs, content, raw output, duplicated Claude tool responses and terminal bytes
 are replaced by `update._meta.codeaw.deferredTool =
@@ -190,9 +201,42 @@ A hydrated tool can be ahead of
 pending stream notifications; ignore already-folded updates for that tool through
 the returned seq, without advancing the session cursor past unrelated entries.
 
+### Paged history
+
+`pageBytes` (8 KiB–8 MiB of transport JSON) makes full replays newest-first.
+The bridge sends the most recent compacted groups that fit, starting at a prompt
+unless the current turn is over four pages. Session snapshots (`plan`, commands,
+mode, config, usage, `session_info_update`) always come first, wherever they
+appeared. When the page starts inside an active turn, that turn's latest
+`running`/`requires_action` state comes first too. `before` is the oldest sent
+group's first-appearance seq; it is stable for the epoch.
+
+Authenticated `_codeaw/history/page` with `{sessionId, epoch, before,
+pageBytes?}` responds `{}` after sending one notification to the requester. The
+session must be attached:
+
+```jsonc
+// _codeaw/history/page
+{ "sessionId": "claude:…", "epoch": "…", "requested": 812, "before": 403,
+  "entries": [ { "seq": 403, "t": 1790899200000, "update": { … } },
+               { "seq": 410, "t": 1790899200300, "event": { "type": "state", … } } ] }
+```
+
+Entries are the compacted groups that first appeared before `requested`, newest
+page, in log order, with the negotiated tool projection. `before` is absent at
+the beginning of the conversation. The notification is queued with live updates,
+so it reflects every update the client received before it. Reduce the page
+separately and place it before the loaded history. A page copy of an already
+loaded item, such as a tool that kept running, replaces the partial live copy.
+A request that also appears in newer history keeps its resolution. A turn split
+across pages is joined. Stale epochs and unattached clients are rejected. Clients
+that omit `pageBytes`, and older bridges, receive whole replays without `before`.
+
 The app persists complete timeline snapshots and reconnect cursors by paired host.
 Native platforms use app-private compressed files; Web uses IndexedDB. It restores
 history and the session list before network attachment, then requests delta replay.
+The page cursor is cached with the snapshot. Scrolling near the top loads the
+previous page (192 KiB, or 48 KiB with data saver, which also loads images on tap).
 Writes are debounced for two seconds and flushed on background/eviction. A host
 cache is bounded to 32 snapshots (including the session list) and 128 MiB; older
 cache entries may be evicted. Image/file references are retained, but fetching
@@ -433,6 +477,8 @@ out on the bridge.
 | `_codeaw/terminal/detach` | `{terminalId}` | `{}` |
 | `_codeaw/terminal/close` | `{terminalId}` | `{}` |
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
+| `_codeaw/history/tool` | `{sessionId, epoch, toolCallId}` | `{epoch, seq, t, update}` (see deferred tool history) |
+| `_codeaw/history/page` | `{sessionId, epoch, before, pageBytes?}` | `{}` after the `_codeaw/history/page` notification (see paged history) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
 | `_codeaw/cpa/accounts` | `{endpoint, managementKey}` | `{accounts: CpaAccount[], checkedAt}` |
@@ -584,6 +630,7 @@ releases use Bun's built-in PTY support.
 |---|---|---|
 | bridge → client | `_codeaw/activity` | `{sessionId, agentId, state, pending, queued, title?, updatedAt?, turnPromptId?, turnStartedAt?, completedTurn?, work?}` — sent to **all** connections, attached or not |
 | bridge → client | `_codeaw/replay` | see `session/load` |
+| bridge → client | `_codeaw/history/page` | see paged history; only to the requesting connection |
 | bridge → client | `_codeaw/event` | see event log |
 | bridge → client | `_codeaw/terminal/event` | see interactive terminals |
 | client → bridge | `_codeaw/client/state` | `{foreground: bool, activeSessionId?}` |

@@ -266,14 +266,17 @@ class BlockImage extends StatelessWidget {
       client: uri.startsWith('codeaw-blob:') ? AppScope.of(context).client : null,
     );
     if (provider == null) return const Icon(Icons.broken_image_outlined);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: () => showImagePreview(context, provider),
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxHeight: maxHeight),
-          child: Image(image: provider, fit: BoxFit.contain, semanticLabel: '圖片，點擊放大',
-            errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)),
+    return DeferredImage(
+      provider: provider,
+      builder: (context) => ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: () => showImagePreview(context, provider),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: Image(image: provider, fit: BoxFit.contain, semanticLabel: '圖片，點擊放大',
+              errorBuilder: (_, _, _) => const Icon(Icons.broken_image_outlined)),
+          ),
         ),
       ),
     );

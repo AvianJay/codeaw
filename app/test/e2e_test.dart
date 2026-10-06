@@ -119,6 +119,67 @@ void main() {
     expect(c2.lastSeq, c.lastSeq);
   });
 
+  test('compresses the socket and pages a long history newest-first into the same timeline', () async {
+    // dart:io's WebSocket.extensions is always empty, so shake hands with the
+    // offer it sends by default (CompressionOptions.compressionDefault).
+    final http = HttpClient();
+    final handshake = await http.getUrl(Uri.parse((info['url'] as String).replaceFirst('ws', 'http')));
+    handshake.headers
+      ..set(HttpHeaders.authorizationHeader, 'Bearer ${info['token']}')
+      ..set(HttpHeaders.connectionHeader, 'Upgrade')
+      ..set(HttpHeaders.upgradeHeader, 'websocket')
+      ..set('Sec-WebSocket-Key', base64Encode(List.filled(16, 7)))
+      ..set('Sec-WebSocket-Version', '13')
+      ..set('Sec-WebSocket-Extensions', 'permessage-deflate; client_max_window_bits');
+    final upgraded = await handshake.close();
+    expect(upgraded.statusCode, HttpStatus.switchingProtocols);
+    expect(upgraded.headers.value('sec-websocket-extensions'), startsWith('permessage-deflate'));
+    (await upgraded.detachSocket()).destroy();
+    http.close(force: true);
+
+    final client = connect();
+    await client.connected.first.timeout(const Duration(seconds: 15));
+    final hub = SessionHub(client);
+    cleanups.add(hub.dispose);
+    final cwd = info['home'] as String;
+    final resp = await client.request('session/new', {
+      'cwd': cwd,
+      'mcpServers': const [],
+      '_meta': {
+        'codeaw': {'agentId': 'fake'},
+      },
+    }) as Map<String, dynamic>;
+    final id = resp['sessionId'] as String;
+    final c = hub.adopt(id, cwd, resp);
+    for (var i = 0; i < 12; i++) {
+      await c.send([
+        {'type': 'text', 'text': 'echo turn $i ${'內容' * 1000}'},
+      ]);
+      await until(() => agentText(c).contains('turn $i ') && c.timeline.state == 'idle');
+    }
+
+    final other = connect();
+    await other.connected.first.timeout(const Duration(seconds: 15));
+    final saver = SessionHub(other, dataSaver: () => true);
+    cleanups.add(saver.dispose);
+    final c2 = saver.open(id, cwd: cwd);
+    await until(() => c2.attached && !c2.loading);
+    expect(c2.hasOlder, isTrue);
+    final firstPage = c2.timeline.items.whereType<MessageItem>().length;
+    expect(firstPage, lessThan(c.timeline.items.whereType<MessageItem>().length));
+    expect(agentText(c2), contains('turn 11 '));
+    var pages = 0;
+    while (c2.hasOlder) {
+      await c2.loadOlder();
+      await until(() => !c2.loadingOlder);
+      pages++;
+    }
+    expect(pages, greaterThan(1));
+    c.timeline.flush();
+    c2.timeline.flush();
+    expect(c2.timeline.debugSnapshot()['items'], c.timeline.debugSnapshot()['items']);
+  });
+
   test('terminal streams, reattaches without duplicates, and restarts after shell exit', () async {
     final client = connect();
     await client.connected.first.timeout(const Duration(seconds: 15));

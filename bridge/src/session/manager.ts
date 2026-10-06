@@ -7,8 +7,8 @@ import type { AgentRegistry } from "../backend/registry.js";
 import type { PushNotifier, PushKind } from "../notify/ntfy.js";
 import { logger } from "../util/log.js";
 import { VERSION } from "../version.js";
-import { compactLog } from "./compact.js";
-import { lazyToolEntry } from "./history.js";
+import { compactGroups, compactLog, type CompactGroup } from "./compact.js";
+import { historyOptions, olderPage, preferFullReplay, projectEntry, tailPage, type HistoryOptions, type HistoryPage } from "./history.js";
 import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
@@ -138,6 +138,12 @@ function toRequestError(err: unknown): acp.RequestError {
   return acp.RequestError.internalError(undefined, errorMessage(err));
 }
 
+const DEFAULT_PAGE_BYTES = 192 * 1024;
+
+function beforeOf(page: { before?: number }): { before?: number } {
+  return page.before === undefined ? {} : { before: page.before };
+}
+
 function modeOf(meta: SessionMeta): string | undefined {
   const opt = meta.configOptions?.find((o: any) => o.category === "mode" || o.id === "mode") as any;
   if (opt && typeof opt.currentValue === "string") return opt.currentValue;
@@ -149,7 +155,7 @@ export class SessionManager implements AgentHandlers {
   private readonly deleting = new Set<string>();
   private readonly clients = new Set<ClientHandle>();
   private readonly attachedTo = new Map<ClientHandle, Set<BridgeSession>>();
-  private readonly lazyHistory = new Map<ClientHandle, Set<string>>();
+  private readonly history = new Map<ClientHandle, Map<string, HistoryOptions>>();
   private readonly importing = new Map<string, Promise<BridgeSession>>();
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
@@ -201,7 +207,7 @@ export class SessionManager implements AgentHandlers {
       }
     }
     this.attachedTo.delete(c);
-    this.lazyHistory.delete(c);
+    this.history.delete(c);
     // Anything still waiting for an answer now may need a push.
     if (this.clients.size === 0) {
       for (const s of this.sessions.values()) {
@@ -216,7 +222,7 @@ export class SessionManager implements AgentHandlers {
     if (!s) return;
     s.subscribers.delete(c);
     this.attachedTo.get(c)?.delete(s);
-    this.lazyHistory.get(c)?.delete(s.id);
+    this.history.get(c)?.delete(s.id);
     for (const pr of s.pending.values()) {
       pr.dispatched.get(c.id)?.abort();
       pr.dispatched.delete(c.id);
@@ -301,10 +307,11 @@ export class SessionManager implements AgentHandlers {
     } finally {
       for (const c of subscribers) s.subscribers.add(c);
     }
-    const replay = compactLog(this.ensureEntries(s));
+    const groups = compactGroups(this.ensureEntries(s));
     for (const c of subscribers) {
-      for (const entry of replay) this.sendEntry(c, s, this.historyEntry(c, s, entry));
-      void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
+      const page = this.replayPage(c, s, groups);
+      for (const entry of page.entries) this.sendEntry(c, s, this.historyEntry(c, s, entry));
+      void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq, ...beforeOf(page) });
     }
     this.saveMeta(s, true);
   }
@@ -546,7 +553,36 @@ export class SessionManager implements AgentHandlers {
   }
 
   private historyEntry(c: ClientHandle, s: BridgeSession, entry: LogEntry): LogEntry {
-    return this.lazyHistory.get(c)?.has(s.id) ? lazyToolEntry(entry) : entry;
+    return projectEntry(entry, this.history.get(c)?.get(s.id));
+  }
+
+  /** Clients that negotiated paging get the newest part of a full replay first. */
+  private replayPage(c: ClientHandle, s: BridgeSession, groups: CompactGroup[]): HistoryPage {
+    const options = this.history.get(c)?.get(s.id);
+    return options?.pageBytes ? tailPage(groups, { ...options, pageBytes: options.pageBytes }) : { entries: groups.flatMap((g) => g.entries) };
+  }
+
+  /**
+   * Sends history older than `before` as one `_codeaw/history/page` notification. It is
+   * queued with this client's live updates, so the page reflects everything sent before it.
+   */
+  historyPage(c: ClientHandle, params: { sessionId?: unknown; epoch?: unknown; before?: unknown; pageBytes?: unknown }): object {
+    const s = this.requireLoaded(params.sessionId);
+    if (params.epoch !== s.meta.epoch) throw acp.RequestError.invalidParams(undefined, "History changed; reconnect before loading older messages");
+    if (!s.subscribers.has(c)) throw acp.RequestError.invalidParams(undefined, "Load the session before paging its history");
+    const before = params.before;
+    if (typeof before !== "number" || !Number.isInteger(before) || before < 1) throw acp.RequestError.invalidParams(undefined, "before is required");
+    const options = this.history.get(c)?.get(s.id);
+    const pageBytes = historyOptions({ pageBytes: params.pageBytes })?.pageBytes ?? options?.pageBytes ?? DEFAULT_PAGE_BYTES;
+    const page = olderPage(compactGroups(this.ensureEntries(s)), before, { ...options, pageBytes });
+    void c.notify("_codeaw/history/page", {
+      sessionId: s.id, epoch: s.meta.epoch, requested: before, ...beforeOf(page),
+      entries: page.entries.map((entry) => {
+        const projected = this.historyEntry(c, s, entry);
+        return projected.kind === "update" ? { seq: projected.seq, t: projected.t, update: projected.update } : { seq: projected.seq, t: projected.t, event: projected.event };
+      }),
+    });
+    return {};
   }
 
   /** Authenticated, read-only expansion of a deferred tool, including every output byte. */
@@ -846,9 +882,9 @@ export class SessionManager implements AgentHandlers {
     this.attachedTo.get(c)?.add(s);
     s.lastActivity = Date.now();
     if (replay) {
-      void c.notify("_codeaw/replay", { sessionId: s.id, mode: replay.mode, epoch: s.meta.epoch, lastSeq: s.meta.lastSeq });
-      const list = replay.mode === "delta" ? entries.filter((e) => e.seq > replay.afterSeq) : compactLog(entries);
-      for (const e of list) this.sendEntry(c, s, this.historyEntry(c, s, e));
+      const page = replay.mode === "delta" ? { entries: entries.filter((e) => e.seq > replay.afterSeq) } : this.replayPage(c, s, compactGroups(entries));
+      void c.notify("_codeaw/replay", { sessionId: s.id, mode: replay.mode, epoch: s.meta.epoch, lastSeq: s.meta.lastSeq, ...beforeOf(page) });
+      for (const e of page.entries) this.sendEntry(c, s, this.historyEntry(c, s, e));
     }
     // Open requests go out after the response to load/resume (and after the replay).
     setImmediate(() => {
@@ -911,11 +947,13 @@ export class SessionManager implements AgentHandlers {
   async loadSession(c: ClientHandle, params: acp.LoadSessionRequest): Promise<acp.LoadSessionResponse> {
     const s = await this.sessionForAttach(params.sessionId, params.cwd);
     const m = codeawMeta(params as any);
-    let lazy = this.lazyHistory.get(c);
-    if (!lazy) this.lazyHistory.set(c, lazy = new Set());
-    if (m.lazyHistory === true) lazy.add(s.id); else lazy.delete(s.id);
+    let history = this.history.get(c);
+    if (!history) this.history.set(c, history = new Map());
+    const options = historyOptions(m);
+    if (options) history.set(s.id, options); else history.delete(s.id);
     const delta =
-      typeof m.afterSeq === "number" && m.epoch === s.meta.epoch && m.afterSeq >= 0 && m.afterSeq <= s.meta.lastSeq;
+      typeof m.afterSeq === "number" && m.epoch === s.meta.epoch && m.afterSeq >= 0 && m.afterSeq <= s.meta.lastSeq &&
+      !preferFullReplay(this.ensureEntries(s), m.afterSeq, options);
     await this.attach(c, s, delta ? { mode: "delta", afterSeq: m.afterSeq } : { mode: "full" });
     return this.setupView(s) as acp.LoadSessionResponse;
   }

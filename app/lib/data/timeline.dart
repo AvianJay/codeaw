@@ -464,6 +464,7 @@ class Timeline extends ChangeNotifier {
     _children.clear();
     _parents.clear();
     _agentStates.clear();
+    _detachedPromptEvents.clear();
     _revision = 0;
     _hierarchyDirty = false;
     plan = null;
@@ -513,6 +514,9 @@ class Timeline extends ChangeNotifier {
     _agentStates
       ..clear()
       ..addAll(source._agentStates);
+    _detachedPromptEvents
+      ..clear()
+      ..addAll(source._detachedPromptEvents);
     _revision = source._revision;
     _anon = source._anon;
     plan = source.plan;
@@ -789,7 +793,99 @@ class Timeline extends ChangeNotifier {
     return timeline;
   }
 
-  Timeline();
+  Timeline({this.anonScope = ''});
+
+  /// Keeps generated keys of separately reduced history pages distinct.
+  final String anonScope;
+
+  /// Prompt receipts whose message is in a history page that is not loaded yet.
+  final _detachedPromptEvents = <String, List<Map<String, dynamic>>>{};
+
+  /// Puts an older page of a paged replay before the loaded history.
+  ///
+  /// The bridge sends a page in order with live updates, so the page reflects
+  /// everything applied here before it. Its copy of an item that is also loaded
+  /// (a long-running tool or a message that kept streaming) replaces the partial
+  /// one; requests keep a resolution that arrived in a newer page.
+  void prependHistory(Timeline older) {
+    // Loaded item → the page's complete copy that takes its place.
+    final replaced = <TimelineItem, TimelineItem>{};
+    final head = <TimelineItem>[];
+    for (final item in older.items) {
+      final existing = _byKey[item.key];
+      if (existing is TurnSummaryItem) continue;
+      if (existing is PermissionItem && item is PermissionItem) {
+        item.toolCall ??= existing.toolCall;
+        if (item.options.isEmpty) item.options = existing.options;
+        if (existing.resolved) {
+          item
+            ..outcome = existing.outcome
+            ..optionName = existing.optionName
+            ..by = existing.by;
+        }
+      } else if (existing is ElicitationItem && item is ElicitationItem) {
+        item.request ??= existing.request;
+        if (existing.resolved) {
+          item
+            ..action = existing.action
+            ..by = existing.by;
+        }
+      }
+      if (existing != null) replaced[existing] = item;
+      _byKey[item.key] = item;
+      head.add(item);
+    }
+    final rest = [for (final item in items) if (!replaced.containsKey(item)) item];
+    items
+      ..clear()
+      ..addAll(head)
+      ..addAll(rest);
+    for (final turn in {...items.whereType<TurnSummaryItem>(), ?currentTurn}) {
+      for (final list in [turn.messages, turn.steeredPrompts]) {
+        for (var i = 0; i < list.length; i++) {
+          if (replaced[list[i]] case final MessageItem next) list[i] = next;
+        }
+      }
+    }
+    // A turn split across pages: the page saw its start, the loaded history its end.
+    final start = older.currentTurn;
+    final end = start == null ? null : (currentTurn?.key == start.key ? currentTurn : _byKey[start.key]);
+    if (start != null && end is TurnSummaryItem) {
+      final joined = TurnSummaryItem(end.key, startedAt: start.startedAt, prompt: start.prompt ?? end.prompt)
+        ..endedAt = end.endedAt
+        ..messages.addAll({...start.messages, ...end.messages})
+        ..steeredPrompts.addAll({...start.steeredPrompts, ...end.steeredPrompts})
+        .._narrowCharacters = start._narrowCharacters + end._narrowCharacters
+        .._wideCharacters = start._wideCharacters + end._wideCharacters;
+      if (identical(currentTurn, end)) currentTurn = joined;
+      final index = items.indexOf(end);
+      if (index >= 0) {
+        items[index] = joined;
+        _byKey[end.key] = joined;
+      }
+    }
+    for (final MapEntry(key: tool, value: at) in [..._activeTools.entries]) {
+      if (replaced[tool] case final ToolItem next) {
+        _activeTools.remove(tool);
+        if (next.status == 'pending' || next.status == 'in_progress') _activeTools[next] = at;
+      }
+    }
+    for (final MapEntry(:key, :value) in older._agentStates.entries) {
+      final known = _agentStates[key];
+      if (known == null || known.revision < value.revision) _agentStates[key] = value;
+    }
+    if (older._revision > _revision) _revision = older._revision;
+    for (final MapEntry(:key, :value) in older._detachedPromptEvents.entries) {
+      (_detachedPromptEvents[key] ??= []).insertAll(0, value);
+    }
+    for (final message in older.items.whereType<MessageItem>()) {
+      for (final event in _detachedPromptEvents.remove(message.promptId) ?? const <Map<String, dynamic>>[]) {
+        _applyEvent(event, DateTime.now());
+      }
+    }
+    _hierarchyDirty = _structureChanged = _snapshotChanged = true;
+    flush();
+  }
 
   T _upsert<T extends TimelineItem>(String key, T Function() make) {
     final existing = _byKey[key];
@@ -837,7 +933,7 @@ class Timeline extends ChangeNotifier {
     switch (type) {
       case 'user_message_chunk' || 'agent_message_chunk' || 'agent_thought_chunk':
         final codeaw = (u['_meta'] is Map ? (u['_meta'] as Map)['codeaw'] : null) as Map?;
-        final mid = '${codeaw?['mid'] ?? 'anon${_anon++}'}';
+        final mid = '${codeaw?['mid'] ?? 'anon$anonScope${_anon++}'}';
         final role = type == 'user_message_chunk'
             ? MessageRole.user
             : type == 'agent_thought_chunk'
@@ -934,7 +1030,7 @@ class Timeline extends ChangeNotifier {
         if (u.containsKey('title')) title = u['title'] as String?;
         _snapshotChanged = true;
       case 'notice':
-        _add(NoticeItem('notice:${_anon++}', '${u['severity'] ?? 'info'}', '${u['title'] ?? ''}', u['description'] as String?));
+        _add(NoticeItem('notice:$anonScope${_anon++}', '${u['severity'] ?? 'info'}', '${u['title'] ?? ''}', u['description'] as String?));
     }
   }
 
@@ -955,7 +1051,7 @@ class Timeline extends ChangeNotifier {
         setTurnState('${e['state'] ?? 'idle'}', startedAt: e['turnStartedAt'] as num?, observedAt: at, promptId: e['turnPromptId'] as String?);
         queued = (e['queued'] as num?)?.toInt() ?? 0;
         final stop = e['stopReason'];
-        if (state == 'idle' && stop is String && stop != 'end_turn') _add(StopItem('stop:${_anon++}', stop));
+        if (state == 'idle' && stop is String && stop != 'end_turn') _add(StopItem('stop:$anonScope${_anon++}', stop));
         if (state == 'idle' && turn != null && (stop != null || completed != null)) {
           turn.endedAt = completed?['endedAt'] is num
               ? DateTime.fromMillisecondsSinceEpoch((completed!['endedAt'] as num).toInt(), isUtc: true)
@@ -991,20 +1087,26 @@ class Timeline extends ChangeNotifier {
         item.by = e['by'] as String?;
         _touch(item);
       case 'error':
-        _add(ErrorItem('error:${_anon++}', '${e['message'] ?? 'Error'}'));
+        _add(ErrorItem('error:$anonScope${_anon++}', '${e['message'] ?? 'Error'}'));
       case 'dequeued':
         final mid = 'u-${e['promptId']}';
         final item = _byKey['user_message_chunk:$mid'];
         if (item is MessageItem) {
           item.dequeued = e['cancelled'] == true ? 'cancelled' : 'started';
           _touch(item);
+        } else {
+          (_detachedPromptEvents['${e['promptId']}'] ??= []).add(e);
         }
       case 'prompt_receipt':
         final mid = 'u-${e['promptId']}';
         final item = _byKey['user_message_chunk:$mid'];
         // Older desktop epochs can contain receipts without a correlated message.
-        // Do not fabricate an empty user bubble for those historic ids.
-        if (item is! MessageItem) return;
+        // Do not fabricate an empty user bubble for those historic ids; the
+        // message may also be in a history page that is loaded later.
+        if (item is! MessageItem) {
+          (_detachedPromptEvents['${e['promptId']}'] ??= []).add(e);
+          return;
+        }
         item.promptId = e['promptId'] as String?;
         final status = e['status'] as String?;
         if (item.receipt != 'read' || status == 'read') item.receipt = status;

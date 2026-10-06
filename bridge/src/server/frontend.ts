@@ -103,6 +103,7 @@ export class FrontendConnection implements ClientHandle {
       .onRequest("_codeaw/terminal/detach", passthrough, (ctx) => deps.terminals.detach(this.deviceId, this, ctx.params.terminalId))
       .onRequest("_codeaw/session/reimport", passthrough, (ctx) => this.flushed(manager.reimport(String(ctx.params.sessionId))))
       .onRequest("_codeaw/history/tool", passthrough, (ctx) => manager.toolHistory(ctx.params))
+      .onRequest("_codeaw/history/page", passthrough, (ctx) => this.flushed(Promise.resolve(manager.historyPage(this, ctx.params))))
       .onRequest("_codeaw/notify/info", passthrough, () => deps.notifier.info())
       .onRequest("_codeaw/live_activity/info", passthrough, () => manager.liveActivity?.info() ?? { enabled: false, ready: false })
       .onRequest("_codeaw/activity/list", passthrough, () => ({ activities: manager.activitySnapshots() }))
