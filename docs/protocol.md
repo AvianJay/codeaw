@@ -333,6 +333,21 @@ broadcast as `config_option_update`.
 
 ## Permission and elicitation requests
 
+Windows Codex desktop async `agentMessage` items with `delivery: "async"` and
+structured `questions` are exposed through the same durable `elicitation/create`
+flow. `_meta.codeaw.async: true` marks input that does not pause an active turn.
+Each question property has its native serialized question-item id as the key;
+`requestedSchema.properties[key]._meta.codeaw.allowCustom: true` enables a free
+text answer alongside `enum` / `oneOf` suggestions. The form returns one string
+per question, using the same property for a choice or custom answer. Defaults
+only preselect a choice; clients must await explicit submission.
+
+The bridge sends the native `send_user_message_question_reply` envelope to the
+desktop owner, steering the active turn or continuing the same idle conversation.
+It detects previously answered question ids in canonical/live native history;
+partial replies leave only unanswered fields pending. A timeout never causes a
+duplicate turn. Ordinary Markdown bullet lists do not become questions.
+
 The bridge forwards an agent's `session/request_permission` /
 `elicitation/create` to **every attached client**, with
 `_meta.codeaw.requestId`. The first answer wins; the bridge withdraws the
@@ -397,12 +412,13 @@ an 8 MiB response limit. Connection failures expose no upstream response body.
 `CpaAccount` is `{id, name, provider, label, plan, disabled, unavailable,
 status, requests, subscriptionUntil}`. `id` is opaque; `requests` is the CPA
 success/failure count if supplied, not an allowance. The bridge discards raw
-credentials and only caches minimal query metadata for five minutes. Neither
+credentials and only caches minimal query metadata and normalized quotas in
+bounded, endpoint/key-isolated memory scopes (evicted after 30 idle minutes). Neither
 service-provider tokens nor CPA's potentially secret `account` field are
 returned to clients. The Management Key is not persisted by the bridge.
 
 `CpaQuota` is `{accountId, windows, resetsRemaining, plan, subscriptionUntil,
-checkedAt, status, message?}`, where `status` is `ok`, `error`, `unsupported`,
+checkedAt, status, message?, retryAt?}`, where `status` is `ok`, `stale`, `error`, `unsupported`,
 or `disabled`. Each window is `{id, label, remainingPercent, resetAt,
 periodSeconds}`. Percentages mean **remaining**, timestamps are ISO 8601 UTC,
 and unknown fields are `null`. Windows are classified from provider durations,
@@ -410,6 +426,18 @@ not primary/secondary position. `resetsRemaining` is an actual provider reset
 credit count; no reset or redemption action is exposed. Queries use fixed
 Codex, Claude, Grok and Antigravity usage/plan URLs via CPA's `$TOKEN$`
 substitution; they do not send model prompts or download auth files.
+
+Concurrent account-list and per-account quota requests are shared across devices.
+Lists and ordinary quota results are cached for 30 seconds; successful Claude
+quotas for five minutes, with at least one second between account starts. Claude
+profile queries occur at most hourly and only after successful usage queries.
+Both management HTTP 429 and embedded provider 429 honor seconds/HTTP-date
+`Retry-After`; otherwise retries back off from one minute up to fifteen minutes.
+A provider cooldown covers the same provider within that endpoint/key scope,
+including manual refreshes; a management API 429 cools down the whole scope.
+During cooldown, a previous successful result has `status: stale`,
+its original `checkedAt` and a `retryAt`; without a prior result it stays `error`
+with no percentages. Stale averages are marked `*`, with times in account details.
 
 The app persists the endpoint/key in its device secure storage and sends them
 over the paired connection. Network access occurs from the PC, so localhost
@@ -420,13 +448,14 @@ replenishment: clients keep the received percentage until refreshed.
 The app shares one CPA controller between chat and usage screens. It polls
 every 30 seconds in the foreground, refreshes on resume/reconnect and skips
 overlapping automatic requests. Each provider/window is averaged independently,
-with one vote per account and one decimal display. Unknown, invalid, failed,
+with one vote per account and one decimal display. Marked stale values retain
+their previous weight while rate-limited. Unknown, invalid, failed,
 disabled and unavailable values are excluded; zero is valid. Main Codex/Claude
 weekly/five-hour windows exclude special allowances. AGY first averages groups
 of the same duration within each account. The chat header selects the current
-agent's provider; missing windows stay unknown rather than borrowing another
-provider's value. Quota colors reflect remaining amount: green >=50, amber
-20–49.9, red <20, gray unknown.
+agent's provider; missing windows are hidden, never borrowed from another
+provider. Quota colors reflect remaining amount: green >=50, amber
+20–49.9, red <20. Account details still show unsupported or unknown quotas.
 
 ### File uploads
 

@@ -28,6 +28,7 @@
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
     "smoke:desktop": "tsx scripts/desktop-smoke.ts",
     "smoke:tray": "node scripts/tray-smoke.mjs",
+    "smoke:background-job": "node scripts/background-job-smoke.mjs",
     "smoke:macos": "node scripts/macos-smoke.mjs",
     "smoke:installer": "node scripts/installer-smoke.mjs"
   },

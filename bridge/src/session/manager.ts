@@ -95,9 +95,9 @@ class BridgeSession {
   }
 
   get state(): TurnState {
-    if (this.pending.size > 0) return "requires_action";
+    if ([...this.pending.values()].some((request) => codeawMeta(request.params).async !== true)) return "requires_action";
     if (this.desktop?.connected && this.desktop.state !== "idle") return this.desktop.state;
-    return this.turn ? "running" : "idle";
+    return this.turn ? "running" : this.pending.size ? "requires_action" : "idle";
   }
 }
 

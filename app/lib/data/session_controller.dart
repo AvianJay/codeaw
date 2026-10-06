@@ -433,6 +433,7 @@ class SessionController extends ChangeNotifier {
     String action, [
     Map<String, dynamic>? content,
   ]) {
+    if (req.token.isCancelled || req._answer.isCompleted) return;
     req._answer.complete({
       'action': action,
       if (content != null && action == 'accept') 'content': content,

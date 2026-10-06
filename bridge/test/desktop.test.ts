@@ -17,6 +17,7 @@ import { startBridge, type BridgeOptions } from "../src/bridge.js";
 import { createAppLaunch } from "../src/desktop/pairing.js";
 import { ACP_REGISTRY_URL, platformTarget } from "../src/agents/registry.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../src/version.js";
+import { TestClient } from "./helpers.js";
 
 setLogSilent(true);
 const homes: string[] = [];
@@ -51,7 +52,7 @@ async function freePort(): Promise<number> {
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.stop();
   for (const server of servers.splice(0)) await new Promise<void>((resolve) => server.close(() => resolve()));
-  for (const home of homes.splice(0)) fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  for (const home of homes.splice(0)) await fs.promises.rm(home, { recursive: true, force: true, maxRetries: 15, retryDelay: 100 });
   vi.restoreAllMocks();
 });
 
@@ -276,9 +277,11 @@ describe("background CLI", () => {
 
   it("survives the launching CLI, avoids duplicate background processes, restarts and stops", async () => {
     const file = configFile();
+    let backgroundPid: number | undefined;
     try {
       await cli(file, ["start", "--background"]);
       const first = await runningStatus(file);
+      backgroundPid = first.pid;
       expect(first.state).toBe("running");
       expect(first.pid).not.toBe(process.pid);
       await cli(file, ["start", "--background"]);
@@ -288,7 +291,29 @@ describe("background CLI", () => {
       expect(await cli(file, ["status"])).toContain("running");
       // The service/background log contains no interactive pairing code.
       expect(fs.readFileSync(path.join(path.dirname(file), "bridge.log"), "utf8")).not.toContain("配對碼");
-    } finally { await cli(file, ["stop"]); }
+      // Native stderr in Windows PowerShell must not terminate the background
+      // wrapper. Starting this deliberately absent agent emits a real error.
+      const pairing = await requestControl(file, { command: "pair" });
+      const current = await runningStatus(file);
+      const response = await fetch(`http://127.0.0.1:${current.port}/api/pair`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: pairing.code, deviceName: "Background error regression" }) });
+      const paired = await response.json() as { token: string };
+      const client = await TestClient.connect(`ws://127.0.0.1:${current.port}/acp`, paired.token);
+      try {
+        await expect(client.request("session/new", { cwd: path.dirname(file), mcpServers: [], _meta: { codeaw: { agentId: "fake" } } })).rejects.toThrow("Internal error");
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect((await runningStatus(file)).pid).toBe(first.pid);
+        expect(fs.readFileSync(path.join(path.dirname(file), "bridge.log"), "utf8")).toContain("failed to start");
+      } finally { client.close(); }
+    } finally {
+      await cli(file, ["stop"]);
+      // The control pipe closes before Node and its Windows log wrapper exit.
+      // Wait before afterEach removes the wrapper's working directory.
+      for (let attempt = 0; backgroundPid && attempt < 100; attempt++) {
+        try { process.kill(backgroundPid, 0); } catch { break; }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
     expect(await runningStatus(file)).toBeUndefined();
   });
 });

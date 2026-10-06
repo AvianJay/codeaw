@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { CodexDesktopIpc, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
+import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
@@ -337,6 +338,73 @@ describe("Codex desktop synchronization", () => {
     await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-submit-user-input"));
     expect(desktop.requests.find((message) => message.method === "thread-follower-submit-user-input").params.response).toEqual({ answers: { choice: { answers: ["A"] } } });
     expect(a.events(nativeId, "elicitation_resolved").at(-1)?.event).not.toHaveProperty("content");
+  });
+
+  it("preserves blocking question choices, descriptions and custom input", async () => {
+    const { a, desktop } = await setup(); await load(a); desktop.begin();
+    a.elicitationAnswer = () => ({ action: "accept", content: { choice: "自訂內容" } });
+    desktop.patch([{ op: "add", path: ["requests", 0], value: { id: "blocking-custom", method: "item/tool/requestUserInput",
+      params: { questions: [{ id: "choice", question: "選擇或輸入", isOther: true, options: [{ label: "A", description: "第一個" }, { label: "B" }] }] } } }]);
+    await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-submit-user-input"));
+    const schema = a.received.find((message) => message.method === "elicitation/create")!.params.requestedSchema.properties.choice;
+    expect(schema).toMatchObject({ _meta: { codeaw: { allowCustom: true } }, oneOf: [{ const: "A", description: "第一個" }, { const: "B" }] });
+    expect(desktop.requests.find((message) => message.method === "thread-follower-submit-user-input").params.response.answers.choice.answers).toEqual(["自訂內容"]);
+  });
+
+  it("replays async choices after phone reconnect and steers both choice and free text into the same turn", async () => {
+    const { a, desktop, bridge } = await setup(); await load(a); const turnId = desktop.begin();
+    desktop.patch([{ op: "add", path: ["turns", 1, "items", 1], value: { type: "agentMessage", id: "async-call", delivery: "async", text: "選擇或自訂",
+      questions: [{ title: "選擇或自訂", options: ["A", "B"] }, { title: "自由文字", options: null }] } }]);
+    await a.waitFor(() => a.received.some((message) => message.method === "elicitation/create"));
+    expect(a.events(nativeId, "state").at(-1)?.event.state).toBe("running");
+    a.close(); clients.splice(clients.indexOf(a), 1);
+    const b = await TestClient.connect(bridge.url, bridge.tokenFor("phone")); clients.push(b);
+    b.elicitationAnswer = (params) => {
+      const [choice, text] = params.requestedSchema.required;
+      expect(params._meta.codeaw.async).toBe(true);
+      expect(params.requestedSchema.properties[choice]).toMatchObject({ enum: ["A", "B"], _meta: { codeaw: { allowCustom: true } } });
+      return { action: "accept", content: { [choice]: "B", [text]: "自訂 中文 🐦" } };
+    };
+    await load(b);
+    await b.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-steer-turn"));
+    const steering = desktop.requests.find((message) => message.method === "thread-follower-steer-turn");
+    expect(desktopQuestionReplies(steering.params.input)).toEqual([
+      { questionItemId: JSON.stringify(["request_user_input_async", "async-call", 0]), question: "選擇或自訂", answer: "B" },
+      { questionItemId: JSON.stringify(["request_user_input_async", "async-call", 1]), question: "自由文字", answer: "自訂 中文 🐦" },
+    ]);
+    expect(steering.params.restoreMessage.context.turnTrigger).toBe("send_user_message_async_question");
+    expect(desktop.conversation.turns.at(-1).turnId).toBe(turnId);
+    expect(desktop.requests.filter((message) => message.method === "thread-follower-start-turn")).toHaveLength(0);
+    const fresh = await TestClient.connect(bridge.url, bridge.tokenFor("fresh")); clients.push(fresh); await load(fresh);
+    expect(fresh.received.filter((message) => message.method === "elicitation/create")).toHaveLength(0);
+    expect(fresh.text(nativeId, "user_message_chunk")).toContain("自訂 中文 🐦");
+    expect(fresh.text(nativeId, "user_message_chunk")).not.toContain("send_user_message_question_reply");
+  });
+
+  it("starts an async reply on the same idle conversation and never retries ambiguous steering", async () => {
+    const { a, desktop } = await setup(120); await load(a);
+    a.elicitationAnswer = (params) => ({ action: "accept", content: { [params.requestedSchema.required[0]]: "custom" } });
+    desktop.patch([{ op: "add", path: ["turns", 0, "items", 1], value: { type: "agentMessage", id: "idle-call", delivery: "async", text: "question", questions: [{ title: "question", options: ["suggestion"] }] } }]);
+    await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-start-turn"));
+    expect(desktopQuestionReplies(desktop.requests.find((message) => message.method === "thread-follower-start-turn").params.turnStart.request.input)[0].answer).toBe("custom");
+    desktop.finish();
+    desktop.begin(); desktop.dropSteeringReply = true;
+    desktop.patch([{ op: "add", path: ["turns", 2, "items", 1], value: { type: "agentMessage", id: "ambiguous-call", delivery: "async", text: "question", questions: [{ title: "question" }] } }]);
+    await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-steer-turn"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(desktop.requests.filter((message) => message.method === "thread-follower-start-turn")).toHaveLength(1);
+    expect(desktop.requests.filter((message) => message.method === "thread-follower-steer-turn")).toHaveLength(1);
+  });
+
+  it("withdraws partially answered forms and reopens only the remaining question", async () => {
+    const { a, desktop } = await setup(); await load(a); desktop.begin();
+    desktop.patch([{ op: "add", path: ["turns", 1, "items", 1], value: { type: "agentMessage", id: "partial-call", delivery: "async", text: "two questions", questions: [{ title: "first", options: ["A"] }, { title: "second" }] } }]);
+    await a.waitFor(() => a.received.some((message) => message.method === "elicitation/create"));
+    const reply = desktopAsyncReply(desktopAsyncRequests(desktop.conversation)[0].params.questions.slice(0, 1), { action: "accept", content: { [JSON.stringify(["request_user_input_async", "partial-call", 0])]: "A" } });
+    desktop.patch([{ op: "add", path: ["turns", 1, "items", 2], value: { type: "steeringUserMessage", status: "accepted", id: "desktop-answer", input: [{ type: "text", text: reply.text }] } }]);
+    await a.waitFor(() => a.received.filter((message) => message.method === "elicitation/create").length === 2);
+    expect(a.received.filter((message) => message.method === "elicitation/create").at(-1)!.params.requestedSchema.required).toEqual([JSON.stringify(["request_user_input_async", "partial-call", 1])]);
+    expect(a.events(nativeId, "elicitation_resolved").at(-1)?.event.action).toBe("cancel");
   });
 
   it("persists desktop affinity across bridge restarts and refuses to resume an unavailable owner through ACP", async () => {
