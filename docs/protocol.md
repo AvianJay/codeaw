@@ -345,8 +345,11 @@ only preselect a choice; clients must await explicit submission.
 The bridge sends the native `send_user_message_question_reply` envelope to the
 desktop owner, steering the active turn or continuing the same idle conversation.
 It detects previously answered question ids in canonical/live native history;
-partial replies leave only unanswered fields pending. A timeout never causes a
-duplicate turn. Ordinary Markdown bullet lists do not become questions.
+partial replies leave only unanswered fields pending. Only questions from the
+latest turn remain actionable, including after it completes. A newer turn
+withdraws earlier forms; interrupted, cancelled and failed turns do not restore
+questions. Historical question text remains in the transcript. A timeout never
+causes a duplicate turn. Ordinary Markdown bullet lists do not become questions.
 
 The bridge forwards an agent's `session/request_permission` /
 `elicitation/create` to **every attached client**, with

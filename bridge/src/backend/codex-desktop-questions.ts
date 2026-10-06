@@ -25,6 +25,10 @@ export function desktopQuestionReplies(input: any): { questionItemId: string; qu
 
 export function desktopAsyncRequests(conversation: any): DesktopAsyncRequest[] {
   const turns = desktopTurns(conversation);
+  const latest = turns.at(-1);
+  // Optional questions belong to their turn. A newer prompt supersedes them;
+  // the latest completed turn may still be waiting for an asynchronous answer.
+  if (!latest || ["interrupted", "failed", "error", "cancelled", "canceled"].includes(latest.status)) return [];
   const answered = new Set<string>();
   for (const turn of turns) {
     for (const reply of desktopQuestionReplies(turn.params?.input ?? turn.input)) answered.add(reply.questionItemId);
@@ -34,18 +38,16 @@ export function desktopAsyncRequests(conversation: any): DesktopAsyncRequest[] {
     }
   }
   const requests = new Map<string, DesktopAsyncRequest>();
-  for (const turn of turns) {
-    for (const item of turn.items ?? []) {
-      const itemId = item.id ?? item.itemId;
-      if (item.type !== "agentMessage" || item.delivery !== "async" || typeof itemId !== "string" || !Array.isArray(item.questions)) continue;
-      const questions: DesktopAsyncQuestion[] = [];
-      item.questions.forEach((question: any, index: number) => {
-        const id = JSON.stringify(["request_user_input_async", itemId, index]);
-        if (answered.has(id) || typeof question?.title !== "string") return;
-        questions.push({ id, title: question.title, options: Array.isArray(question.options) ? question.options.filter((option: any) => typeof option === "string") : [] });
-      });
-      if (questions.length) requests.set(itemId, { id: itemId, method: "codeaw/async-question", params: { questions } });
-    }
+  for (const item of latest.items ?? []) {
+    const itemId = item.id ?? item.itemId;
+    if (item.type !== "agentMessage" || item.delivery !== "async" || typeof itemId !== "string" || !Array.isArray(item.questions)) continue;
+    const questions: DesktopAsyncQuestion[] = [];
+    item.questions.forEach((question: any, index: number) => {
+      const id = JSON.stringify(["request_user_input_async", itemId, index]);
+      if (answered.has(id) || typeof question?.title !== "string") return;
+      questions.push({ id, title: question.title, options: Array.isArray(question.options) ? question.options.filter((option: any) => typeof option === "string") : [] });
+    });
+    if (questions.length) requests.set(itemId, { id: itemId, method: "codeaw/async-question", params: { questions } });
   }
   return [...requests.values()];
 }
