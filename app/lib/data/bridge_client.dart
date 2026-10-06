@@ -2,13 +2,18 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
 import 'bridge_socket.dart';
 import 'host.dart';
 import 'models.dart';
+import 'upload_progress.dart';
+import 'upload_transport_web.dart'
+    if (dart.library.io) 'upload_transport_io.dart'
+    as upload;
+
+export 'upload_progress.dart';
 
 enum ConnStatus { offline, connecting, online }
 
@@ -281,18 +286,18 @@ class BridgeClient extends ChangeNotifier {
   Future<Map<String, dynamic>> uploadFile(
     String sessionId,
     String name,
-    Uint8List bytes,
-  ) async {
+    Uint8List bytes, {
+    UploadProgressCallback? onProgress,
+  }) async {
     if (bytes.length > 20 * 1024 * 1024) {
       throw const FormatException('檔案上限為 20 MiB');
     }
-    final response = await http
-        .post(
-          httpUri('/api/uploads', {'sessionId': sessionId, 'name': name}),
-          headers: {...authHeaders, 'Content-Type': 'application/octet-stream'},
-          body: bytes,
-        )
-        .timeout(const Duration(minutes: 2));
+    final response = await upload.uploadBytes(
+      httpUri('/api/uploads', {'sessionId': sessionId, 'name': name}),
+      {...authHeaders, 'Content-Type': 'application/octet-stream'},
+      bytes,
+      onProgress: onProgress,
+    );
     final result =
         jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     if (response.statusCode != 201) {

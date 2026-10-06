@@ -429,6 +429,13 @@ ACP `resource_link` with a `file:` URI and local path description; include it in
 `session/prompt`. Errors return `{error}` with 400/401/403/413 as appropriate.
 Files persist on the PC until explicitly removed.
 
+Clients can report bytes handed to the upload transport while the request is
+in flight. Reaching 100% is not a storage acknowledgement: only the HTTP 201
+response confirms success. Until then, clients keep the upload pending and do
+not attach its resource or send a prompt referencing it. Native clients flush
+bounded chunks with transport backpressure; Web clients use XMLHttpRequest
+upload progress events. Both retain the two-minute request timeout.
+
 ### Interactive terminals
 
 Terminals are separate from ACP agent sessions. `open` starts an interactive

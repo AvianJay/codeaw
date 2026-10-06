@@ -47,3 +47,35 @@ On iPhone verify landscape with the keyboard, dismissal and navigation,
 Files/iCloud/photo permissions and attachment delivery, and the LCSign
 download/import/sign/install flow. LCSign's scheme imports the IPA; signing is
 still completed in LCSign using the original certificate and bundle identifier.
+
+## File upload progress (2026-10-06)
+
+The previous uploader awaited a single HTTP response and displayed only an
+indeterminate spinner. The composer now shows the filename, byte count,
+percentage and a progress bar; a batch shows its current file index. After
+100%, it explicitly waits for the PC's storage acknowledgement. Upload errors
+release the composer while retaining any previously completed attachments.
+
+Native transport tests use a real loopback HTTP server, verify exact bytes and
+authentication, hold the storage response after all bytes arrive, and verify
+timeout handling. Composer tests cover narrow portrait/landscape layouts,
+disabled send before acknowledgement, partial batch failure and callbacks from
+an old chat. Browser uploads use XMLHttpRequest's upload events.
+
+A 7,591,724-byte WAV was uploaded with the actual Flutter BridgeClient to the
+installed Windows bridge using a temporary pairing and a dedicated Codex
+session. The transport reported 117 monotonic progress callbacks. The stored
+copy matched every byte; real `gpt-6-luna` / `low` independently returned the
+exact size and SHA-256 through a read-only PowerShell command. The source file
+was unchanged. No fake agent or audio transcription was used.
+
+The release Web build was exercised through the native file chooser against
+the same installed bridge, with actual upload bandwidth limited to 256 KiB/s.
+It reported 133 XMLHttpRequest progress events and received HTTP 201 with the
+exact WAV size/hash. Screenshots at 390×844 and 844×390 were visually checked;
+the progress row remained visible while the composer blocked sending.
+
+On iPhone select a large file from Files/iCloud, check progress over Tailscale,
+wait for the attachment to appear, then send it. Also check a failed upload and
+a multi-file batch. Native picker/iCloud retrieval and iOS background suspension
+still require device verification; local transport tests do not establish them.

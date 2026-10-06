@@ -14,6 +14,104 @@ import '../common/widgets.dart';
 
 enum _AttachmentAction { file, gallery, camera, paste }
 
+class _FileUpload {
+  _FileUpload(this.name, this.index, this.count);
+  final String name;
+  final int index;
+  final int count;
+  int? total;
+  int sent = 0;
+  bool transferring = false;
+  double? get fraction => !transferring || total == null
+      ? null
+      : total == 0
+      ? 1
+      : (sent / total!).clamp(0, 1);
+}
+
+String _uploadSize(int bytes) => bytes >= 1024 * 1024
+    ? '${(bytes / (1024 * 1024)).toStringAsFixed(2)} MiB'
+    : bytes >= 1024
+    ? '${(bytes / 1024).toStringAsFixed(1)} KiB'
+    : '$bytes B';
+
+class _UploadProgress extends StatelessWidget {
+  const _UploadProgress({required this.upload});
+  final _FileUpload upload;
+
+  @override
+  Widget build(BuildContext context) {
+    final fraction = upload.fraction;
+    final status = !upload.transferring
+        ? '讀取檔案…'
+        : fraction == 1
+        ? '等待電腦確認…'
+        : '上傳中';
+    final sizes = upload.total == null
+        ? status
+        : '${_uploadSize(upload.sent)} / ${_uploadSize(upload.total!)} · $status';
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      key: const ValueKey('file-upload-progress'),
+      padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.cloud_upload_outlined,
+                size: 16,
+                color: scheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  upload.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
+              const SizedBox(width: 8),
+              if (upload.count > 1) ...[
+                Text(
+                  '${upload.index}/${upload.count}',
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Text(
+                fraction == null ? '準備中' : '${(fraction * 100).floor()}%',
+                key: const ValueKey('file-upload-percent'),
+                style: TextStyle(fontSize: 12, color: scheme.primary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          LinearProgressIndicator(
+            key: const ValueKey('file-upload-bar'),
+            value: fraction,
+            minHeight: 3,
+            borderRadius: BorderRadius.circular(3),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            sizes,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class Composer extends StatefulWidget {
   const Composer({
     super.key,
@@ -38,6 +136,8 @@ class _ComposerState extends State<Composer> {
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
   int _pasteGeneration = 0;
+  bool _pickingFiles = false;
+  _FileUpload? _upload;
 
   SessionController get c => widget.controller;
   bool get _supportsImages => c.desktopSync || (c.agent?.image ?? true);
@@ -82,6 +182,8 @@ class _ComposerState extends State<Composer> {
       _dismissKeyboard();
       _pasteGeneration++;
       _readingImages = 0;
+      _pickingFiles = false;
+      _upload = null;
       _images.clear();
       _files.clear();
       _text.text = c.draft;
@@ -126,32 +228,56 @@ class _ComposerState extends State<Composer> {
   }
 
   Future<void> _pickFiles() async {
+    if (_pickingFiles) return;
     final target = c;
     _dismissKeyboard();
     final generation = _pasteGeneration;
-    setState(() => _readingImages++);
+    setState(() {
+      _pickingFiles = true;
+      _readingImages++;
+    });
     bool current() =>
         mounted && identical(c, target) && generation == _pasteGeneration;
     try {
       final selected = await (widget.selectFiles?.call() ?? openFiles());
-      for (final file in selected) {
+      for (var index = 0; index < selected.length; index++) {
+        final file = selected[index];
         if (!current()) return;
-        if (await file.length() > 20 * 1024 * 1024) {
+        final progress = _FileUpload(file.name, index + 1, selected.length);
+        setState(() => _upload = progress);
+        final length = await file.length();
+        if (!current()) return;
+        if (length > 20 * 1024 * 1024) {
           throw const FormatException('檔案上限為 20 MiB');
         }
+        setState(() => progress.total = length);
         final bytes = await file.readAsBytes();
         if (!current()) return;
         final block = await target.client.uploadFile(
           target.sessionId,
           file.name,
           bytes,
+          onProgress: (sent, total) {
+            if (!current()) return;
+            setState(() {
+              progress.sent = sent.clamp(0, total);
+              progress.total = total;
+              progress.transferring = true;
+            });
+          },
         );
         if (current()) setState(() => _files.add(block));
       }
     } catch (error) {
       if (current()) _pasteMessage('檔案上傳失敗：$error');
     } finally {
-      if (current()) setState(() => _readingImages--);
+      if (current()) {
+        setState(() {
+          _readingImages--;
+          _pickingFiles = false;
+          _upload = null;
+        });
+      }
     }
   }
 
@@ -363,7 +489,10 @@ class _ComposerState extends State<Composer> {
                       ),
                     ),
                   if (!(compact && keyboard)) ConfigBar(controller: c),
-                  if (_readingImages > 0) const LinearProgressIndicator(),
+                  if (_readingImages > 0 && _upload == null)
+                    const LinearProgressIndicator(),
+                  if (_upload case final progress?)
+                    _UploadProgress(upload: progress),
                   if (_files.isNotEmpty)
                     SizedBox(
                       height: 40,
@@ -452,9 +581,10 @@ class _ComposerState extends State<Composer> {
                             }
                           },
                           itemBuilder: (_) => [
-                            const PopupMenuItem(
+                            PopupMenuItem(
                               value: _AttachmentAction.file,
-                              child: Text('選擇檔案（20 MiB 上限）'),
+                              enabled: !_pickingFiles,
+                              child: const Text('選擇檔案（20 MiB 上限）'),
                             ),
                             if (_supportsImages)
                               const PopupMenuItem(
