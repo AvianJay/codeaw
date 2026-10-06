@@ -202,6 +202,9 @@ export function registerInstalledAgent(file: string, installed: InstalledAgent):
   if (existing) {
     doc.setIn(["agents", installed.id, "command"], installed.config.command);
     doc.setIn(["agents", installed.id, "args"], installed.config.args);
+    // Installing an ACP adapter over a CLI configuration must change transport too.
+    if (installed.config.transport) doc.setIn(["agents", installed.id, "transport"], installed.config.transport);
+    else doc.deleteIn(["agents", installed.id, "transport"]);
     if (!existing.cwd && installed.config.cwd) doc.setIn(["agents", installed.id, "cwd"], installed.config.cwd);
     for (const [key, value] of Object.entries(installed.config.env)) {
       if (!Object.hasOwn(existing.env, key)) doc.setIn(["agents", installed.id, "env", key], value);
