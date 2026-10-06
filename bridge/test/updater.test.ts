@@ -2,8 +2,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BridgeUpdater, downloadBridgeUpdate, newerBridgeRelease, parseBridgeRelease, updateTarget, verifiedBridgeInstaller } from "../src/updater.js";
+import { defaultConfigFile } from "../src/config.js";
+import { serviceName } from "../src/desktop/service.js";
+
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 const homes: string[] = [];
 const payload = Buffer.from("synthetic bridge installer fixture");
@@ -34,6 +42,7 @@ function mockDownloads(release = manifest()) {
 }
 
 afterEach(() => {
+  vi.mocked(spawnSync).mockReset();
   vi.restoreAllMocks();
   for (const directory of homes.splice(0)) {
     expect(path.dirname(directory)).toBe(path.resolve(os.tmpdir()));
@@ -172,6 +181,55 @@ describe("bridge updater", () => {
 });
 
 describe("bridge download integrity", () => {
+  it.each([
+    { status: 1060, stdout: "" },
+    { status: 36, stdout: "[SC] OpenService FAILED 1060:\r\nThe specified service does not exist.\r\n" },
+    { status: 36, stdout: "[SC] EnumQueryServicesStatus:OpenService 失敗 1060:\r\n指定的服務並不是已安裝的服務。\r\n" },
+  ])("allows an absent service with sc.exe exit $status", async ({ status, stdout }) => {
+    mockDownloads();
+    const directory = home();
+    const update = updater(directory);
+    update.check(); await update.wait();
+    update.prepare("installer");
+    const ready = await update.wait();
+    const query = vi.mocked(spawnSync).mockReturnValue({ status, stdout, stderr: "", pid: 1, output: [], signal: null });
+    await expect(verifiedBridgeInstaller(update.file, ready, { installation: () => directory })).resolves.toMatchObject({ file: ready.file });
+    for (const config of new Set([update.file, defaultConfigFile()])) {
+      expect(query).toHaveBeenCalledWith("sc.exe", ["query", serviceName(config)], expect.any(Object));
+    }
+  });
+
+  it.each([
+    { status: 36, stdout: "" },
+    { status: 36, stdout: "[SC] OpenService FAILED 5:\r\nAccess is denied.\r\n" },
+    { status: 5, stdout: "[SC] OpenService FAILED 1060:\r\n" },
+    { status: null, stdout: "[SC] OpenService FAILED 1060:\r\n" },
+    { status: 1060, stdout: "", error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) },
+  ])("blocks an unverified service query with sc.exe exit $status", async ({ status, stdout, ...result }) => {
+    mockDownloads();
+    const directory = home();
+    const update = updater(directory);
+    update.check(); await update.wait();
+    update.prepare("installer");
+    const ready = await update.wait();
+    vi.mocked(spawnSync).mockReturnValue({ status, stdout, stderr: "", pid: 1, output: [], signal: null, ...result });
+    await expect(verifiedBridgeInstaller(update.file, ready, { installation: () => directory })).rejects.toThrow(/Cannot verify Windows service/);
+  });
+
+  it("blocks a registered service for the default profile even when the custom profile has none", async () => {
+    mockDownloads();
+    const directory = home();
+    const update = updater(directory);
+    update.check(); await update.wait();
+    update.prepare("installer");
+    const ready = await update.wait();
+    const query = vi.mocked(spawnSync)
+      .mockReturnValueOnce({ status: 36, stdout: "[SC] OpenService FAILED 1060:\r\n", stderr: "", pid: 1, output: [], signal: null })
+      .mockReturnValueOnce({ status: 0, stdout: "SERVICE_NAME: registered", stderr: "", pid: 1, output: [], signal: null });
+    await expect(verifiedBridgeInstaller(update.file, ready, { installation: () => directory })).rejects.toThrow(/registered Windows service/);
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
   it("blocks registered services and re-verifies a staged installer before handoff", async () => {
     mockDownloads();
     const directory = home();

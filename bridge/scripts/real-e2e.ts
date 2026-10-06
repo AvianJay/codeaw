@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import * as acp from "@agentclientprotocol/sdk";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
@@ -72,6 +72,7 @@ async function setting(id: string, configId: string, value: string) {
   return r;
 }
 const http = new URL(values.url!); http.protocol = http.protocol === "wss:" ? "https:" : "http:";
+const uploadBlock = (u: { name: string; uri: string; size: number; mimeType?: string }) => ({ type: "resource_link", name: u.name, uri: u.uri, size: u.size, ...(u.mimeType ? { mimeType: u.mimeType } : {}) });
 const prompt = (id: string, message: string, blocks: any[] = []) => request("session/prompt", { sessionId: id, prompt: [{ type: "text", text: message }, ...blocks] });
 let id = values.session;
 const ipc = new CodexDesktopIpc({ timeoutMs: 15000 });
@@ -86,16 +87,15 @@ try {
     await setting(id!, "reasoning_effort", "low");
     const marker = `CODEAW_UPLOAD_${randomUUID()}`;
     const bytes = Buffer.from(marker, "utf8");
-    const url = new URL("/api/uploads", http); url.searchParams.set("sessionId", id!); url.searchParams.set("name", "真實上傳.txt");
+    const url = new URL("/api/uploads", http); url.searchParams.set("name", "真實上傳.txt");
     const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: bytes });
-    assert.equal(response.status, 201);
+    assert.equal(response.status, 200);
     const upload = await response.json() as any;
-    assert.equal(upload.sha256, createHash("sha256").update(bytes).digest("hex"));
     assert.deepEqual(fs.readFileSync(upload.path), bytes);
     const offset = received.length;
-    await prompt(id!, "This is a Codeaw integration test. Read the attached file from its local path and reply with only its entire contents. Do not modify any files.", [upload.block]);
+    await prompt(id!, "This is a Codeaw integration test. Read the attached file from its local path and reply with only its entire contents. Do not modify any files.", [uploadBlock(upload)]);
     assert.ok(text(id!, offset).includes(marker), "Real Codex did not read the uploaded file");
-    passed("real-acp-file-upload", { sessionId: id, model: "gpt-6-luna", effort: "low", sha256: upload.sha256, path: upload.path, answer: text(id!, offset) });
+    passed("real-acp-file-upload", { sessionId: id, model: "gpt-6-luna", effort: "low", path: upload.path, answer: text(id!, offset) });
     const roots = await request("_codeaw/workspaces/list", {});
     assert.equal(roots.allowAllPaths, false, "Run the default-deny test before enabling the PC opt-in");
     await assert.rejects(request("_codeaw/fs/list", { path: process.platform === "win32" ? "C:\\" : "/" }), /outside/);
@@ -131,14 +131,14 @@ try {
     for (const [key, value] of changes) await setting(id, key, value);
     passed("real-desktop-settings", { sessionId: id, owner: owner.handledByClientId, changes, settings: settingsSummary(snapshot) });
     const marker = `DESKTOP_UPLOAD_${randomUUID()}`;
-    const url = new URL("/api/uploads", http); url.searchParams.set("sessionId", id); url.searchParams.set("name", "desktop-upload.txt");
+    const url = new URL("/api/uploads", http); url.searchParams.set("name", "desktop-upload.txt");
     const uploadResponse = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: marker });
-    assert.equal(uploadResponse.status, 201);
+    assert.equal(uploadResponse.status, 200);
     const upload = await uploadResponse.json() as any;
-    await prompt(id, "Read the attached file from its local path and reply only with its entire contents. Do not modify files.", [upload.block]);
+    await prompt(id, "Read the attached file from its local path and reply only with its entire contents. Do not modify files.", [uploadBlock(upload)]);
     let last = projectDesktopConversation(snapshot).turns.at(-1);
     assert.equal(last.items.filter((i: any) => i.type === "agentMessage").at(-1)?.text?.trim(), marker);
-    passed("real-desktop-file-upload", { path: upload.path, sha256: upload.sha256, answer: marker });
+    passed("real-desktop-file-upload", { path: upload.path, answer: marker });
     const turns = () => projectDesktopConversation(snapshot).turns;
     const before = turns().length;
     const offset = received.length;

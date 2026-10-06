@@ -25,6 +25,31 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "codeaw/live_activity")
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "support" -> result.success(LiveUpdates.support(this))
+                    "show" -> {
+                        LiveUpdates.show(call.arguments as? Map<*, *>)
+                        result.success(null)
+                    }
+                    "openSettings" -> {
+                        LiveUpdates.openSettings(this)
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        LiveUpdates.onAppVisible()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) LiveUpdates.onAppHidden(applicationContext)
     }
 
     private fun canInstallPackages(): Boolean =
@@ -93,6 +118,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         permissionResult?.error("installer_unavailable", "Activity closed", null)
         permissionResult = null
+        // The Flutter engine goes with the activity; nothing would update the notification.
+        LiveUpdates.clear()
         super.onDestroy()
     }
 

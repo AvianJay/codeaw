@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +27,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadNtfy();
+    unawaited(AppScope.read(context).androidLiveActivity.refreshSupport());
   }
 
   Future<void> _loadNtfy() async {
@@ -253,6 +256,13 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ),
                     ],
+                    if (state
+                        .androidLiveActivity
+                        .channel
+                        .platformSupported) ...[
+                      const _Section('背景進度'),
+                      _LiveActivityTiles(state: state),
+                    ],
                     const _Section('其他'),
                     ListTile(
                       leading: const Icon(Icons.history_rounded),
@@ -317,6 +327,56 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
             ),
+    );
+  }
+}
+
+class _LiveActivityTiles extends StatelessWidget {
+  const _LiveActivityTiles({required this.state});
+  final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final tracker = state.androidLiveActivity;
+    return ListenableBuilder(
+      listenable: tracker,
+      builder: (context, _) {
+        final support = tracker.support;
+        final on = tracker.enabled && support.available;
+        final scheme = Theme.of(context).colorScheme;
+        Widget warning(String title, String subtitle) => ListTile(
+          leading: Icon(Icons.warning_amber_rounded, color: scheme.error),
+          title: Text(title),
+          subtitle: Text(subtitle),
+          trailing: const Icon(Icons.open_in_new_rounded),
+          onTap: () => tracker.channel.openSettings(),
+        );
+        return Column(
+          children: [
+            SwitchListTile(
+              secondary: const Icon(Icons.timelapse_rounded),
+              title: const Text('背景即時進度'),
+              subtitle: Text(
+                !support.available
+                    ? '這台裝置不支援'
+                    : '切到背景時，用常駐通知顯示對話進度並保持連線（Android 16 起為即時更新）。只追蹤當時開著的、或唯一正在執行的對話。',
+              ),
+              isThreeLine: true,
+              value: on,
+              onChanged: support.available
+                  ? (value) async {
+                      if (value) await state.notifier.requestPermission();
+                      await tracker.setEnabled(value);
+                      await tracker.refreshSupport();
+                    }
+                  : null,
+            ),
+            if (on && !support.allowed) warning('通知已關閉', '開啟 App 通知才能顯示背景進度'),
+            if (on && support.allowed && support.promoted == false)
+              warning('即時更新已關閉', '目前以一般通知顯示，可到系統設定開啟'),
+          ],
+        );
+      },
     );
   }
 }

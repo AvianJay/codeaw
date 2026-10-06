@@ -8,6 +8,7 @@ import '../../app_state.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
 import '../../data/timeline.dart';
+import '../../data/tool_display.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
 import 'composer.dart';
@@ -91,11 +92,14 @@ class _ChatPageState extends State<ChatPage> {
           builder: (context, constraints) {
             final wide = constraints.maxWidth >= 1000;
             final compact = constraints.maxWidth < 600 || !useWideLayout(context);
-            final showSubagents = _showSubagents ?? c.timeline.subagents.isNotEmpty;
+            // Subagent controls appear once the conversation has delegated work.
+            final subagentCount = c.timeline.subagents.length;
+            final drawer = !wide && subagentCount > 0;
+            final showSubagents = subagentCount > 0 && (_showSubagents ?? true);
             return Scaffold(
               key: _scaffold,
-              endDrawerEnableOpenDragGesture: !wide,
-              endDrawer: wide
+              endDrawerEnableOpenDragGesture: drawer,
+              endDrawer: !drawer
                   ? null
                   : Drawer(
                       width: (constraints.maxWidth * .92).clamp(0.0, 380.0),
@@ -118,23 +122,22 @@ class _ChatPageState extends State<ChatPage> {
                   onUsageTap: () => context.push('/usage'),
                 ),
                 actions: [
-                  if (!quotaConfigured || constraints.maxWidth >= 430)
-                  IconButton(
-                    tooltip: '所有子代理',
-                    isSelected: wide && showSubagents,
-                    icon: Badge(
-                      isLabelVisible: c.timeline.subagents.isNotEmpty,
-                      label: Text('${c.timeline.subagents.length}'),
-                      child: const Icon(Icons.account_tree_outlined),
+                  if (subagentCount > 0 && (!quotaConfigured || constraints.maxWidth >= 430))
+                    IconButton(
+                      tooltip: '所有子代理',
+                      isSelected: wide && showSubagents,
+                      icon: Badge(
+                        label: Text('$subagentCount'),
+                        child: const Icon(Icons.account_tree_outlined),
+                      ),
+                      onPressed: () {
+                        if (wide) {
+                          setState(() => _showSubagents = !showSubagents);
+                        } else {
+                          _scaffold.currentState?.openEndDrawer();
+                        }
+                      },
                     ),
-                    onPressed: () {
-                      if (wide) {
-                        setState(() => _showSubagents = !showSubagents);
-                      } else {
-                        _scaffold.currentState?.openEndDrawer();
-                      }
-                    },
-                  ),
                   if (c.desktopSync && !c.desktopConnected)
                     IconButton(tooltip: '重新連接桌面', icon: const Icon(Icons.sync_rounded), onPressed: c.loading ? null : () => c.attach()),
                   if (!compact)
@@ -181,7 +184,7 @@ class _ChatPageState extends State<ChatPage> {
                     },
                     itemBuilder: (_) => [
                       const PopupMenuItem(value: 'usage', child: Text('CPA 用量')),
-                      if (quotaConfigured && constraints.maxWidth < 430) const PopupMenuItem(value: 'subagents', child: Text('所有子代理')),
+                      if (subagentCount > 0 && quotaConfigured && constraints.maxWidth < 430) const PopupMenuItem(value: 'subagents', child: Text('所有子代理')),
                       if (quotaConfigured && constraints.maxWidth < 360) PopupMenuItem(value: 'files', enabled: c.cwd.isNotEmpty, child: const Text('檔案')),
                       if (compact) PopupMenuItem(value: 'terminal', enabled: c.cwd.isNotEmpty, child: const Text('終端機')),
                       if (compact) PopupMenuItem(value: 'git', enabled: c.cwd.isNotEmpty, child: const Text('Git 變更')),
@@ -215,9 +218,9 @@ class _ChatPageState extends State<ChatPage> {
                         ),
                         Expanded(
                           child: GestureDetector(
-                            onHorizontalDragStart: wide ? null : (_) => _horizontalTravel = 0,
-                            onHorizontalDragUpdate: wide ? null : (details) => _horizontalTravel += details.delta.dx,
-                            onHorizontalDragEnd: wide
+                            onHorizontalDragStart: !drawer ? null : (_) => _horizontalTravel = 0,
+                            onHorizontalDragUpdate: !drawer ? null : (details) => _horizontalTravel += details.delta.dx,
+                            onHorizontalDragEnd: !drawer
                                 ? null
                                 : (details) {
                                     if (_horizontalTravel < -72 || (details.primaryVelocity ?? 0) < -450) {
@@ -428,7 +431,7 @@ class _PendingBar extends StatelessWidget {
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      req.isPermission ? '需要批准：${req.title}' : req.title,
+                      req.isPermission ? '需要批准：${toolTitle(title: req.title, name: req.toolCall['name'] as String?, rawInput: req.toolCall['rawInput'], metadata: req.toolCall['_meta'])}' : req.title,
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
@@ -466,6 +469,8 @@ class _PendingBar extends StatelessWidget {
 
   String? _detail(PendingRequest req) {
     final input = req.toolCall['rawInput'];
+    final mcp = mcpToolOf(title: req.toolCall['title'] as String?, name: req.toolCall['name'] as String?, rawInput: input, metadata: req.toolCall['_meta']);
+    if (mcp != null) return argumentSummary(mcp.arguments);
     if (input is Map) {
       if (input['command'] != null) {
         return '\$ ${input['command'] is List ? (input['command'] as List).join(' ') : input['command']}';

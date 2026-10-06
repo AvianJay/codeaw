@@ -128,6 +128,7 @@ class _CodeawAppState extends State<CodeawApp> {
     super.initState();
     unawaited(widget.state.updater.initialize());
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
+    widget.router.routerDelegate.addListener(_onRoute);
     if (!kIsWeb) {
       final appLinks = AppLinks();
       _links = appLinks.uriLinkStream.listen(_onLink);
@@ -141,7 +142,22 @@ class _CodeawAppState extends State<CodeawApp> {
     widget.state.client?.setForeground(foreground);
     if (foreground) unawaited(widget.state.liveActivity.refresh());
     if (!foreground) unawaited(widget.state.hub?.persist() ?? Future.value());
-    if (!foreground) unawaited(widget.state.sessions?.persist() ?? Future.value());
+    if (!foreground) {
+      unawaited(widget.state.sessions?.persist() ?? Future.value());
+    }
+    widget.state.androidLiveActivity.visible =
+        foreground || s == AppLifecycleState.inactive;
+  }
+
+  /// Background progress follows the conversation on screen.
+  void _onRoute() {
+    final router = widget.router;
+    final uri = router.routerDelegate.currentConfiguration.isEmpty
+        ? null
+        : router.state.uri;
+    widget.state.androidLiveActivity.viewing = uri?.path == '/session'
+        ? uri!.queryParameters['id']
+        : null;
   }
 
   void _onLink(Uri uri) {
@@ -163,6 +179,7 @@ class _CodeawAppState extends State<CodeawApp> {
   @override
   void dispose() {
     _lifecycle.dispose();
+    widget.router.routerDelegate.removeListener(_onRoute);
     _links?.cancel();
     super.dispose();
   }

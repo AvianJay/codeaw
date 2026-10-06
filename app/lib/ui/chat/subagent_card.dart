@@ -52,7 +52,7 @@ class _SubagentCardState extends State<SubagentCard> {
     final completed = tools.where((t) => t.status == 'completed').length;
     final latest = widget.timeline.currentActivityOf(tool);
     final latestText = switch (latest) {
-      ToolItem t => t.title ?? t.name,
+      ToolItem t => t.displayTitle,
       MessageItem m => m.text,
       _ => null,
     };

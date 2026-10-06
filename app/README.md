@@ -26,6 +26,15 @@ $env:CODEAW_SCREENSHOTS = '1'
 flutter test --update-goldens test/adaptive_layout_test.dart
 ```
 
+Android background progress (Settings → 背景進度, off by default) mirrors one running conversation after the app leaves the foreground: the conversation on screen, or else the only running one. It is followed until its turn and queued prompts finish, or the app returns. Nicko's `lib/data/android_live_activity.dart` arms the content over `codeaw/live_activity` while visible; the iOS controller is disabled on Android.
+
+- Android (`LiveUpdates.kt`) starts a `dataSync` foreground service when the activity stops. The service keeps the bridge connection alive and shows a `ProgressStyle` notification with one segment per plan entry; Android 16 promotes it to a Live Update with a status bar chip. Older versions show it as an ongoing notification.
+- iOS 16.2+ keeps the concurrent `lib/data/live_activity.dart` controller, `CodeawLiveActivityPlugin.swift`, shared attributes and widget extension. It tracks running conversations independently of the selected chat and refreshes on resume/reconnect. Sustained suspended-app updates require APNs credentials on the bridge and matching signing entitlements; see [Live Activities](../docs/live-activities.md). The Android tracker is disabled on iOS.
+
+```sh
+flutter test test/live_activity_test.dart test/android_live_activity_test.dart test/live_activity_platform_test.dart
+```
+
 ```sh
 flutter pub get
 flutter build web --release --no-web-resources-cdn

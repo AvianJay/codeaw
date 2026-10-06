@@ -413,4 +413,10 @@ describe("desktop IPC wire and state", () => {
     earlier.turns.unshift({ turnId: "older", status: "completed", params: { input: [] }, items: [{ type: "commandExecution", id: "older-command", command: "echo older", status: "completed", aggregatedOutput: "old" }] });
     expect(desktopRecordChanges(projectDesktopConversation(changed).records, projectDesktopConversation(earlier).records).reset).toBe(true);
   });
+
+  it("names MCP calls by server and tool like codex-acp", () => {
+    const item = { type: "mcpToolCall", id: "docs", server: "context7", tool: "query-docs", arguments: { query: "MenuAnchor" }, status: "completed" };
+    const { records } = projectDesktopConversation({ turns: [{ turnId: "one", status: "completed", params: { input: [] }, items: [item] }] });
+    expect(records[0].update).toMatchObject({ title: "mcp.context7.query-docs", rawInput: { server: "context7", tool: "query-docs", arguments: { query: "MenuAnchor" } } });
+  });
 });

@@ -1,19 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:file_selector/file_selector.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../data/mentions.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
 import '../../data/upload_progress.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
-
-enum _AttachmentAction { file, gallery, camera, paste }
 
 class _FileUpload {
   _FileUpload(this.name, this.index, this.count);
@@ -118,27 +119,42 @@ class Composer extends StatefulWidget {
     super.key,
     required this.controller,
     this.imageClipboard,
-    this.selectFiles,
+    this.pickFiles,
   });
   final SessionController controller;
   final ImageClipboard? imageClipboard;
-  final Future<List<XFile>> Function()? selectFiles;
+
+  /// Chooses files to send; defaults to the platform file picker.
+  final Future<List<XFile>> Function()? pickFiles;
 
   @override
   State<Composer> createState() => _ComposerState();
 }
 
 class _ComposerState extends State<Composer> {
-  final _text = TextEditingController();
+  late final _text = _ComposerTextController(() => c.draftMentions.keys);
   final _focus = FocusNode();
   final _images = <ClipboardImage>[];
-  final _files = <Map<String, dynamic>>[];
+  final _uploads = <_Upload>[];
+  final _attachMenu = MenuController();
+  final _highlightKey = GlobalKey();
   late final ImageClipboard _clipboard;
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
-  int _pasteGeneration = 0;
+  int _attachGeneration = 0;
   bool _pickingFiles = false;
-  _FileUpload? _upload;
+  _FileUpload? _fileUpload;
+
+  // `@` completion: the word before the cursor and the bridge's matches for it.
+  ({int start, String query})? _mention;
+  List<FileSuggestion> _files = const [];
+  bool _searchingFiles = false;
+  Timer? _fileSearch;
+  int _fileSearchGeneration = 0;
+  int _highlight = 0;
+
+  /// Escape hides suggestions until the text changes.
+  String? _dismissed;
 
   SessionController get c => widget.controller;
   bool get _supportsImages => c.desktopSync || (c.agent?.image ?? true);
@@ -153,10 +169,7 @@ class _ComposerState extends State<Composer> {
       onPaste: (paste) => unawaited(_consumePaste(paste)),
     );
     _text.text = c.draft;
-    _text.addListener(() {
-      c.draft = _text.text;
-      setState(() {});
-    });
+    _text.addListener(_onTextChanged);
   }
 
   void _focusChanged() {
@@ -171,6 +184,7 @@ class _ComposerState extends State<Composer> {
   @override
   void dispose() {
     _stopPasteListener();
+    _fileSearch?.cancel();
     _text.dispose();
     _focus.dispose();
     super.dispose();
@@ -181,12 +195,14 @@ class _ComposerState extends State<Composer> {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.controller, c)) {
       _dismissKeyboard();
-      _pasteGeneration++;
+      _attachGeneration++;
       _readingImages = 0;
       _pickingFiles = false;
-      _upload = null;
+      _fileUpload = null;
       _images.clear();
-      _files.clear();
+      _uploads.clear();
+      _closeMention();
+      if (_attachMenu.isOpen) _attachMenu.close();
       _text.text = c.draft;
     } else if (_text.text != c.draft) {
       _text.value = TextEditingValue(
@@ -196,62 +212,90 @@ class _ComposerState extends State<Composer> {
     }
   }
 
-  Future<void> _pick(ImageSource source) async {
+  void _onTextChanged() {
+    c.draft = _text.text;
+    _highlight = 0;
+    _updateMention();
+    setState(() {});
+  }
+
+  Future<void> _pickImages(ImageSource source) async {
     final target = c;
+    final generation = _attachGeneration;
     _dismissKeyboard();
+    setState(() => _readingImages++);
+    bool current() =>
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
-      final file = await ImagePicker().pickImage(
-        source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
-        imageQuality: 85,
-      );
-      if (file == null || !mounted || !identical(c, target)) return;
-      final bytes = await file.readAsBytes();
-      final lower = file.name.toLowerCase();
-      final mime =
-          file.mimeType ??
-          (lower.endsWith('.png')
-              ? 'image/png'
-              : lower.endsWith('.webp')
-              ? 'image/webp'
-              : lower.endsWith('.gif')
-              ? 'image/gif'
-              : 'image/jpeg');
-      if (mounted && identical(c, target)) {
-        setState(() => _images.add(ClipboardImage(bytes, mime)));
+      final picker = ImagePicker();
+      final files = source == ImageSource.camera
+          ? [
+              ?await picker.pickImage(
+                source: source,
+                maxWidth: 1600,
+                maxHeight: 1600,
+                imageQuality: 85,
+              ),
+            ]
+          : await picker.pickMultiImage(
+              maxWidth: 1600,
+              maxHeight: 1600,
+              imageQuality: 85,
+            );
+      for (final file in files) {
+        if (!current()) return;
+        final image = ClipboardImage(await file.readAsBytes(), _mimeType(file));
+        if (current()) setState(() => _images.add(image));
       }
     } catch (_) {
-      if (mounted && identical(c, target)) {
-        _pasteMessage('無法讀取圖片，請檢查相簿／相機權限後重試');
-      }
+      if (current()) _message('無法讀取圖片，請檢查相簿／相機權限後重試');
+    } finally {
+      if (current()) setState(() => _readingImages--);
     }
   }
+
+  // Larger images go up as files, so the prompt stays within model limits.
+  static const _maxInlineImage = 4 * 1024 * 1024;
 
   Future<void> _pickFiles() async {
     if (_pickingFiles) return;
     final target = c;
+    final generation = _attachGeneration;
     _dismissKeyboard();
-    final generation = _pasteGeneration;
     setState(() {
       _pickingFiles = true;
       _readingImages++;
     });
     bool current() =>
-        mounted && identical(c, target) && generation == _pasteGeneration;
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
-      final selected = await (widget.selectFiles?.call() ?? openFiles());
+      final selected = await (widget.pickFiles ?? openFiles)();
       for (var index = 0; index < selected.length; index++) {
         final file = selected[index];
         if (!current()) return;
         final progress = _FileUpload(file.name, index + 1, selected.length);
-        setState(() => _upload = progress);
-        final length = await file.length();
+        setState(() => _fileUpload = progress);
+        final size = await file.length();
         if (!current()) return;
-        if (length > maxUploadBytes) {
+        if (size > maxUploadBytes) {
           throw const FormatException('檔案上限為 $uploadLimitLabel');
         }
-        setState(() => progress.total = length);
+        if (_supportsImages &&
+            size <= _maxInlineImage &&
+            RegExp(
+              r'\.(png|jpe?g|webp|gif)$',
+              caseSensitive: false,
+            ).hasMatch(file.name)) {
+          try {
+            final image = ClipboardImage.fromBytes(await file.readAsBytes());
+            if (!current()) return;
+            setState(() => _images.add(image));
+            continue;
+          } on FormatException {
+            // Not an image: stream the source as an ordinary file.
+          }
+        }
+        setState(() => progress.total = size);
         final block = await target.client.uploadPickedFile(
           target.sessionId,
           file,
@@ -264,19 +308,35 @@ class _ComposerState extends State<Composer> {
             });
           },
         );
-        if (current()) setState(() => _files.add(block));
+        if (current()) {
+          setState(() => _uploads.add(_Upload(file.name, size)..file = block));
+        }
       }
     } catch (error) {
-      if (current()) _pasteMessage('檔案上傳失敗：$error');
+      if (current()) {
+        _message('檔案上傳失敗：${error is UploadException ? error.message : error}');
+      }
     } finally {
       if (current()) {
         setState(() {
           _readingImages--;
           _pickingFiles = false;
-          _upload = null;
+          _fileUpload = null;
         });
       }
     }
+  }
+
+  String _mimeType(XFile file) {
+    final lower = file.name.toLowerCase();
+    return file.mimeType ??
+        (lower.endsWith('.png')
+            ? 'image/png'
+            : lower.endsWith('.webp')
+            ? 'image/webp'
+            : lower.endsWith('.gif')
+            ? 'image/gif'
+            : 'image/jpeg');
   }
 
   Future<bool> _consumePaste(
@@ -284,15 +344,15 @@ class _ComposerState extends State<Composer> {
     bool notifyEmpty = false,
   }) async {
     final target = c;
-    final generation = _pasteGeneration;
+    final generation = _attachGeneration;
     setState(() => _readingImages++);
     bool current() =>
-        mounted && identical(c, target) && generation == _pasteGeneration;
+        mounted && identical(c, target) && generation == _attachGeneration;
     try {
       final paste = await future;
       if (!current() || !_supportsImages) return true;
       if (paste.images.isEmpty) {
-        if (notifyEmpty) _pasteMessage('剪貼簿中沒有圖片');
+        if (notifyEmpty) _message('剪貼簿中沒有圖片');
         return false;
       }
       setState(() => _images.addAll(paste.images));
@@ -308,7 +368,7 @@ class _ComposerState extends State<Composer> {
       return true;
     } catch (_) {
       if (current()) {
-        _pasteMessage(
+        _message(
           _clipboard.usesPasteEvents
               ? '無法讀取剪貼簿圖片，請在輸入框使用 Ctrl／⌘＋V 貼上'
               : '無法貼上剪貼簿圖片，請重新複製圖片後再貼上',
@@ -320,7 +380,7 @@ class _ComposerState extends State<Composer> {
     }
   }
 
-  void _pasteMessage(String message) => ScaffoldMessenger.of(
+  void _message(String message) => ScaffoldMessenger.of(
     context,
   ).showSnackBar(SnackBar(content: Text(message)));
 
@@ -341,27 +401,28 @@ class _ComposerState extends State<Composer> {
       }
       setState(() => _images.add(ClipboardImage.fromBytes(bytes)));
     } catch (_) {
-      _pasteMessage('無法貼上圖片，請使用「貼上剪貼簿圖片」或從相簿選擇');
+      _message('無法貼上圖片，請使用「貼上剪貼簿圖片」或從相簿選擇');
     }
   }
 
   void _send({bool queue = false}) {
-    if (_readingImages > 0) return;
+    if (_readingImages > 0 || _uploads.any((u) => u.file == null)) return;
     final text = _text.text.trim();
-    if (text.isEmpty && _images.isEmpty && _files.isEmpty) return;
+    if (text.isEmpty && _images.isEmpty && _uploads.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
-      if (text.isNotEmpty) {'type': 'text', 'text': text},
+      if (text.isNotEmpty) ...promptBlocks(text, c.draftMentions),
+      for (final upload in _uploads) upload.file!,
       for (final img in _images)
         {
           'type': 'image',
           'mimeType': img.mimeType,
           'data': base64Encode(img.bytes),
         },
-      ..._files,
     ];
     final target = c;
     final images = List<ClipboardImage>.of(_images);
-    final files = List<Map<String, dynamic>>.of(_files);
+    final uploads = List<_Upload>.of(_uploads);
+    final mentions = Map<String, String>.of(c.draftMentions);
     unawaited(
       target.send(blocks, queue: queue).then((sent) {
         if (!sent &&
@@ -369,25 +430,39 @@ class _ComposerState extends State<Composer> {
             identical(c, target) &&
             _text.text.isEmpty &&
             _images.isEmpty &&
-            _files.isEmpty) {
+            _uploads.isEmpty) {
+          c.draftMentions.addAll(mentions);
           _text.text = text;
           setState(() {
             _images.addAll(images);
-            _files.addAll(files);
+            _uploads.addAll(uploads);
           });
         }
       }),
     );
+    c.draftMentions.clear();
     _text.clear();
     setState(() {
       _images.clear();
-      _files.clear();
+      _uploads.clear();
     });
   }
 
-  List<Map<String, dynamic>> get _suggestions {
+  /// Replaces `start..end` and puts the cursor after the inserted text.
+  void _replace(int start, int end, String insert) {
+    final text = _text.text.replaceRange(start, end, insert);
+    _text.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: start + insert.length),
+    );
+  }
+
+  List<Map<String, dynamic>> get _commands {
     final t = _text.text;
-    if (!t.startsWith('/') || t.contains(' ') || t.contains('\n')) {
+    if (_dismissed == t ||
+        !t.startsWith('/') ||
+        t.contains(' ') ||
+        t.contains('\n')) {
       return const [];
     }
     final q = t.substring(1).toLowerCase();
@@ -397,19 +472,288 @@ class _ComposerState extends State<Composer> {
         .toList();
   }
 
+  void _pickCommand(Map<String, dynamic> cmd) {
+    final hint = (cmd['input'] as Map?)?['hint'];
+    _replace(0, _text.text.length, '/${cmd['name']}${hint != null ? ' ' : ''}');
+    _focus.requestFocus();
+  }
+
+  void _startCommand() {
+    _replace(0, _text.text.length, '/');
+    _focus.requestFocus();
+  }
+
+  /// The `@word` being typed at the cursor, unless it is a mention already picked.
+  ({int start, String query})? _mentionAt(TextEditingValue value) {
+    final cursor = value.selection;
+    if (c.cwd.isEmpty ||
+        !cursor.isValid ||
+        !cursor.isCollapsed ||
+        cursor.baseOffset > value.text.length) {
+      return null;
+    }
+    final before = value.text.substring(0, cursor.baseOffset);
+    final start = before.lastIndexOf('@');
+    if (start < 0 || !mentionCanStartAt(before, start)) return null;
+    final query = before.substring(start + 1);
+    if (query.contains(RegExp(r'\s')) || c.draftMentions.containsKey(query)) {
+      return null;
+    }
+    return (start: start, query: query);
+  }
+
+  void _updateMention() {
+    final next = _mentionAt(_text.value);
+    if (next == _mention) return;
+    _mention = next;
+    _fileSearch?.cancel();
+    final generation = ++_fileSearchGeneration;
+    if (next == null) {
+      _files = const [];
+      _searchingFiles = false;
+      return;
+    }
+    // Earlier matches stay listed until the bridge answers for this query.
+    _searchingFiles = true;
+    final target = c;
+    _fileSearch = Timer(const Duration(milliseconds: 120), () async {
+      var files = const <FileSuggestion>[];
+      try {
+        files = await target.searchFiles(next.query);
+      } catch (_) {
+        // Offline or not allowed: show no matches rather than an error.
+      }
+      if (!mounted ||
+          generation != _fileSearchGeneration ||
+          !identical(target, c)) {
+        return;
+      }
+      setState(() {
+        _files = files;
+        _searchingFiles = false;
+        _highlight = 0;
+      });
+    });
+  }
+
+  void _closeMention() {
+    _fileSearch?.cancel();
+    _fileSearchGeneration++;
+    _mention = null;
+    _files = const [];
+    _searchingFiles = false;
+    _highlight = 0;
+  }
+
+  /// Folders open for further completion unless [folder] mentions the folder itself.
+  void _pickFile(FileSuggestion file, {bool folder = false}) {
+    final mention = _mention;
+    final cursor = _text.selection;
+    if (mention == null || !cursor.isValid) return;
+    final complete = !file.directory || folder;
+    if (complete) c.draftMentions[file.token] = fileUriOf(file.path);
+    _replace(
+      mention.start,
+      cursor.baseOffset,
+      '@${file.token}${complete ? ' ' : ''}',
+    );
+    _focus.requestFocus();
+  }
+
+  void _startMention() {
+    final value = _text.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final space = mentionCanStartAt(value.text, selection.start) ? '' : ' ';
+    _replace(selection.start, selection.end, '$space@');
+    _focus.requestFocus();
+  }
+
+  bool get _mentioning => _mention != null && _dismissed != _text.text;
+
+  int get _suggestionCount {
+    final commands = _commands.length;
+    return commands > 0 ? commands : (_mentioning ? _files.length : 0);
+  }
+
+  void _acceptSuggestion(int index) {
+    final commands = _commands;
+    if (commands.isNotEmpty) {
+      _pickCommand(commands[index]);
+    } else if (_mentioning && index < _files.length) {
+      _pickFile(_files[index]);
+    }
+  }
+
+  void _moveHighlight(int delta, int count) {
+    setState(() => _highlight = (_highlight + delta) % count);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final target = _highlightKey.currentContext;
+      if (target == null) return;
+      Scrollable.ensureVisible(
+        target,
+        alignmentPolicy: delta > 0
+            ? ScrollPositionAlignmentPolicy.keepVisibleAtEnd
+            : ScrollPositionAlignmentPolicy.keepVisibleAtStart,
+      );
+    });
+  }
+
+  /// Arrow keys, Tab/Enter and Escape drive the suggestion list on hardware keyboards.
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final keyboard = HardwareKeyboard.instance;
+    if (keyboard.isControlPressed ||
+        keyboard.isMetaPressed ||
+        keyboard.isAltPressed ||
+        keyboard.isShiftPressed) {
+      return KeyEventResult.ignored;
+    }
+    if (event.logicalKey == LogicalKeyboardKey.escape && _attachMenu.isOpen) {
+      _attachMenu.close();
+      return KeyEventResult.handled;
+    }
+    final count = _suggestionCount;
+    if (count == 0 && !_mentioning) return KeyEventResult.ignored;
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.escape:
+        setState(() => _dismissed = _text.text);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowDown when count > 0:
+        _moveHighlight(1, count);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowUp when count > 0:
+        _moveHighlight(-1, count);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.tab ||
+              LogicalKeyboardKey.enter ||
+              LogicalKeyboardKey.numpadEnter
+          when count > 0:
+        _acceptSuggestion(_highlight.clamp(0, count - 1));
+        return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  List<_AttachAction?> _attachActions() {
+    final images = _supportsImages;
+    final mobile =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
+    final camera =
+        images &&
+        mobile &&
+        ImagePicker().supportsImageSource(ImageSource.camera);
+    final mention = c.cwd.isNotEmpty;
+    // Commands only work at the start of an otherwise empty message.
+    final command = c.timeline.commands.isNotEmpty && _text.text.isEmpty;
+    return [
+      if (images)
+        _AttachAction(
+          Icons.photo_library_outlined,
+          '從相簿選擇',
+          () => _pickImages(ImageSource.gallery),
+        ),
+      if (camera)
+        _AttachAction(
+          Icons.photo_camera_outlined,
+          '拍照',
+          () => _pickImages(ImageSource.camera),
+        ),
+      if (images)
+        _AttachAction(
+          Icons.content_paste_rounded,
+          '貼上剪貼簿圖片',
+          () => _pasteImage(notifyEmpty: true),
+        ),
+      if (images) null,
+      _AttachAction(Icons.attach_file_rounded, '上傳檔案', _pickFiles),
+      if (mention)
+        _AttachAction(
+          Icons.alternate_email_rounded,
+          '提及檔案',
+          _startMention,
+          shortcut: '@',
+        ),
+      if (command)
+        _AttachAction(Icons.bolt_rounded, '斜線指令', _startCommand, shortcut: '/'),
+    ];
+  }
+
+  List<Widget> _fileTiles(ColorScheme scheme) {
+    if (_files.isEmpty) {
+      return [
+        ListTile(
+          dense: true,
+          leading: _searchingFiles
+              ? const SizedBox.square(
+                  dimension: 20,
+                  child: Padding(
+                    padding: EdgeInsets.all(2),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : Icon(Icons.search_off_rounded, size: 20, color: scheme.outline),
+          title: Text(
+            _searchingFiles ? '搜尋檔案中…' : '找不到符合的檔案',
+            style: TextStyle(color: scheme.outline),
+          ),
+        ),
+      ];
+    }
+    return [
+      for (final (i, file) in _files.indexed)
+        ListTile(
+          key: i == _highlight
+              ? _highlightKey
+              : ValueKey('mention:${file.token}'),
+          dense: true,
+          selected: i == _highlight,
+          leading: Icon(
+            file.directory ? Icons.folder_rounded : fileIcon(file.name),
+            size: 20,
+            color: file.directory ? scheme.primary : scheme.outline,
+          ),
+          title: Text(
+            file.directory ? '${file.name}/' : file.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          subtitle: file.relative.contains('/')
+              ? Text(
+                  file.relative.substring(0, file.relative.lastIndexOf('/')),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                )
+              : null,
+          trailing: file.directory
+              ? IconButton(
+                  tooltip: '提及這個資料夾',
+                  icon: const Icon(Icons.alternate_email_rounded, size: 18),
+                  onPressed: () => _pickFile(file, folder: true),
+                )
+              : null,
+          onTap: () => _pickFile(file),
+        ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final running = c.running;
     final agent = c.agent;
-    final suggestions = _suggestions;
+    final commands = _commands;
+    final attachments = _attachActions();
     final canSend =
         c.client.isOnline &&
         (!c.desktopSync || c.desktopConnected) &&
         _readingImages == 0 &&
+        !_uploads.any((u) => u.file == null) &&
         (_text.text.trim().isNotEmpty ||
             _images.isNotEmpty ||
-            _files.isNotEmpty);
+            _uploads.isNotEmpty);
     final wide = useWideLayout(context);
     // Scaffold removes body viewInsets after resizing; read the actual view
     // so the Done control and compact composer still see the keyboard.
@@ -454,66 +798,35 @@ class _ComposerState extends State<Composer> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (suggestions.isNotEmpty)
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 220),
-                      child: ListView(
-                        shrinkWrap: true,
-                        padding: EdgeInsets.zero,
-                        children: [
-                          for (final cmd in suggestions)
-                            ListTile(
-                              dense: true,
-                              title: Text(
-                                '/${cmd['name']}',
-                                style: const TextStyle(fontFamily: 'monospace'),
-                              ),
-                              subtitle: Text(
-                                '${cmd['description'] ?? ''}',
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              onTap: () {
-                                final hint = (cmd['input'] as Map?)?['hint'];
-                                _text.text =
-                                    '/${cmd['name']}${hint != null ? ' ' : ''}';
-                                _text.selection = TextSelection.collapsed(
-                                  offset: _text.text.length,
-                                );
-                                _focus.requestFocus();
-                              },
+                  if (commands.isNotEmpty)
+                    _SuggestionList(
+                      children: [
+                        for (final (i, cmd) in commands.indexed)
+                          ListTile(
+                            key: i == _highlight ? _highlightKey : null,
+                            dense: true,
+                            selected: i == _highlight,
+                            title: Text(
+                              '/${cmd['name']}',
+                              style: const TextStyle(fontFamily: 'monospace'),
                             ),
-                        ],
-                      ),
-                    ),
+                            subtitle: Text(
+                              '${cmd['description'] ?? ''}',
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            onTap: () => _pickCommand(cmd),
+                          ),
+                      ],
+                    )
+                  else if (_mentioning)
+                    _SuggestionList(children: _fileTiles(scheme)),
                   if (!(compact && keyboard)) ConfigBar(controller: c),
-                  if (_readingImages > 0 && _upload == null)
+                  if (_readingImages > 0 && _fileUpload == null)
                     const LinearProgressIndicator(),
-                  if (_upload case final progress?)
+                  if (_fileUpload case final progress?)
                     _UploadProgress(upload: progress),
-                  if (_files.isNotEmpty)
-                    SizedBox(
-                      height: 40,
-                      child: ListView(
-                        scrollDirection: Axis.horizontal,
-                        children: [
-                          for (final file in _files)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 6),
-                              child: InputChip(
-                                avatar: const Icon(Icons.attach_file, size: 16),
-                                label: Text(
-                                  '${file['name']}',
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                onDeleted: () =>
-                                    setState(() => _files.remove(file)),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  if (_images.isNotEmpty)
+                  if (_images.isNotEmpty || _uploads.isNotEmpty)
                     SizedBox(
                       height: compact ? 48 : 72,
                       child: ListView(
@@ -523,6 +836,16 @@ class _ComposerState extends State<Composer> {
                           vertical: 6,
                         ),
                         children: [
+                          for (final upload in _uploads)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: _UploadChip(
+                                upload: upload,
+                                compact: compact,
+                                onRemove: () =>
+                                    setState(() => _uploads.remove(upload)),
+                              ),
+                            ),
                           for (final img in _images)
                             Padding(
                               padding: const EdgeInsets.only(right: 8),
@@ -559,96 +882,67 @@ class _ComposerState extends State<Composer> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        PopupMenuButton<_AttachmentAction>(
-                          icon: Icon(
-                            Icons.add_rounded,
-                            color: scheme.onSurfaceVariant,
-                          ),
-                          tooltip: '附加檔案或圖片',
-                          onOpened: _dismissKeyboard,
-                          onSelected: (action) async {
-                            switch (action) {
-                              case _AttachmentAction.file:
-                                await _pickFiles();
-                              case _AttachmentAction.gallery:
-                                await _pick(ImageSource.gallery);
-                              case _AttachmentAction.camera:
-                                await _pick(ImageSource.camera);
-                              case _AttachmentAction.paste:
-                                await _pasteImage(notifyEmpty: true);
-                            }
-                          },
-                          itemBuilder: (_) => [
-                            PopupMenuItem(
-                              value: _AttachmentAction.file,
-                              enabled: !_pickingFiles,
-                              child: const Text('選擇檔案（$uploadLimitLabel 上限）'),
-                            ),
-                            if (_supportsImages)
-                              const PopupMenuItem(
-                                value: _AttachmentAction.gallery,
-                                child: Text('從相簿選擇'),
-                              ),
-                            if (_supportsImages)
-                              const PopupMenuItem(
-                                value: _AttachmentAction.camera,
-                                child: Text('拍照'),
-                              ),
-                            if (_supportsImages)
-                              const PopupMenuItem(
-                                value: _AttachmentAction.paste,
-                                child: Text('貼上剪貼簿圖片'),
-                              ),
-                          ],
-                        ),
+                        if (attachments.isNotEmpty)
+                          _AttachButton(
+                            controller: _attachMenu,
+                            actions: attachments,
+                          )
+                        else
+                          const SizedBox(width: 8),
                         Expanded(
-                          child: TextField(
-                            controller: _text,
-                            focusNode: _focus,
-                            minLines: 1,
-                            maxLines: compact ? 2 : 6,
-                            onTapOutside: (_) => _dismissKeyboard(),
-                            textInputAction: TextInputAction.newline,
-                            contentInsertionConfiguration: _supportsImages
-                                ? ContentInsertionConfiguration(
-                                    allowedMimeTypes: ClipboardImage.mimeTypes,
-                                    onContentInserted: _insertKeyboardImage,
-                                  )
-                                : null,
-                            decoration: InputDecoration(
-                              hintText: running
-                                  ? (agent?.steering ?? false
-                                        ? '補充指示，插入目前回合'
-                                        : '下一則，排在目前回合後')
-                                  : '輸入訊息，/ 開頭是指令',
-                              hintMaxLines: 1,
-                              filled: true,
-                              fillColor: scheme.surfaceContainerLowest,
-                              isDense: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 10,
-                              ),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: BorderSide(
-                                  color: scheme.outlineVariant.withValues(
-                                    alpha: .7,
+                          child: Focus(
+                            canRequestFocus: false,
+                            skipTraversal: true,
+                            onKeyEvent: _onKey,
+                            child: TextField(
+                              controller: _text,
+                              focusNode: _focus,
+                              minLines: 1,
+                              maxLines: compact ? 2 : 6,
+                              onTapOutside: (_) => _dismissKeyboard(),
+                              textInputAction: TextInputAction.newline,
+                              contentInsertionConfiguration: _supportsImages
+                                  ? ContentInsertionConfiguration(
+                                      allowedMimeTypes:
+                                          ClipboardImage.mimeTypes,
+                                      onContentInserted: _insertKeyboardImage,
+                                    )
+                                  : null,
+                              decoration: InputDecoration(
+                                hintText: running
+                                    ? (agent?.steering ?? false
+                                          ? '補充指示，插入目前回合'
+                                          : '下一則，排在目前回合後')
+                                    : '輸入訊息，@ 檔案、/ 指令',
+                                hintMaxLines: 1,
+                                filled: true,
+                                fillColor: scheme.surfaceContainerLowest,
+                                isDense: true,
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.outlineVariant.withValues(
+                                      alpha: .7,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: BorderSide(
-                                  color: scheme.outlineVariant.withValues(
-                                    alpha: .7,
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.outlineVariant.withValues(
+                                      alpha: .7,
+                                    ),
                                   ),
                                 ),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: BorderSide(
-                                  color: scheme.primary.withValues(alpha: .6),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                  borderSide: BorderSide(
+                                    color: scheme.primary.withValues(alpha: .6),
+                                  ),
                                 ),
                               ),
                             ),
@@ -706,6 +1000,286 @@ class _ComposerState extends State<Composer> {
       ),
     );
   }
+}
+
+/// Picked `@` mentions are drawn in the accent color: they are sent as file links.
+class _ComposerTextController extends TextEditingController {
+  _ComposerTextController(this._mentions);
+  final Iterable<String> Function() _mentions;
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    TextStyle? style,
+    required bool withComposing,
+  }) {
+    final ranges = mentionRanges(text, _mentions());
+    if (ranges.isEmpty) {
+      return super.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: withComposing,
+      );
+    }
+    final accent = TextStyle(
+      color: Theme.of(context).colorScheme.primary,
+      fontWeight: FontWeight.w600,
+    );
+    final composing = withComposing && value.isComposingRangeValid
+        ? value.composing
+        : TextRange.empty;
+    final cuts = {
+      0,
+      text.length,
+      for (final r in ranges) ...[r.start, r.end],
+      if (!composing.isCollapsed) ...[composing.start, composing.end],
+    }.toList()..sort();
+    final children = <TextSpan>[];
+    for (var i = 0; i + 1 < cuts.length; i++) {
+      final (start, end) = (cuts[i], cuts[i + 1]);
+      final mention = ranges.any((r) => r.start <= start && end <= r.end);
+      final composed =
+          !composing.isCollapsed &&
+          composing.start <= start &&
+          end <= composing.end;
+      children.add(
+        TextSpan(
+          text: text.substring(start, end),
+          style: (mention ? accent : const TextStyle()).copyWith(
+            decoration: composed ? TextDecoration.underline : null,
+          ),
+        ),
+      );
+    }
+    return TextSpan(style: style, children: children);
+  }
+}
+
+class _AttachAction {
+  const _AttachAction(this.icon, this.label, this.onSelected, {this.shortcut});
+  final IconData icon;
+  final String label;
+  final VoidCallback onSelected;
+
+  /// The character that starts the same action from the keyboard.
+  final String? shortcut;
+}
+
+/// "+" opens its menu above itself, leaving the text field and keyboard uncovered.
+class _AttachButton extends StatelessWidget {
+  const _AttachButton({required this.controller, required this.actions});
+  final MenuController controller;
+
+  /// `null` separates groups.
+  final List<_AttachAction?> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return RawMenuAnchor(
+      controller: controller,
+      overlayBuilder: (context, info) =>
+          _AttachMenu(info: info, controller: controller, actions: actions),
+      builder: (context, controller, _) => IconButton(
+        tooltip: '附加',
+        isSelected: controller.isOpen,
+        icon: const Icon(Icons.add_rounded),
+        selectedIcon: const Icon(Icons.close_rounded),
+        onPressed: () =>
+            controller.isOpen ? controller.close() : controller.open(),
+      ),
+    );
+  }
+}
+
+class _AttachMenu extends StatelessWidget {
+  const _AttachMenu({
+    required this.info,
+    required this.controller,
+    required this.actions,
+  });
+  final RawMenuOverlayInfo info;
+  final MenuController controller;
+  final List<_AttachAction?> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final anchor = info.anchorRect;
+    final width = math.min(260.0, info.overlaySize.width - 16);
+    final top = MediaQuery.paddingOf(context).top + 8;
+    return Positioned(
+      left: anchor.left.clamp(
+        8.0,
+        math.max(8.0, info.overlaySize.width - width - 8),
+      ),
+      bottom: info.overlaySize.height - anchor.top + 6,
+      width: width,
+      child: TapRegion(
+        groupId: info.tapRegionGroupId,
+        onTapOutside: (_) => controller.close(),
+        child: TweenAnimationBuilder<double>(
+          tween: Tween(begin: 0, end: 1),
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOutCubic,
+          builder: (context, t, child) => Opacity(
+            opacity: t,
+            child: Transform.translate(
+              offset: Offset(0, 8 * (1 - t)),
+              child: child,
+            ),
+          ),
+          child: Material(
+            elevation: 3,
+            color: scheme.surfaceContainer,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: math.max(120, anchor.top - 6 - top),
+              ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    for (final action in actions)
+                      if (action == null)
+                        const Divider(height: 9, indent: 12, endIndent: 12)
+                      else
+                        MenuItemButton(
+                          requestFocusOnHover: false,
+                          leadingIcon: Icon(action.icon),
+                          trailingIcon: action.shortcut == null
+                              ? null
+                              : Text(
+                                  action.shortcut!,
+                                  style: TextStyle(
+                                    color: scheme.outline,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                          onPressed: () {
+                            controller.close();
+                            action.onSelected();
+                          },
+                          child: Text(action.label),
+                        ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A file on its way to the bridge ([file] is null), or stored there.
+class _Upload {
+  _Upload(this.name, this.size);
+  final String name;
+  final int size;
+  Map<String, dynamic>? file;
+}
+
+class _UploadChip extends StatelessWidget {
+  const _UploadChip({
+    required this.upload,
+    required this.onRemove,
+    this.compact = false,
+  });
+  final _Upload upload;
+  final VoidCallback onRemove;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Stack(
+      children: [
+        Container(
+          height: compact ? 36 : 60,
+          constraints: const BoxConstraints(maxWidth: 200),
+          padding: EdgeInsets.fromLTRB(
+            10,
+            compact ? 4 : 8,
+            22,
+            compact ? 4 : 8,
+          ),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (upload.file == null)
+                const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(fileIcon(upload.name), size: 22, color: scheme.primary),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      upload.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (!compact)
+                      Text(
+                        upload.file == null ? '上傳中…' : formatBytes(upload.size),
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Positioned(
+          right: -10,
+          top: -10,
+          child: IconButton(
+            iconSize: 16,
+            tooltip: '移除檔案',
+            icon: const Icon(Icons.cancel_rounded),
+            onPressed: onRemove,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SuggestionList extends StatelessWidget {
+  const _SuggestionList({required this.children});
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: const BoxConstraints(maxHeight: 220),
+    child: ListView(
+      shrinkWrap: true,
+      padding: EdgeInsets.zero,
+      children: children,
+    ),
+  );
 }
 
 /// Preserve Flutter's selection, text paste and undo behavior when there is no image.

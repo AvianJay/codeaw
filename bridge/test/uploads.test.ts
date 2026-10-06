@@ -4,14 +4,14 @@ import os from "node:os";
 import http from "node:http";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { PathGuard } from "../src/server/ext.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 import { MAX_UPLOAD_BYTES } from "../src/server/uploads.js";
 
 let bridge: TestBridge | undefined;
 let client: TestClient | undefined;
-afterEach(async () => { client?.close(); await bridge?.stop(); client = undefined; bridge = undefined; });
+afterEach(async () => { vi.restoreAllMocks(); client?.close(); await bridge?.stop(); client = undefined; bridge = undefined; });
 
 it("uploads authenticated binary bytes into a known session and sends the attachment", async () => {
   bridge = await startTestBridge();
@@ -75,6 +75,60 @@ it("streams a file larger than the old limit to disk and removes an interrupted 
   for (let i = 0; i < 100 && fs.readdirSync(folder).length > 1; i++) await new Promise((resolve) => setTimeout(resolve, 10));
   expect(fs.readdirSync(folder)).toEqual([path.basename(result.path)]);
 });
+
+it("preserves the bridge-scoped upload response without falling back for an invalid session", async () => {
+  bridge = await startTestBridge();
+  const token = bridge.tokenFor("compat-upload-phone");
+  const chunk = Buffer.alloc(64 * 1024, 0x75);
+  const url = `${bridge.http}/api/uploads?name=compat.txt`;
+  const request = http.request(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/plain" } });
+  const response = once(request, "response") as Promise<[http.IncomingMessage]>;
+  for (let i = 0; i < 384; i++) if (!request.write(chunk)) await once(request, "drain");
+  request.end();
+  const [received] = await response;
+  expect(received.statusCode).toBe(200);
+  let body = "";
+  for await (const data of received) body += data;
+  const file = JSON.parse(body);
+  expect(file).toMatchObject({ name: "compat.txt", size: 24 * 1024 * 1024, mimeType: "text/plain" });
+  expect(file.uri).toMatch(/^file:/);
+  expect(fs.statSync(file.path).size).toBe(file.size);
+  client = await TestClient.connect(bridge.url, token);
+  expect((await client.request("_codeaw/fs/read", { path: file.path, maxBytes: 100 })).size).toBe(file.size);
+  const invalid = await fetch(`${url}&sessionId=missing:unknown`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: "no fallback" });
+  expect(invalid.status).toBe(400);
+});
+
+for (const scoped of [true, false]) {
+  it(`returns a disk error while the request is still sending and stays alive (${scoped ? "session" : "bridge"})`, async () => {
+    bridge = await startTestBridge();
+    const token = bridge.tokenFor("disk-error-phone");
+    client = await TestClient.connect(bridge.url, token);
+    const session = await client.request("session/new", { cwd: bridge.home, mcpServers: [] });
+    const url = `${bridge.http}/api/uploads?name=disk-error.bin${scoped ? `&sessionId=${encodeURIComponent(session.sessionId)}` : ""}`;
+    const realOpen = fs.promises.open;
+    vi.spyOn(fs.promises, "open").mockImplementationOnce(async (...args) => {
+      const handle = await realOpen(...args);
+      vi.spyOn(handle, "write").mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+      });
+      return handle;
+    });
+    const request = http.request(url, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    request.on("error", () => {});
+    const response = once(request, "response") as Promise<[http.IncomingMessage]>;
+    request.write(Buffer.alloc(1024)); // Keep the sender open when the asynchronous write fails.
+    const [received] = await response;
+    expect(received.statusCode).toBe(500);
+    received.resume();
+    request.end();
+    const folder = scoped ? path.join(bridge.home, ".codeaw-uploads") : path.join(bridge.loaded.dataDir, "uploads");
+    expect(fs.readdirSync(folder)).toEqual([]);
+    expect((await fetch(`${bridge.http}/api/health`)).status).toBe(200);
+    await expect(client.request("_codeaw/activity/list", {})).resolves.toBeDefined();
+  });
+}
 
 it("requires opt-in for paths outside workspaces and rejects missing cwd before agent creation", async () => {
   bridge = await startTestBridge();

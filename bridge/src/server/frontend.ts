@@ -4,7 +4,7 @@ import type { AgentRegistry } from "../backend/registry.js";
 import type { PushNotifier } from "../notify/ntfy.js";
 import type { ClientHandle, SessionManager } from "../session/manager.js";
 import { logger } from "../util/log.js";
-import { createDirectory, gitDiff, gitStatus, listDir, readFile, type PathGuard } from "./ext.js";
+import { createDirectory, gitDiff, gitStatus, listDir, readFile, searchFiles, type PathGuard } from "./ext.js";
 import type { TerminalManager } from "../terminal/manager.js";
 import { CpaUsageService } from "./cpa.js";
 
@@ -89,6 +89,7 @@ export class FrontendConnection implements ClientHandle {
       .onRequest("_codeaw/fs/list", passthrough, (ctx) => listDir(deps.guard, ctx.params.path))
       .onRequest("_codeaw/fs/mkdir", passthrough, (ctx) => createDirectory(deps.guard, ctx.params.path, ctx.params.name))
       .onRequest("_codeaw/fs/read", passthrough, (ctx) => readFile(deps.guard, ctx.params.path, ctx.params.maxBytes))
+      .onRequest("_codeaw/fs/search", passthrough, (ctx) => searchFiles(deps.guard, ctx.params.cwd, ctx.params.query, ctx.params.limit))
       .onRequest("_codeaw/git/status", passthrough, (ctx) => gitStatus(deps.guard, ctx.params.cwd))
       .onRequest("_codeaw/git/diff", passthrough, (ctx) => gitDiff(deps.guard, ctx.params.cwd, ctx.params.path, ctx.params.staged))
       .onRequest("_codeaw/terminal/open", passthrough, (ctx) => deps.terminals.open(this.deviceId, this, ctx.params))

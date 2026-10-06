@@ -147,12 +147,14 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
           if (typeof change.diff === "string") content.push({ type: "content", content: { type: "text", text: change.diff } });
         }
         const kind: acp.ToolKind = item.type === "commandExecution" ? "execute" : item.type === "fileChange" ? "edit" : item.type === "webSearch" ? "search" : "other";
+        // Same shape as codex-acp, so clients can tell the server from the tool.
+        const mcp = item.type === "mcpToolCall" && typeof item.server === "string" && typeof item.tool === "string";
         records.push({ key, update: {
           sessionUpdate: "tool_call", toolCallId: key,
-          title: command ?? item.title ?? item.tool ?? item.query ?? (item.type === "fileChange" ? "檔案變更" : item.type),
+          title: mcp ? `mcp.${item.server}.${item.tool}` : command ?? item.title ?? item.tool ?? item.query ?? (item.type === "fileChange" ? "檔案變更" : item.type),
           kind, status: toolStatus(item, turn), content,
           locations: changes.filter((change: any) => typeof change.path === "string").map((change: any) => ({ path: change.path })),
-          rawInput: item.arguments ?? (command ? { command, cwd: item.cwd ?? conversation.cwd } : item.input ?? {}),
+          rawInput: mcp ? { server: item.server, tool: item.tool, arguments: item.arguments ?? {} } : item.arguments ?? (command ? { command, cwd: item.cwd ?? conversation.cwd } : item.input ?? {}),
           rawOutput: item.result ?? (output ? { output, exitCode: item.exitCode } : undefined),
         } as acp.SessionUpdate });
       }

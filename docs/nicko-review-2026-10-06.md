@@ -2,7 +2,30 @@
 
 Reviewed `bfdd43b`, `2c8b21d`, `8a7c553`, `00e6d8d` and merge
 `afc7265b6c1e995cad30cd21be3fdd532a9a182b` in a separate checkout.
-No changes from that checkout were merged into the comparison build.
+The findings below describe that pre-merge snapshot. The combined implementation
+now keeps Nicko's Android Live Updates, file mentions, attachment menu, MCP tool
+display and Windows updater fix, alongside concurrent iOS Live Activities and
+the existing history, quota, receipt and upload-progress changes.
+
+## Merge resolutions
+
+- The Android tracker is isolated in `android_live_activity.dart` and only owns
+  the native channel on Android. iOS retains the concurrent activity controller,
+  shared attributes, extension target and APNs protocol. A platform routing test
+  verifies that Android does not call the iOS channel API and vice versa.
+- Both upload responses are supported: `sessionId` requests receive HTTP 201
+  with the original block/hash; requests without it receive Nicko's HTTP 200
+  file description. An unknown session never falls back to the other route.
+- Both storage paths now use awaited bounded disk writes and clean partial
+  files on failure. HTTP tests inject an asynchronous disk-full error while the
+  sender remains open, verify HTTP 500 and cleanup, then check the same bridge
+  still answers health and activity requests.
+- Uploads support 512 MiB with native file streaming and browser Blob submission.
+  The floating attachment menu retains sequential byte progress and waits for
+  bridge acknowledgement before send. Compact file chips fit landscape.
+
+Local combined checks: 145 bridge tests passed (7 skipped), TypeScript typecheck
+passed, 196 Flutter tests passed (12 skipped), and Flutter analysis passed.
 
 ## Findings
 

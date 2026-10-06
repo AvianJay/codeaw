@@ -1,5 +1,7 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished } from "vitest";
 import { reduce } from "./reduce.js";
 import { newFakeSession, promptText, rawLog, startTestBridge, TestClient, type TestBridge } from "./helpers.js";
@@ -373,6 +375,61 @@ describe("files", () => {
     await expect(c.request("_codeaw/fs/read", { path: path.join(tb.home, "..", "x") })).rejects.toThrow();
     const status = await c.request("_codeaw/git/status", { cwd: tb.home });
     expect(status.files).toEqual([]);
+  });
+
+  it("searches files for @ mentions, best matches first", async () => {
+    tb = await startTestBridge();
+    const c = await client();
+    const write = (rel: string) => {
+      fs.mkdirSync(path.dirname(path.join(tb!.home, rel)), { recursive: true });
+      fs.writeFileSync(path.join(tb!.home, rel), "");
+    };
+    for (const rel of ["src/ui/chat/composer.ts", "src/ui/chat/chat_page.ts", "src/main.ts", "node_modules/pkg/composer.js", "docs/compose-notes.md"]) write(rel);
+    const result = await c.request("_codeaw/fs/search", { cwd: tb.home, query: "compos" });
+    expect(result.files[0]).toEqual({ path: path.join(tb.home, "src", "ui", "chat", "composer.ts"), relative: "src/ui/chat/composer.ts", type: "file" });
+    expect(result.files.map((f: any) => f.relative)).toContain("docs/compose-notes.md");
+    expect(result.files.some((f: any) => f.relative.startsWith("node_modules"))).toBe(false);
+    const fuzzy = await c.request("_codeaw/fs/search", { cwd: tb.home, query: "uichat" });
+    expect(fuzzy.files.slice(0, 3).map((f: any) => f.relative)).toEqual(["src/ui/chat", "src/ui/chat/composer.ts", "src/ui/chat/chat_page.ts"]);
+    const top = await c.request("_codeaw/fs/search", { cwd: tb.home, limit: 200 });
+    const depths = top.files.map((f: any) => f.relative.split("/").length);
+    expect(depths).toEqual([...depths].sort((a, b) => a - b));
+    expect(top.files).toContainEqual(expect.objectContaining({ relative: "src", type: "dir" }));
+    await expect(c.request("_codeaw/fs/search", { cwd: path.dirname(tb.home), query: "x" })).rejects.toThrow(/outside/);
+  });
+
+  it("stores uploaded files for agents and serves them back for previews", async () => {
+    tb = await startTestBridge();
+    const c = await client();
+    const auth = { Authorization: `Bearer ${tb.tokenFor("phone")}` };
+    const res = await fetch(`${tb.http}/api/uploads?name=${encodeURIComponent("../../會議紀錄.txt")}`, {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "text/plain; charset=utf-8" },
+      body: "第一行\n",
+    });
+    expect(res.status).toBe(200);
+    const file: any = await res.json();
+    expect(file).toMatchObject({ name: "會議紀錄.txt", size: Buffer.byteLength("第一行\n"), mimeType: "text/plain" });
+    expect(path.dirname(path.dirname(file.path))).toBe(path.join(tb.loaded.dataDir, "uploads"));
+    expect(file.uri).toBe(pathToFileURL(file.path).href);
+    expect(fs.readFileSync(file.path, "utf8")).toBe("第一行\n");
+    expect((await c.request("_codeaw/fs/read", { path: file.path })).text).toBe("第一行\n");
+    const raw = await fetch(`${tb.http}/api/fs/raw?path=${encodeURIComponent(file.path)}`, { headers: auth });
+    expect(await raw.text()).toBe("第一行\n");
+    expect((await fetch(`${tb.http}/api/uploads?name=x.txt`, { method: "POST", body: "x" })).status).toBe(401);
+  });
+
+  it.skipIf(spawnSync("git", ["--version"]).status !== 0)("searches only files git does not ignore", async () => {
+    tb = await startTestBridge();
+    const c = await client();
+    const repo = path.join(tb.home, "repo");
+    fs.mkdirSync(path.join(repo, "out"), { recursive: true });
+    expect(spawnSync("git", ["init", "-q"], { cwd: repo }).status).toBe(0);
+    fs.writeFileSync(path.join(repo, ".gitignore"), "out/\n");
+    fs.writeFileSync(path.join(repo, "notes.md"), "");
+    fs.writeFileSync(path.join(repo, "out", "notes.md"), "");
+    const result = await c.request("_codeaw/fs/search", { cwd: repo, query: "notes" });
+    expect(result.files.map((f: any) => f.relative)).toEqual(["notes.md"]);
   });
 });
 

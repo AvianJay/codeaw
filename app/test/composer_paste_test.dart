@@ -127,7 +127,7 @@ class _Client extends BridgeClient {
 Widget _app(
   SessionController controller,
   _Clipboard clipboard, {
-  Future<List<XFile>> Function()? selectFiles,
+  Future<List<XFile>> Function()? pickFiles,
 }) => MaterialApp(
   home: Scaffold(
     body: Column(
@@ -137,7 +137,7 @@ Widget _app(
         Composer(
           controller: controller,
           imageClipboard: clipboard,
-          selectFiles: selectFiles,
+          pickFiles: pickFiles,
         ),
       ],
     ),
@@ -153,7 +153,7 @@ Future<({SessionController controller, _Client client})> _show(
   WidgetTester tester,
   _Clipboard clipboard, {
   bool images = true,
-  Future<List<XFile>> Function()? selectFiles,
+  Future<List<XFile>> Function()? pickFiles,
 }) async {
   tester.view.physicalSize = const Size(834, 1112);
   tester.view.devicePixelRatio = 1;
@@ -164,9 +164,7 @@ Future<({SessionController controller, _Client client})> _show(
     controller.dispose();
     client.dispose();
   });
-  await tester.pumpWidget(
-    _app(controller, clipboard, selectFiles: selectFiles),
-  );
+  await tester.pumpWidget(_app(controller, clipboard, pickFiles: pickFiles));
   await tester.pumpAndSettle();
   return (controller: controller, client: client);
 }
@@ -279,7 +277,7 @@ void main() {
       await tester.tap(_input);
       await tester.pumpAndSettle();
       expect(clipboard.reads, 0);
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();
@@ -373,10 +371,10 @@ void main() {
         isFalse,
       );
       expect(clipboard.reads, 0);
-      expect(find.byTooltip('附加檔案或圖片'), findsOneWidget);
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      expect(find.byTooltip('附加'), findsOneWidget);
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
-      expect(find.text('選擇檔案（512 MiB 上限）'), findsOneWidget);
+      expect(find.text('上傳檔案'), findsOneWidget);
       expect(find.text('從相簿選擇'), findsNothing);
       expect(find.text('貼上剪貼簿圖片'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -428,7 +426,7 @@ void main() {
           PlatformException(code: 'denied', message: 'private native details'),
         );
       await _show(tester, clipboard);
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('貼上剪貼簿圖片'));
       await tester.pumpAndSettle();
@@ -447,14 +445,14 @@ void main() {
       final h = await _show(
         tester,
         _Clipboard(),
-        selectFiles: () async => [
+        pickFiles: () async => [
           XFile.fromData(bytes, name: '資料.txt', path: '資料.txt'),
         ],
       );
       await tester.enterText(_input, 'Read the attached file');
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
+      await tester.tap(find.text('上傳檔案'));
       await tester.pumpAndSettle();
       expect(h.client.uploads.single.sessionId, 'codex:one');
       expect(h.client.uploads.single.name, '資料.txt');
@@ -487,7 +485,7 @@ void main() {
       final h = await _show(
         tester,
         _Clipboard(),
-        selectFiles: () async => [
+        pickFiles: () async => [
           XFile.fromData(
             bytes,
             name: 'Generated Audio October 01.wav',
@@ -502,9 +500,9 @@ void main() {
         return finished.future;
       };
       await tester.enterText(_input, 'Read this');
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
+      await tester.tap(find.text('上傳檔案'));
       await tester.pumpAndSettle();
       progress!(bytes.length * 2 ~/ 5, bytes.length);
       await tester.pump();
@@ -524,7 +522,7 @@ void main() {
       await tester.pump();
       expect(find.text('100%'), findsOneWidget);
       expect(find.textContaining('等待電腦確認'), findsOneWidget);
-      expect(find.byType(InputChip), findsNothing);
+      expect(find.byTooltip('移除檔案'), findsNothing);
       finished.complete({
         'type': 'resource_link',
         'name': 'Generated Audio October 01.wav',
@@ -532,7 +530,7 @@ void main() {
       });
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('file-upload-progress')), findsNothing);
-      expect(find.byType(InputChip), findsOneWidget);
+      expect(find.byTooltip('移除檔案'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
@@ -547,7 +545,7 @@ void main() {
       final h = await _show(
         tester,
         _Clipboard(),
-        selectFiles: () async => [
+        pickFiles: () async => [
           XFile.fromData(bytes, name: 'first.txt', path: 'first.txt'),
           XFile.fromData(bytes, name: 'second.wav', path: 'second.wav'),
         ],
@@ -564,9 +562,9 @@ void main() {
         callback!(25, data.length);
         return failed.future;
       };
-      await tester.tap(find.byTooltip('附加檔案或圖片'));
+      await tester.tap(find.byTooltip('附加'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
+      await tester.tap(find.text('上傳檔案'));
       await tester.pumpAndSettle();
       expect(h.client.uploads.map((u) => u.name), ['first.txt', 'second.wav']);
       expect(find.text('2/2'), findsOneWidget);
@@ -592,7 +590,7 @@ void main() {
     final h = await _show(
       tester,
       clipboard,
-      selectFiles: () async => [
+      pickFiles: () async => [
         XFile.fromData(Uint8List(100), name: 'old.wav', path: 'old.wav'),
       ],
     );
@@ -601,9 +599,9 @@ void main() {
       callback!(10, data.length);
       return finished.future;
     };
-    await tester.tap(find.byTooltip('附加檔案或圖片'));
+    await tester.tap(find.byTooltip('附加'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
+    await tester.tap(find.text('上傳檔案'));
     await tester.pumpAndSettle();
     expect(find.text('10%'), findsOneWidget);
     final other = SessionController(h.client, 'codex:two');
@@ -628,7 +626,7 @@ void main() {
     final h = await _show(
       tester,
       _Clipboard(),
-      selectFiles: () async => [
+      pickFiles: () async => [
         XFile.fromData(
           Uint8List.fromList([1, 2]),
           name: 'retry.txt',
@@ -638,9 +636,9 @@ void main() {
     );
     h.client.failPrompt = true;
     await tester.enterText(_input, 'Keep this draft');
-    await tester.tap(find.byTooltip('附加檔案或圖片'));
+    await tester.tap(find.byTooltip('附加'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
+    await tester.tap(find.text('上傳檔案'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('送出'));
     await tester.pumpAndSettle();

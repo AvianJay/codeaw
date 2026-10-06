@@ -22,7 +22,8 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
-| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload attachment bytes, at most 512 MiB | Bearer |
+| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload session attachment bytes, at most 512 MiB; HTTP 201 | Bearer |
+| `POST /api/uploads?name=<filename>` | upload bridge-scoped attachment bytes, at most 512 MiB; HTTP 200 | Bearer |
 
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.
@@ -292,6 +293,10 @@ epoch gets a `full` replay.
   if the agent supports `_session/steering`, otherwise queue.
 - `queue`: always queue behind the running turn.
 
+The app sends `@` file mentions in place as `resource_link` blocks
+(`name` is the path relative to the session folder, `uri` a `file:` URI), so a
+prompt can be `text, resource_link, text`.
+
 The response arrives when the turn that handled the prompt ends (a steered
 prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
@@ -345,6 +350,7 @@ out on the bridge.
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |
 | `_codeaw/fs/mkdir` | `{path, name}` | `{path, name}` (created child directory) |
 | `_codeaw/fs/read` | `{path, maxBytes?}` | `{path, size, mtime, binary, truncated, text?, mimeType?}` |
+| `_codeaw/fs/search` | `{cwd, query?, limit?}` | `{cwd, files: [{path, relative, type: "file"\|"dir"}], truncated}` — best matches first; `relative` uses `/` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
 | `_codeaw/git/diff` | `{cwd, path?, staged?}` | `{diff, truncated}` |
 | `_codeaw/terminal/open` | `{cwd?, terminalId?, afterSeq?, cols?, rows?}` | `{terminalId, cwd, shell, exited, exitCode?, lastSeq, full, events}` |
@@ -366,6 +372,11 @@ There is no remote API for enabling it. This exposes private files to every
 paired device; it is not a sandbox for agents or interactive shells. Paths are
 resolved through links before containment checks, and new sessions require an
 existing directory.
+
+`fs/search` ranks git's tracked and unignored files (and their folders) when
+`cwd` is in a repository; elsewhere it walks the folder, skipping dependency
+and build folders, within size and time limits. File lists are cached for ten
+seconds.
 
 `fs/mkdir` resolves and checks the existing parent `path` before creating a
 single child. `name` must be a valid single directory component (maximum 200
@@ -440,6 +451,14 @@ response confirms success. Until then, clients keep the upload pending and do
 not attach its resource or send a prompt referencing it. Native clients flush
 bounded chunks with transport backpressure; Web clients use XMLHttpRequest
 upload progress events. Both allow up to one hour for an active transfer.
+
+For compatibility with clients that omit `sessionId`, the same endpoint returns
+HTTP 200 `{path, uri, name, size, mimeType?}` and saves under
+`<dataDir>/uploads/<id>/<name>`. These files have 30-day retention and are readable
+through authenticated `fs/read` and `fs/raw`, but are not offered as workspaces.
+Both variants share the 512 MiB cap, streaming writes and transfer deadlines.
+Supplying an invalid/unknown `sessionId` is an error and never falls back to the
+bridge-scoped route. Storage errors remove partial files and return HTTP 500.
 
 ### Interactive terminals
 

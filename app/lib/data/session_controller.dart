@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 import '../acp/jsonrpc.dart';
 import 'bridge_client.dart';
+import 'mentions.dart';
 import 'models.dart';
 import 'history_cache.dart';
 import 'timeline.dart';
@@ -56,6 +58,9 @@ class SessionController extends ChangeNotifier {
   /// Unsent text survives navigating between recently opened conversations.
   String draft = '';
   final _promptReceipts = <String, Completer<bool>>{};
+
+  /// `@` tokens picked for [draft] → their `file:` URIs.
+  final draftMentions = <String, String>{};
   final timeline = Timeline();
 
   String get agentId => sessionId.split(':').first;
@@ -502,9 +507,39 @@ class SessionController extends ChangeNotifier {
   void cancel() => client.notify('session/cancel', {'sessionId': sessionId});
 
   void reusePrompt(MessageItem prompt) {
-    draft = draft.trim().isEmpty ? prompt.text : '$draft\n\n${prompt.text}';
+    draft = draft.trim().isEmpty ? prompt.promptText : '$draft\n\n${prompt.promptText}';
+    draftMentions.addAll(prompt.mentions);
     _notify();
     _toast('已填入原提示，可編輯後傳送');
+  }
+
+  bool _fileSearchMissing = false;
+
+  /// Files and folders under [cwd] for `@` mentions. Bridges without
+  /// `_codeaw/fs/search` complete one folder level at a time instead.
+  Future<List<FileSuggestion>> searchFiles(String query) async {
+    if (cwd.isEmpty) return const [];
+    if (!_fileSearchMissing) {
+      try {
+        final r = await client.request('_codeaw/fs/search', {'cwd': cwd, 'query': query, 'limit': 40}) as Map<String, dynamic>;
+        return [for (final f in (r['files'] as List? ?? const []).whereType<Map>()) FileSuggestion.fromJson(f)];
+      } on RpcError catch (e) {
+        if (e.code != RpcError.methodNotFound) rethrow;
+        _fileSearchMissing = true;
+      }
+    }
+    final slash = query.lastIndexOf('/');
+    final folder = slash < 0 ? '' : query.substring(0, slash);
+    final prefix = query.substring(slash + 1).toLowerCase();
+    final paths = isWindowsPath(cwd) ? p.windows : p.posix;
+    final r = await client.request('_codeaw/fs/list', {'path': paths.joinAll([cwd, ...folder.split('/').where((s) => s.isNotEmpty)])}) as Map<String, dynamic>;
+    final matches = [
+      for (final e in (r['entries'] as List? ?? const []).whereType<Map>())
+        if ('${e['name']}'.toLowerCase().contains(prefix) && (prefix.startsWith('.') || !'${e['name']}'.startsWith('.')))
+          FileSuggestion(path: '${e['path']}', relative: folder.isEmpty ? '${e['name']}' : '$folder/${e['name']}', directory: e['type'] == 'dir'),
+    ];
+    // Name prefixes first; the bridge already lists folders before files.
+    return [...matches.where((f) => f.name.toLowerCase().startsWith(prefix)), ...matches.where((f) => !f.name.toLowerCase().startsWith(prefix))].take(40).toList();
   }
 
   Future<void> setConfig(ConfigOption option, Object value) async {

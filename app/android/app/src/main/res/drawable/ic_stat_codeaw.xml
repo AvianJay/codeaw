@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar icon: the monochrome launcher glyph cropped to its bubble. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="52"
+    android:viewportHeight="52">
+    <group
+        android:translateX="-28"
+        android:translateY="-28">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:fillType="evenOdd"
+            android:pathData="M44,31L64,31A12,12 0 0 1 76,43L76,55A12,12 0 0 1 64,67L49,67C46,67 46,67 43.559,68.744L34.848,74.966C32,77 32,77 32,73.5L32,43A12,12 0 0 1 44,31ZM45.725,39.025L53.225,46.525A3.5,3.5 0 0 1 53.225,51.475L45.725,58.975A3.5,3.5 0 0 1 40.775,54.025L45.8,49L40.775,43.975A3.5,3.5 0 0 1 45.725,39.025ZM55.75,53L64.75,53A3.5,3.5 0 0 1 64.75,60L55.75,60A3.5,3.5 0 0 1 55.75,53Z" />
+    </group>
+</vector>
