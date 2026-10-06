@@ -23,6 +23,7 @@ const { values } = parseArgs({ options: {
   config: { type: "string" }, cwd: { type: "string" }, session: { type: "string" },
   report: { type: "string" }, fixture: { type: "string" }, installed: { type: "boolean", default: false },
   "history-only": { type: "boolean", default: false },
+  "expect-compression": { type: "boolean", default: false },
 } });
 assert.ok(values.cwd && values.session, "--cwd and --session are required");
 const original = loadConfig(values.config);
@@ -63,7 +64,7 @@ const connections: acp.ClientConnection[] = [];
 const newSessions = new Set<string>();
 const activeRuns: Promise<unknown>[] = [];
 let cleanupClient: Awaited<ReturnType<typeof connect>> | undefined;
-async function connect() {
+async function connect(compress = true) {
   const received: { method: string; params: any }[] = [];
   const record = (method: string) => (ctx: { params: any }) => { received.push({ method, params: ctx.params }); };
   const any = (v: unknown) => v as any;
@@ -76,13 +77,21 @@ async function connect() {
       const once = ctx.params.options.find((o) => o.kind === "allow_once");
       return { outcome: once ? { outcome: "selected" as const, optionId: once.optionId } : { outcome: "cancelled" as const } };
     });
+  let socket: WebSocket;
+  class MeasuredSocket extends WebSocket {
+    constructor(url: string, protocols: string | string[] | undefined, options: WebSocket.ClientOptions) {
+      super(url, protocols, { ...options, perMessageDeflate: compress });
+      socket = this;
+    }
+  }
   const conn = app.connect(createWebSocketStream(`ws://127.0.0.1:${port}/acp`, {
-    WebSocket: WebSocket as any, headers: { Authorization: `Bearer ${token}` },
+    WebSocket: MeasuredSocket as any, headers: { Authorization: `Bearer ${token}` },
   }));
   connections.push(conn);
   const request = (method: string, params: unknown = {}) => conn.agent.request<any>(method, params as never);
   await request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
-  return { conn, received, request };
+  const wireBytes = () => (socket as any)._socket.bytesRead as number;
+  return { conn, received, request, wireBytes, compressed: socket!.extensions.includes("permessage-deflate") };
 }
 async function waitFor(pred: () => boolean, timeout = 120000) {
   const start = Date.now();
@@ -92,15 +101,17 @@ async function waitFor(pred: () => boolean, timeout = 120000) {
   }
 }
 try {
-  const full = await connect(), lazy = await connect(); cleanupClient = lazy;
+  const full = await connect(false), lazy = await connect(); cleanupClient = lazy;
+  if (values["expect-compression"]) assert.equal(lazy.compressed, true, "Real socket must negotiate compression");
   const load = async (client: typeof full, deferred: boolean) => {
     client.received.length = 0;
+    const wireStart = client.wireBytes();
     const start = performance.now();
     const result = await client.request("session/load", { sessionId: values.session, cwd: values.cwd, mcpServers: [],
       _meta: { codeaw: { lazyHistory: deferred } } });
     await waitFor(() => client.received.some((r) => r.method === "_codeaw/replay" && r.params.sessionId === values.session), 15000);
     const entries = client.received.filter((r) => r.params.sessionId === values.session && ["session/update", "_codeaw/event"].includes(r.method));
-    return { result, entries, milliseconds: performance.now() - start, bytes: bytes(entries) };
+    return { result, entries, milliseconds: performance.now() - start, bytes: bytes(entries), wireBytes: client.wireBytes() - wireStart };
   };
   const fullReplay = await load(full, false), lazyReplay = await load(lazy, true);
   assert.equal(lazyReplay.result._meta.codeaw.connection, "desktop");
@@ -115,10 +126,12 @@ try {
     epoch: lazyReplay.result._meta.codeaw.epoch, toolCallId: selected.toolCallId });
   const originalTool = fullReplay.entries.find((r) => r.params.update?.toolCallId === selected.toolCallId)?.params.update;
   assert.ok(originalTool, "Tool must be present in the full replay");
-  const contents = (u: any) => ({ content: u.content, rawOutput: u.rawOutput, terminal: u._meta?.terminal_output });
+  const contents = (u: any) => ({ title: u.title, rawInput: u.rawInput, content: u.content, rawOutput: u.rawOutput,
+    terminal: u._meta?.terminal_output, claudeResponse: u._meta?.claudeCode?.toolResponse });
   assert.deepEqual(contents(detail.update), contents(originalTool));
   checks.push({ phase: "real-desktop-transport", status: "passed", sessionId: values.session,
     connection: "desktop", fullBytes: fullReplay.bytes, lazyBytes: lazyReplay.bytes,
+    fullWireBytes: fullReplay.wireBytes, lazyWireBytes: lazyReplay.wireBytes, compressionNegotiated: lazy.compressed,
     fullLoadMs: fullReplay.milliseconds, lazyLoadMs: lazyReplay.milliseconds,
     hydrationExact: true, knownChatTitleMatches: !!knownTitle, hydrationBytes: bytes(contents(detail.update)),
     hydrationSha256: createHash("sha256").update(JSON.stringify(contents(detail.update))).digest("hex") });
@@ -131,6 +144,7 @@ try {
   }
   lazy.conn.close();
   const reconnect = await connect(); cleanupClient = reconnect;
+  const wireStart = reconnect.wireBytes();
   const start = performance.now();
   const reloaded = await reconnect.request("session/load", { sessionId: values.session, cwd: values.cwd, mcpServers: [],
     _meta: { codeaw: { lazyHistory: true, epoch: cursor.epoch, afterSeq: cursor.lastSeq } } });
@@ -140,6 +154,7 @@ try {
     "Full reconnect must be explained by an authoritative epoch change");
   checks.push({ phase: "history-reconnect", status: "passed", mode, epochChanged: reloaded._meta.codeaw.epoch !== cursor.epoch, milliseconds: performance.now() - start,
     bytes: bytes(reconnect.received.filter((r) => r.params.sessionId === values.session)) });
+  checks.at(-1).wireBytes = reconnect.wireBytes() - wireStart;
   await full.conn.agent.notify("_codeaw/session/detach", { sessionId: values.session } as never).catch(() => {});
   await reconnect.conn.agent.notify("_codeaw/session/detach", { sessionId: values.session } as never).catch(() => {});
 

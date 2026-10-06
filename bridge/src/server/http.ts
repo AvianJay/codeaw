@@ -77,7 +77,13 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
     // Every connection supplies its own agent in prepareWebSocketUpgrade(); this is never used.
     createAgent: () => acp.agent({ name: "codeaw-unbound" }),
   });
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024,
+    perMessageDeflate: {
+      serverNoContextTakeover: true, clientNoContextTakeover: true,
+      concurrencyLimit: 4, threshold: 1024,
+      zlibDeflateOptions: { level: 3, memLevel: 7 },
+    },
+  });
   const sockets = new Set<WebSocket>();
 
   const onRequest: http.RequestListener = async (req, res) => {
