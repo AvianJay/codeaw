@@ -8,6 +8,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
 import 'bridge_socket.dart';
+import 'bridge_frame.dart';
 import 'host.dart';
 import 'models.dart';
 import 'upload_progress.dart';
@@ -135,7 +136,12 @@ class BridgeClient extends ChangeNotifier {
         );
         ws.stream.listen(
           (data) {
-            if (data is String) peer.handle(data);
+            try {
+              peer.handle(decodeBridgeFrame(data));
+            } catch (_) {
+              peer.close();
+              unawaited(ws.sink.close());
+            }
           },
           onDone: () {
             if (!done.isCompleted) done.complete();

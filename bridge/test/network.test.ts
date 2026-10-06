@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { gunzipSync } from "node:zlib";
 import { afterEach, expect, it } from "vitest";
 import WebSocket from "ws";
 import { startTestBridge, type TestBridge } from "./helpers.js";
@@ -9,11 +10,15 @@ afterEach(async () => { clients.splice(0).forEach(c => c.ws.terminate()); await 
 
 class WireClient {
   readonly messages: any[] = [];
+  gzipFrames = 0;
   private nextId = 0;
   private pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
   constructor(readonly ws: WebSocket) {
     ws.on("message", data => {
-      const message = JSON.parse(data.toString());
+      const buffer = Buffer.from(data as Buffer);
+      const zipped = buffer[0] === 0x1f && buffer[1] === 0x8b;
+      if (zipped) this.gzipFrames++;
+      const message = JSON.parse((zipped ? gunzipSync(buffer) : buffer).toString());
       this.messages.push(message);
       const pending = this.pending.get(message.id);
       if (pending) {
@@ -35,8 +40,8 @@ class WireClient {
 
 it("compresses long replay on the wire and preserves uncompressed client compatibility", async () => {
   bridge = await startTestBridge();
-  const connect = async (compress: boolean) => {
-    const ws = new WebSocket(bridge!.url, { headers: { Authorization: `Bearer ${bridge!.tokenFor("network")}` }, perMessageDeflate: compress });
+  const connect = async (compress: boolean, gzip = false) => {
+    const ws = new WebSocket(bridge!.url + (gzip ? '?codeawCompression=gzip' : ''), { headers: { Authorization: `Bearer ${bridge!.tokenFor("network")}` }, perMessageDeflate: compress });
     const client = new WireClient(ws); clients.push(client);
     await once(ws, "open");
     await client.request("initialize", { protocolVersion: 1, clientCapabilities: {} });
@@ -61,6 +66,10 @@ it("compresses long replay on the wire and preserves uncompressed client compati
   expect(full.wireBytes).toBeGreaterThan(700_000);
   expect(zipped.wireBytes).toBeLessThan(full.wireBytes / 20);
   expect(zipped.history).toEqual(full.history);
+  const gzipClient = await connect(false, true), gzipReplay = await load(gzipClient);
+  expect(gzipClient.gzipFrames).toBeGreaterThan(0);
+  expect(gzipReplay.wireBytes).toBeLessThan(full.wireBytes / 20);
+  expect(gzipReplay.history).toEqual(full.history);
   const lazy = await load(compressed, { lazyHistory: true });
   const tool = lazy.history.find(m => m.params.update?.toolCallId === "wire-tool").params.update;
   expect(tool._meta.codeaw.deferredTool).toBeDefined();

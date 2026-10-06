@@ -9,6 +9,7 @@ import { VERSION } from "../version.js";
 import type { DeviceStore } from "./auth.js";
 import { mimeFor, type PathGuard } from "./ext.js";
 import { FrontendConnection, type FrontendDeps } from "./frontend.js";
+import { enableGzipFrames } from "./compression.js";
 import type { SessionStore } from "../session/store.js";
 import { receiveUpload, UploadError, UploadTooLargeError, type UploadStore } from "./uploads.js";
 import { findWebRoot, serveWeb } from "./web.js";
@@ -200,6 +201,7 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
         wss.off("headers", onHeaders);
         socket.off("error", failed);
         sockets.add(ws);
+        if (url.searchParams.get("codeawCompression") === "gzip") enableGzipFrames(ws);
         heartbeat(ws);
         ws.once("close", () => {
           sockets.delete(ws);

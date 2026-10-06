@@ -7,6 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { gunzipSync } from "node:zlib";
 import { parseArgs } from "node:util";
 import * as acp from "@agentclientprotocol/sdk";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
@@ -78,20 +79,28 @@ async function connect(compress = true) {
       return { outcome: once ? { outcome: "selected" as const, optionId: once.optionId } : { outcome: "cancelled" as const } };
     });
   let socket: WebSocket;
+  let gzipFrames = 0;
   class MeasuredSocket extends WebSocket {
     constructor(url: string, protocols: string | string[] | undefined, options: WebSocket.ClientOptions) {
       super(url, protocols, { ...options, perMessageDeflate: compress });
       socket = this;
     }
+    override emit(event: string | symbol, ...args: any[]): boolean {
+      if (event === 'message' && args[1] === true && args[0]?.[0] === 0x1f && args[0]?.[1] === 0x8b) {
+        gzipFrames++;
+        args = [gunzipSync(args[0]).toString('utf8'), false];
+      }
+      return super.emit(event, ...args);
+    }
   }
-  const conn = app.connect(createWebSocketStream(`ws://127.0.0.1:${port}/acp`, {
+  const conn = app.connect(createWebSocketStream(`ws://127.0.0.1:${port}/acp${compress ? '?codeawCompression=gzip' : ''}`, {
     WebSocket: MeasuredSocket as any, headers: { Authorization: `Bearer ${token}` },
   }));
   connections.push(conn);
   const request = (method: string, params: unknown = {}) => conn.agent.request<any>(method, params as never);
   await request("initialize", { protocolVersion: acp.PROTOCOL_VERSION, clientCapabilities: {} });
   const wireBytes = () => (socket as any)._socket.bytesRead as number;
-  return { conn, received, request, wireBytes, compressed: socket!.extensions.includes("permessage-deflate") };
+  return { conn, received, request, wireBytes, compressed: socket!.extensions.includes("permessage-deflate"), gzipFrames: () => gzipFrames };
 }
 async function waitFor(pred: () => boolean, timeout = 120000) {
   const start = Date.now();
@@ -102,7 +111,6 @@ async function waitFor(pred: () => boolean, timeout = 120000) {
 }
 try {
   const full = await connect(false), lazy = await connect(); cleanupClient = lazy;
-  if (values["expect-compression"]) assert.equal(lazy.compressed, true, "Real socket must negotiate compression");
   const load = async (client: typeof full, deferred: boolean) => {
     client.received.length = 0;
     const wireStart = client.wireBytes();
@@ -114,6 +122,7 @@ try {
     return { result, entries, milliseconds: performance.now() - start, bytes: bytes(entries), wireBytes: client.wireBytes() - wireStart };
   };
   const fullReplay = await load(full, false), lazyReplay = await load(lazy, true);
+  if (values["expect-compression"]) assert.ok(lazy.compressed || lazy.gzipFrames() > 0, "Real socket must receive compressed frames");
   assert.equal(lazyReplay.result._meta.codeaw.connection, "desktop");
   const desktopActivity = (await lazy.request("_codeaw/activity/list")).activities.find((a: any) => a.sessionId === values.session);
   const knownTitle = source.readMeta(values.session)?.title;
@@ -132,6 +141,7 @@ try {
   checks.push({ phase: "real-desktop-transport", status: "passed", sessionId: values.session,
     connection: "desktop", fullBytes: fullReplay.bytes, lazyBytes: lazyReplay.bytes,
     fullWireBytes: fullReplay.wireBytes, lazyWireBytes: lazyReplay.wireBytes, compressionNegotiated: lazy.compressed,
+    gzipFrames: lazy.gzipFrames(),
     fullLoadMs: fullReplay.milliseconds, lazyLoadMs: lazyReplay.milliseconds,
     hydrationExact: true, knownChatTitleMatches: !!knownTitle, hydrationBytes: bytes(contents(detail.update)),
     hydrationSha256: createHash("sha256").update(JSON.stringify(contents(detail.update))).digest("hex") });
