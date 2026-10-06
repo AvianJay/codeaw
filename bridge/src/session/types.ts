@@ -41,6 +41,8 @@ export interface SessionMeta {
   agentId: string;
   backendId: string;
   cwd: string;
+  /** Uses a bridge-owned per-chat directory instead of a selected project. */
+  projectless?: boolean;
   title?: string;
   createdAt: string;
   updatedAt: string;

@@ -41,6 +41,7 @@ class SessionController extends ChangeNotifier {
     this.client,
     this.sessionId, {
     String? cwd,
+    this.projectless = false,
     HistoryCache? cache,
   }) : cwd = cwd ?? '',
        cache = cache ?? HistoryCache(client.host) {
@@ -54,6 +55,8 @@ class SessionController extends ChangeNotifier {
   final String sessionId;
   final HistoryCache cache;
   String cwd;
+  bool projectless;
+  String get displayLocation => projectless ? '無專案' : folderName(cwd);
 
   /// Unsent text survives navigating between recently opened conversations.
   String draft = '';
@@ -155,6 +158,7 @@ class SessionController extends ChangeNotifier {
       lastSeq = cursor;
       epoch = savedEpoch;
       if (cwd.isEmpty) cwd = saved['cwd'] as String? ?? '';
+      projectless = saved['projectless'] == true;
       desktopSync = saved['desktopSync'] == true;
       _savedRevision = _cacheRevision;
       _notify();
@@ -206,6 +210,7 @@ class SessionController extends ChangeNotifier {
       }
       timeline.finishReplay();
       if (m['cwd'] is String) cwd = m['cwd'] as String;
+      projectless = m['projectless'] == true;
       if (m['title'] is String && timeline.title == null) {
         timeline.title = m['title'] as String;
       }
@@ -331,6 +336,7 @@ class SessionController extends ChangeNotifier {
       'epoch': epoch,
       'lastSeq': lastSeq,
       'cwd': cwd,
+      'projectless': projectless,
       'desktopSync': desktopSync,
       'timeline': timeline.toSnapshot(),
     });
@@ -644,14 +650,15 @@ class SessionHub {
   late final StreamSubscription<Map<String, dynamic>> _activitySub;
   static const _keep = 4;
 
-  SessionController open(String sessionId, {String? cwd}) {
+  SessionController open(String sessionId, {String? cwd, bool? projectless}) {
     var c = _controllers[sessionId];
     if (c == null) {
-      c = SessionController(client, sessionId, cwd: cwd, cache: cache);
+      c = SessionController(client, sessionId, cwd: cwd, projectless: projectless ?? false, cache: cache);
       _controllers[sessionId] = c;
       unawaited(c.attach());
     } else {
       if (cwd != null && c.cwd.isEmpty) c.cwd = cwd;
+      if (projectless != null) c.projectless = projectless;
       if (!c.attached && !c.loading) unawaited(c.attach());
     }
     _lru
@@ -675,6 +682,8 @@ class SessionHub {
     final c = SessionController(client, sessionId, cwd: cwd, cache: cache);
     final m =
         (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
+    if (m['cwd'] is String) c.cwd = m['cwd'] as String;
+    c.projectless = m['projectless'] == true;
     c.lastSeq = (m['lastSeq'] as num?)?.toInt() ?? 0;
     c.epoch = m['epoch'] as String?;
     if (newSessionResponse['configOptions'] is List) {

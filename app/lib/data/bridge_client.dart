@@ -45,6 +45,7 @@ class BridgeClient extends ChangeNotifier {
   String? activeUrl;
   List<AgentInfo> agents = const [];
   String? bridgeHost;
+  bool supportsProjectless = false;
 
   // Synchronous on purpose: a replayed entry must reach its SessionController before the
   // `session/load` response does, or the response's lastSeq would mark it as a duplicate.
@@ -180,6 +181,7 @@ class BridgeClient extends ChangeNotifier {
             .map(AgentInfo.fromJson)
             .toList();
         bridgeHost = meta?['host'] as String?;
+        supportsProjectless = meta?['projectless'] == true;
         activeUrl = url;
         lastError = null;
         if (host.urls.first != url) {
