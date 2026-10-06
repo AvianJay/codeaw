@@ -190,6 +190,51 @@ void main() {
     client.dispose();
   });
 
+  test('cached tail pages retain read receipts and queue results for older prompts', () async {
+    final client = _Client();
+    final cache = HistoryCache(client.host, storage: _Storage());
+    final c = SessionController(client, 'codex:paged-receipt', cache: cache);
+    client.handle = (method, params) async {
+      c.onMessage(SessionMessage('_codeaw/replay', {
+        'sessionId': c.sessionId, 'mode': 'full', 'epoch': 'one', 'before': 10,
+      }));
+      _update(c, 10, _reply('latest', 'latest reply'));
+      _event(c, 11, {'type': 'prompt_receipt', 'promptId': 'old', 'status': 'read'});
+      _event(c, 12, {'type': 'dequeued', 'promptId': 'old', 'cancelled': false});
+      return {'_meta': {'codeaw': {'epoch': 'one', 'lastSeq': 12, 'state': 'idle'}}};
+    };
+    await c.attach();
+    expect(c.timeline.items.whereType<MessageItem>().single.role, MessageRole.agent);
+    await c.persist();
+    c.dispose();
+
+    final restored = SessionController(client, c.sessionId, cache: cache);
+    await restored.restore();
+    expect(restored.olderBefore, 10);
+    client.handle = (method, params) async {
+      if (method == 'session/load') {
+        restored.onMessage(SessionMessage('_codeaw/replay', {
+          'sessionId': restored.sessionId, 'mode': 'delta', 'epoch': 'one',
+        }));
+        return {'_meta': {'codeaw': {'epoch': 'one', 'lastSeq': 12, 'state': 'idle'}}};
+      }
+      expect(method, '_codeaw/history/page');
+      _page(restored, 10, [
+        {'seq': 1, 't': 1000, 'update': _prompt('old')},
+      ]);
+      return <String, dynamic>{};
+    };
+    await restored.attach();
+    await restored.loadOlder();
+    final old = restored.timeline.items.whereType<MessageItem>().first;
+    expect(old.promptId, 'old');
+    expect(old.receipt, 'read');
+    expect(old.dequeued, 'started');
+    expect(restored.hasOlder, isFalse);
+    restored.dispose();
+    client.dispose();
+  });
+
   test('a turn split across pages keeps one summary with its prompt and all replies', () {
     final live = Timeline();
     void apply(Timeline t, String method, int seq, Map<String, dynamic> body) => t.apply(method, {

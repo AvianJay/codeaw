@@ -237,6 +237,8 @@ Native platforms use app-private compressed files; Web uses IndexedDB. It restor
 history and the session list before network attachment, then requests delta replay.
 The page cursor is cached with the snapshot. Scrolling near the top loads the
 previous page (192 KiB, or 48 KiB with data saver, which also loads images on tap).
+Read receipts and queue results whose prompt lies in an unloaded page are also
+cached, then applied when that older prompt is loaded after an App restart.
 Writes are debounced for two seconds and flushed on background/eviction. A host
 cache is bounded to 32 snapshots (including the session list) and 128 MiB; older
 cache entries may be evicted. Image/file references are retained, but fetching
