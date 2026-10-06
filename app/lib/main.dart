@@ -123,6 +123,7 @@ class CodeawApp extends StatefulWidget {
 class _CodeawAppState extends State<CodeawApp> {
   late final AppLifecycleListener _lifecycle;
   StreamSubscription<Uri>? _links;
+  bool _platformFeaturesScheduled = false;
 
   @override
   void initState() {
@@ -202,6 +203,12 @@ class _CodeawAppState extends State<CodeawApp> {
                 body: Center(child: CircularProgressIndicator()),
               ),
             );
+          }
+          if (!_platformFeaturesScheduled) {
+            _platformFeaturesScheduled = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) unawaited(widget.state.initializePlatformFeatures());
+            });
           }
           return MaterialApp.router(
             title: 'codeaw',

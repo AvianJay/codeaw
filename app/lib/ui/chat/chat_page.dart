@@ -36,6 +36,15 @@ class _ChatPageState extends State<ChatPage> {
   bool? _showSubagents;
   double _horizontalTravel = 0;
 
+  void _backToChats() {
+    final router = GoRouter.of(context);
+    if (router.canPop()) {
+      router.pop();
+    } else {
+      router.go('/');
+    }
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -79,7 +88,16 @@ class _ChatPageState extends State<ChatPage> {
   @override
   Widget build(BuildContext context) {
     final c = _c;
-    if (c == null) return const Scaffold(body: Center(child: Text('找不到這個對話')));
+    if (c == null) {
+      return Scaffold(
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          leading: useWideLayout(context) ? null : BackButton(onPressed: _backToChats),
+          title: const Text('聊天'),
+        ),
+        body: const Center(child: Text('找不到這個對話')),
+      );
+    }
     final state = AppScope.of(context);
     return ListenableBuilder(
       listenable: Listenable.merge([c, c.timeline, if (state.cpa != null) state.cpa!]),
@@ -111,7 +129,8 @@ class _ChatPageState extends State<ChatPage> {
                     ),
               appBar: AppBar(
                 toolbarHeight: MediaQuery.sizeOf(context).height < 500 ? 44 : 56,
-                automaticallyImplyLeading: !useWideLayout(context),
+                automaticallyImplyLeading: false,
+                leading: useWideLayout(context) ? null : BackButton(onPressed: _backToChats),
                 titleSpacing: useWideLayout(context) ? 20 : 0,
                 title: ChatHeaderTitle(
                   title: title,

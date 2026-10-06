@@ -25,14 +25,49 @@ Hiding details redacts chat titles and project names as well as commands and sum
 The timer is rendered by iOS and keeps ticking without app execution. Command,
 summary, approval and completion updates use the connected app, or optional
 ActivityKit APNs pushes from the PC. An ordinary WebSocket does not keep an iOS
-app running after suspension. Without APNs, the last content and system timer
-remain visible with an explicit last-sync time instead of expiring after two
-minutes. This does not make command/completion updates continue in the background.
-While foregrounded,
+app running after suspension. After two minutes without a fresh bridge snapshot,
+the status becomes gray and says “更新已暫停”; the system timer and last-sync
+time remain visible. The stale date does not end the activity. Cached detail or
+location status changes do not reset the last-sync time.
+While foregrounded or while the opted-in location session is active,
 the app refreshes every 60 seconds so a long, quiet command does not falsely
 become stale. APNs update coalescing is 15 seconds, with approval/end updates
 sent sooner; a 60-second bridge heartbeat maintains freshness. Apple's own
 delivery budget and network conditions can delay updates.
+
+### Optional background location
+
+“設定 → 即時動態 → 背景定位維持同步” is off by default. Enabling it explicitly
+requests When In Use location permission while the app is foregrounded. The app
+starts a coarse-accuracy, continuous Core Location session only while at least
+one AI chat is working, with the background location indicator enabled. It stops
+when all work finishes, Live Activities or this option is disabled, the computer
+is unbound/switched, or the controller is disposed. Coordinates are discarded in
+the native delegate; they are never stored, sent to Dart, or sent to the bridge.
+This uses real iOS location services, not simulated coordinates. A location
+callback may request the existing authenticated activity refresh once a minute.
+
+The native permission/active status is shown separately from the saved preference
+and APNs registration. Denied permission or disabled Location Services leaves
+normal foreground updates working and explains how to recover. After changing
+system settings, return to Codeaw to start a session in the foreground.
+Apple allows foreground-started location sessions with When In Use authorization
+to continue in the background; Always permission is not requested. The mode uses
+extra battery and iOS may still suspend or terminate the app. Force-quitting it
+stops updates, and this mode does not automatically relaunch the app. Actual
+lock-screen delivery must be checked on a physical iPhone with the installed
+signing profile. See [Apple location authorization](https://developer.apple.com/documentation/corelocation/requesting-authorization-to-use-location-services)
+and [background location](https://developer.apple.com/documentation/corelocation/handling-location-updates-in-the-background).
+
+### Startup and navigation
+
+Saved computers/chats and the first screen load before native notification and
+Live Activity restoration. Native calls have a five-second timeout; retained
+activities that respond slowly do not keep the app on its loading screen. If a
+native call fails, the settings explain the issue and foreground/reconnect
+refreshes can retry. A phone chat always has a Back button, including direct
+notification/activity links and a restored launch route: it pops the previous
+route when available, or opens the conversation list otherwise.
 
 The app must have started the activity before suspension. It starts activities
 for running chats discovered in the bridge's activity list without opening each
@@ -104,6 +139,12 @@ ownership/revocation, retries, token rotation/reconnect, host changes and the
 persisted feature switches. The scroll-to-bottom widget is tested while new
 messages arrive without disturbing the reading position.
 
+Flutter regressions also cover optional native initialization that never returns,
+restoring an existing activity after the UI loads, direct-entry Back navigation
+in portrait/landscape, and location opt-in, denied permission, concurrent-work
+completion, feature disable and computer switching. These fixtures do not prove
+physical iOS background execution.
+
 `bridge/scripts/live-activity-real-e2e.ts` exercises real Codex, `gpt-6-luna` /
 `low`, against an isolated updated bridge by default. `--installed` instead
 tests the already-running installed bridge through a temporary paired device,
@@ -132,9 +173,16 @@ On iPhone verify:
    frozen final time and removal after completion or disabling the setting.
 3. Hide details and confirm project/command/summary are redacted. Dismiss an
    activity and confirm it stays dismissed for that turn.
-4. Without APNs, lock for over two minutes and confirm the continuing timer and
-   last-sync label; reopen
+4. Without APNs or background location, lock for over two minutes and confirm the
+   continuing timer, last-sync label and “更新已暫停”; reopen
    and confirm recovery. With valid APNs signing/config, confirm a **different
    command and completion arrive while locked**, then test a phone reconnect.
 5. Scroll up during streaming, tap “捲到最底”, and check portrait/landscape plus
    the keyboard. The button sits inside the chat area above the composer.
+6. Enable background location and grant When In Use permission. Start commands
+   in two chats, lock for over two minutes, and confirm a **different command and
+   completion arrive while locked**. Check that location stops after both chats
+   finish, and when the option is disabled. Check permission denial and recovery.
+7. Leave an activity visible, force-quit/reopen the app, and confirm the UI loads
+   without clearing the activity. Tap the activity/notification to open the chat
+   and confirm the Back arrow returns to the conversation list.
