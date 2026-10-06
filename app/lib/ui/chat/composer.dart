@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
+import '../../data/upload_progress.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
@@ -247,16 +248,13 @@ class _ComposerState extends State<Composer> {
         setState(() => _upload = progress);
         final length = await file.length();
         if (!current()) return;
-        if (length > 20 * 1024 * 1024) {
-          throw const FormatException('檔案上限為 20 MiB');
+        if (length > maxUploadBytes) {
+          throw const FormatException('檔案上限為 $uploadLimitLabel');
         }
         setState(() => progress.total = length);
-        final bytes = await file.readAsBytes();
-        if (!current()) return;
-        final block = await target.client.uploadFile(
+        final block = await target.client.uploadPickedFile(
           target.sessionId,
-          file.name,
-          bytes,
+          file,
           onProgress: (sent, total) {
             if (!current()) return;
             setState(() {
@@ -584,7 +582,7 @@ class _ComposerState extends State<Composer> {
                             PopupMenuItem(
                               value: _AttachmentAction.file,
                               enabled: !_pickingFiles,
-                              child: const Text('選擇檔案（20 MiB 上限）'),
+                              child: const Text('選擇檔案（$uploadLimitLabel 上限）'),
                             ),
                             if (_supportsImages)
                               const PopupMenuItem(

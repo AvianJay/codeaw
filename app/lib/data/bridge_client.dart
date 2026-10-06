@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:file_selector/file_selector.dart';
+import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../acp/jsonrpc.dart';
@@ -289,8 +291,8 @@ class BridgeClient extends ChangeNotifier {
     Uint8List bytes, {
     UploadProgressCallback? onProgress,
   }) async {
-    if (bytes.length > 20 * 1024 * 1024) {
-      throw const FormatException('檔案上限為 20 MiB');
+    if (bytes.length > maxUploadBytes) {
+      throw const FormatException('檔案上限為 $uploadLimitLabel');
     }
     final response = await upload.uploadBytes(
       httpUri('/api/uploads', {'sessionId': sessionId, 'name': name}),
@@ -298,6 +300,29 @@ class BridgeClient extends ChangeNotifier {
       bytes,
       onProgress: onProgress,
     );
+    return _uploadedBlock(response);
+  }
+
+  Future<Map<String, dynamic>> uploadPickedFile(
+    String sessionId,
+    XFile file, {
+    UploadProgressCallback? onProgress,
+  }) async {
+    final length = await file.length();
+    if (length > maxUploadBytes) {
+      throw const FormatException('檔案上限為 $uploadLimitLabel');
+    }
+    final response = await upload.uploadFile(
+      httpUri('/api/uploads', {'sessionId': sessionId, 'name': file.name}),
+      {...authHeaders, 'Content-Type': 'application/octet-stream'},
+      file,
+      length,
+      onProgress: onProgress,
+    );
+    return _uploadedBlock(response);
+  }
+
+  Map<String, dynamic> _uploadedBlock(http.Response response) {
     final result =
         jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     if (response.statusCode != 201) {

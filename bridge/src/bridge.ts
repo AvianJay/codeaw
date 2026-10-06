@@ -17,6 +17,7 @@ import { tailscaleIPv4 } from "./util/tailscale.js";
 import { TerminalManager } from "./terminal/manager.js";
 import { CpaUsageService } from "./server/cpa.js";
 import { findWebRoot } from "./server/web.js";
+import { UPLOAD_TIMEOUT_MS } from "./server/uploads.js";
 
 const log = logger("bridge");
 
@@ -91,7 +92,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const listen = (host: string) =>
     new Promise<void>((resolve, reject) => {
       binding.add(host);
-      const server = http.createServer(handlers.onRequest);
+      const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
       server.on("upgrade", handlers.onUpgrade);
       server.once("error", (err) => { binding.delete(host); reject(err); });
       server.listen(port, host, () => {

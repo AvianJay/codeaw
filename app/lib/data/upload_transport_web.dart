@@ -3,6 +3,7 @@ import 'dart:js_interop';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:file_selector/file_selector.dart';
 import 'package:web/web.dart' as web;
 
 import 'upload_progress.dart';
@@ -12,7 +13,55 @@ Future<http.Response> uploadBytes(
   Map<String, String> headers,
   Uint8List bytes, {
   UploadProgressCallback? onProgress,
-  Duration timeout = const Duration(minutes: 2),
+  Duration timeout = uploadTimeout,
+}) => _uploadBody(
+  uri,
+  headers,
+  bytes.toJS,
+  bytes.length,
+  onProgress: onProgress,
+  timeout: timeout,
+);
+
+Future<http.Response> uploadFile(
+  Uri uri,
+  Map<String, String> headers,
+  XFile file,
+  int length, {
+  UploadProgressCallback? onProgress,
+  Duration timeout = uploadTimeout,
+}) async {
+  // The picker returns an object URL. Keep its Blob in browser storage instead
+  // of converting the whole file into a Dart and then a JavaScript byte array.
+  if (!file.path.startsWith('blob:')) {
+    throw const FormatException('無法讀取選取的檔案，請重新選取');
+  }
+  final response = await web.window
+      .fetch(file.path.toJS)
+      .toDart
+      .timeout(const Duration(minutes: 2));
+  if (!response.ok) throw const FormatException('無法讀取選取的檔案');
+  final blob = await response.blob().toDart.timeout(const Duration(minutes: 2));
+  if (blob.size != length) {
+    throw const FormatException('檔案大小在上傳期間變更，請重新選取');
+  }
+  return _uploadBody(
+    uri,
+    headers,
+    blob,
+    length,
+    onProgress: onProgress,
+    timeout: timeout,
+  );
+}
+
+Future<http.Response> _uploadBody(
+  Uri uri,
+  Map<String, String> headers,
+  JSAny body,
+  int length, {
+  UploadProgressCallback? onProgress,
+  required Duration timeout,
 }) async {
   final done = Completer<http.Response>();
   final request = web.XMLHttpRequest();
@@ -23,10 +72,10 @@ Future<http.Response> uploadBytes(
   request.upload.onprogress = ((web.Event event) {
     if (done.isCompleted) return;
     final loaded = (event as web.ProgressEvent).loaded.toInt();
-    onProgress?.call(loaded.clamp(0, bytes.length), bytes.length);
+    onProgress?.call(loaded.clamp(0, length), length);
   }).toJS;
   request.upload.onload = ((web.Event _) {
-    if (!done.isCompleted) onProgress?.call(bytes.length, bytes.length);
+    if (!done.isCompleted) onProgress?.call(length, length);
   }).toJS;
   request.onload = ((web.Event _) {
     if (done.isCompleted) return;
@@ -58,7 +107,7 @@ Future<http.Response> uploadBytes(
       done.completeError(http.ClientException('檔案上傳已中止'));
     }
   }).toJS;
-  onProgress?.call(0, bytes.length);
-  request.send(bytes.toJS);
+  onProgress?.call(0, length);
+  request.send(body);
   return done.future;
 }

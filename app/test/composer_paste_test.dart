@@ -80,6 +80,24 @@ class _Client extends BridgeClient {
   onUpload;
 
   @override
+  Future<Map<String, dynamic>> uploadPickedFile(
+    String sessionId,
+    XFile file, {
+    UploadProgressCallback? onProgress,
+  }) async {
+    final data = <int>[];
+    await for (final chunk in file.openRead()) {
+      data.addAll(chunk);
+    }
+    return uploadFile(
+      sessionId,
+      file.name,
+      Uint8List.fromList(data),
+      onProgress: onProgress,
+    );
+  }
+
+  @override
   Future<Map<String, dynamic>> uploadFile(
     String sessionId,
     String name,
@@ -358,7 +376,7 @@ void main() {
       expect(find.byTooltip('附加檔案或圖片'), findsOneWidget);
       await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
-      expect(find.text('選擇檔案（20 MiB 上限）'), findsOneWidget);
+      expect(find.text('選擇檔案（512 MiB 上限）'), findsOneWidget);
       expect(find.text('從相簿選擇'), findsNothing);
       expect(find.text('貼上剪貼簿圖片'), findsNothing);
       expect(tester.takeException(), isNull);
@@ -436,7 +454,7 @@ void main() {
       await tester.enterText(_input, 'Read the attached file');
       await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
       await tester.pumpAndSettle();
       expect(h.client.uploads.single.sessionId, 'codex:one');
       expect(h.client.uploads.single.name, '資料.txt');
@@ -486,7 +504,7 @@ void main() {
       await tester.enterText(_input, 'Read this');
       await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
       await tester.pumpAndSettle();
       progress!(bytes.length * 2 ~/ 5, bytes.length);
       await tester.pump();
@@ -548,7 +566,7 @@ void main() {
       };
       await tester.tap(find.byTooltip('附加檔案或圖片'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+      await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
       await tester.pumpAndSettle();
       expect(h.client.uploads.map((u) => u.name), ['first.txt', 'second.wav']);
       expect(find.text('2/2'), findsOneWidget);
@@ -585,7 +603,7 @@ void main() {
     };
     await tester.tap(find.byTooltip('附加檔案或圖片'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+    await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
     await tester.pumpAndSettle();
     expect(find.text('10%'), findsOneWidget);
     final other = SessionController(h.client, 'codex:two');
@@ -622,7 +640,7 @@ void main() {
     await tester.enterText(_input, 'Keep this draft');
     await tester.tap(find.byTooltip('附加檔案或圖片'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('選擇檔案（20 MiB 上限）'));
+    await tester.tap(find.text('選擇檔案（512 MiB 上限）'));
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('送出'));
     await tester.pumpAndSettle();

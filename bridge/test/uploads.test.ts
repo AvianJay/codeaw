@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import http from "node:http";
+import { once } from "node:events";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { PathGuard } from "../src/server/ext.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
+import { MAX_UPLOAD_BYTES } from "../src/server/uploads.js";
 
 let bridge: TestBridge | undefined;
 let client: TestClient | undefined;
@@ -27,7 +30,50 @@ it("uploads authenticated binary bytes into a known session and sends the attach
   await client.request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "echo file" }, result.block] });
   expect(client.updates(session.sessionId).some((p) => p.update.content?.uri === result.block.uri)).toBe(true);
   expect((await fetch(url.replace(encodeURIComponent("中文.bin"), "..%2Fescape"), { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: bytes })).status).toBe(400);
-  expect((await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: Buffer.alloc(20 * 1024 * 1024 + 1) })).status).toBe(413);
+  const rejected = http.request(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Length": MAX_UPLOAD_BYTES + 1 } });
+  rejected.end();
+  const [oversized] = await once(rejected, "response") as [http.IncomingMessage];
+  expect(oversized.statusCode).toBe(413);
+  oversized.resume();
+});
+
+it("streams a file larger than the old limit to disk and removes an interrupted upload", async () => {
+  bridge = await startTestBridge();
+  const token = bridge.tokenFor("large-upload-phone");
+  client = await TestClient.connect(bridge.url, token);
+  const session = await client.request("session/new", { cwd: bridge.home, mcpServers: [] });
+  const url = `${bridge.http}/api/uploads?sessionId=${encodeURIComponent(session.sessionId)}&name=large.bin`;
+  const chunk = Buffer.alloc(64 * 1024, 0xab);
+  const count = 384; // 24 MiB, beyond the former 20 MiB cap.
+  const hash = createHash("sha256");
+  const upload = http.request(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Length": chunk.length * count } });
+  const response = once(upload, "response") as Promise<[http.IncomingMessage]>;
+  for (let i = 0; i < count; i++) {
+    hash.update(chunk);
+    if (!upload.write(chunk)) await once(upload, "drain");
+  }
+  upload.end();
+  const [received] = await response;
+  expect(received.statusCode).toBe(201);
+  let body = "";
+  for await (const data of received) body += data;
+  const result = JSON.parse(body);
+  expect(result.size).toBe(chunk.length * count);
+  expect(fs.statSync(result.path).size).toBe(result.size);
+  expect(result.sha256).toBe(hash.digest("hex"));
+  const storedHash = createHash("sha256");
+  for await (const data of fs.createReadStream(result.path)) storedHash.update(data);
+  expect(storedHash.digest("hex")).toBe(result.sha256);
+
+  const broken = http.request(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Length": chunk.length * 10 } });
+  broken.on("error", () => {});
+  broken.write(chunk);
+  const folder = path.join(bridge.home, ".codeaw-uploads");
+  for (let i = 0; i < 100 && fs.readdirSync(folder).length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(fs.readdirSync(folder)).toHaveLength(2);
+  broken.destroy();
+  for (let i = 0; i < 100 && fs.readdirSync(folder).length > 1; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(fs.readdirSync(folder)).toEqual([path.basename(result.path)]);
 });
 
 it("requires opt-in for paths outside workspaces and rejects missing cwd before agent creation", async () => {

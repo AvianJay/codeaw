@@ -22,7 +22,7 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
-| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload attachment bytes, at most 20 MiB | Bearer |
+| `POST /api/uploads?sessionId=<id>&name=<filename>` | upload attachment bytes, at most 512 MiB | Bearer |
 
 The server pings every 20 s and drops sockets that miss two pongs. Clients
 should also ping and reconnect with exponential backoff.
@@ -421,7 +421,7 @@ provider's value. Quota colors reflect remaining amount: green >=50, amber
 
 `POST /api/uploads?sessionId=<qualified-id>&name=<encoded-filename>` accepts raw
 bytes with `Content-Type: application/octet-stream` and the same Bearer auth as
-ACP. A known session cwd is required. Maximum size is 20 MiB per file; invalid
+ACP. A known session cwd is required. Maximum size is 512 MiB per file; invalid
 names, oversized bodies and upload directory links are rejected. Bytes are
 saved to a unique filename in `<cwd>/.codeaw-uploads/` without overwriting files.
 Success returns HTTP 201 with `{name, path, size, sha256, block}`. `block` is an
@@ -429,12 +429,17 @@ ACP `resource_link` with a `file:` URI and local path description; include it in
 `session/prompt`. Errors return `{error}` with 400/401/403/413 as appropriate.
 Files persist on the PC until explicitly removed.
 
+The bridge writes and hashes bounded chunks directly to disk and removes its
+new file if transfer/write fails. Native pickers stream the source file; Web
+pickers submit their browser Blob without creating a whole-file Dart byte copy.
+The request deadline is one hour, with a two-minute idle timeout on the bridge.
+
 Clients can report bytes handed to the upload transport while the request is
 in flight. Reaching 100% is not a storage acknowledgement: only the HTTP 201
 response confirms success. Until then, clients keep the upload pending and do
 not attach its resource or send a prompt referencing it. Native clients flush
 bounded chunks with transport backpressure; Web clients use XMLHttpRequest
-upload progress events. Both retain the two-minute request timeout.
+upload progress events. Both allow up to one hour for an active transfer.
 
 ### Interactive terminals
 
