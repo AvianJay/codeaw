@@ -63,7 +63,7 @@ class _SessionsPageState extends State<SessionsPage> {
               (s) =>
                   (_agentFilter == null || s.agentId == _agentFilter) &&
                   (_query.isEmpty ||
-                      '${s.displayTitle} ${s.cwd} ${client.agent(s.agentId)?.name}'
+                      '${s.displayTitle} ${s.displayLocation} ${s.cwd} ${client.agent(s.agentId)?.name}'
                           .toLowerCase()
                           .contains(_query)),
             )
@@ -450,7 +450,7 @@ class _SessionTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              '${folderName(s.cwd)} · ${timeAgo(s.updatedAt)}${s.known ? '' : ' · 電腦上的對話'}',
+              '${s.displayLocation} · ${timeAgo(s.updatedAt)}${s.known ? '' : ' · 電腦上的對話'}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(

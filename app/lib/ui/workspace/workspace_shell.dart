@@ -196,7 +196,7 @@ class WorkspaceHome extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  '從左側選擇對話，或在電腦上的專案建立新對話。',
+                          '從左側選擇對話，或建立專案／無專案聊天。',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: scheme.onSurfaceVariant, height: 1.6),
                 ),

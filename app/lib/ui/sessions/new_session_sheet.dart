@@ -26,6 +26,7 @@ class _NewSessionSheet extends StatefulWidget {
 class _NewSessionSheetState extends State<_NewSessionSheet> {
   String? _agentId;
   String? _cwd;
+  bool _projectless = false;
   List<({String path, String source})> _roots = [];
   bool _busy = false;
   String? _error;
@@ -45,7 +46,9 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
     final state = AppScope.read(context);
     final recent = <String>[];
     for (final s in state.sessions?.sessions ?? const <SessionSummary>[]) {
-      if (s.cwd.isNotEmpty && !recent.contains(s.cwd)) recent.add(s.cwd);
+      if (!s.projectless && s.cwd.isNotEmpty && !recent.contains(s.cwd)) {
+        recent.add(s.cwd);
+      }
       if (recent.length >= 8) break;
     }
     final roots = [for (final r in recent) (path: r, source: 'recent')];
@@ -54,7 +57,8 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
           await state.client!.request('_codeaw/workspaces/list')
               as Map<String, dynamic>;
       for (final w in (r['roots'] as List? ?? const []).whereType<Map>()) {
-        if ((w['source'] == 'config' || w['source'] == 'filesystem') && !roots.any((x) => x.path == w['path'])) {
+        if ((w['source'] == 'config' || w['source'] == 'filesystem') &&
+            !roots.any((x) => x.path == w['path'])) {
           roots.add((path: '${w['path']}', source: 'workspace'));
         }
       }
@@ -104,8 +108,13 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
   Future<void> _start() async {
     final state = AppScope.read(context);
     final client = state.client!;
-    final cwd = _cwd;
-    if (_agentId == null || cwd == null) return;
+    final projectless = _projectless;
+    final cwd = projectless ? '' : _cwd;
+    if (_agentId == null ||
+        cwd == null ||
+        (projectless && !client.supportsProjectless)) {
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -116,18 +125,22 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 'cwd': cwd,
                 'mcpServers': const [],
                 '_meta': {
-                  'codeaw': {'agentId': _agentId},
+                  'codeaw': {
+                    'agentId': _agentId,
+                    if (projectless) 'projectless': true,
+                  },
                 },
               })
               as Map<String, dynamic>;
       final id = resp['sessionId'] as String;
-      state.hub!.adopt(id, cwd, resp);
+      final controller = state.hub!.adopt(id, cwd, resp);
       await state.sessions?.refresh();
       if (!mounted) return;
       final router = GoRouter.of(context);
       final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
       Navigator.of(context).pop();
-      final route = '${sessionRoute(id)}&cwd=${Uri.encodeQueryComponent(cwd)}';
+      final route =
+          '${sessionRoute(id)}&cwd=${Uri.encodeQueryComponent(controller.cwd)}';
       if (wide) {
         router.go(route);
       } else {
@@ -186,64 +199,99 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 ),
               ),
             const SizedBox(height: 20),
-            Text('資料夾', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 4),
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260),
-              child: RadioGroup<String>(
-                groupValue: _cwd,
-                onChanged: (v) => setState(() => _cwd = v),
-                child: ListView(
-                  shrinkWrap: true,
-                  children: [
-                    for (final r in _roots)
-                      RadioListTile<String>(
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                        value: r.path,
-                        title: Text(folderName(r.path)),
-                        subtitle: Text(
-                          r.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11.5),
-                        ),
-                        secondary: Icon(
-                          r.source == 'recent'
-                              ? Icons.history_rounded
-                              : Icons.folder_special_outlined,
-                          size: 20,
-                        ),
-                      ),
-                    if (_cwd != null && !_roots.any((r) => r.path == _cwd))
-                      RadioListTile<String>(
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                        value: _cwd!,
-                        title: Text(folderName(_cwd!)),
-                        subtitle: Text(
-                          _cwd!,
-                          style: const TextStyle(fontSize: 11.5),
-                        ),
-                      ),
-                  ],
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.folder_outlined),
+                  label: Text('專案'),
                 ),
-              ),
-            ),
-            Row(
-              children: [
-                TextButton.icon(
-                  onPressed: _browse,
-                  icon: const Icon(Icons.folder_open_rounded, size: 18),
-                  label: const Text('瀏覽…'),
-                ),
-                TextButton.icon(
-                  onPressed: _manual,
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: const Text('輸入路徑'),
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.chat_bubble_outline_rounded),
+                  label: Text('無專案聊天'),
                 ),
               ],
+              selected: {_projectless},
+              onSelectionChanged: _busy
+                  ? null
+                  : (selection) => setState(() {
+                      _projectless = selection.single;
+                      _error = null;
+                    }),
             ),
+            const SizedBox(height: 12),
+            if (_projectless)
+              Text(
+                state.client?.supportsProjectless == true
+                    ? '直接聊天，不用選資料夾。附件和產生的檔案會保存在電腦上這個聊天的獨立資料夾。'
+                    : '請先更新電腦上的 bridge，才能使用無專案聊天。',
+                style: TextStyle(
+                  color: state.client?.supportsProjectless == true
+                      ? scheme.onSurfaceVariant
+                      : scheme.error,
+                ),
+              ),
+            if (!_projectless) ...[
+              Text('資料夾', style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(height: 4),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: RadioGroup<String>(
+                  groupValue: _cwd,
+                  onChanged: (v) => setState(() => _cwd = v),
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: [
+                      for (final r in _roots)
+                        RadioListTile<String>(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: r.path,
+                          title: Text(folderName(r.path)),
+                          subtitle: Text(
+                            r.path,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 11.5),
+                          ),
+                          secondary: Icon(
+                            r.source == 'recent'
+                                ? Icons.history_rounded
+                                : Icons.folder_special_outlined,
+                            size: 20,
+                          ),
+                        ),
+                      if (_cwd != null && !_roots.any((r) => r.path == _cwd))
+                        RadioListTile<String>(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          value: _cwd!,
+                          title: Text(folderName(_cwd!)),
+                          subtitle: Text(
+                            _cwd!,
+                            style: const TextStyle(fontSize: 11.5),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  TextButton.icon(
+                    onPressed: _browse,
+                    icon: const Icon(Icons.folder_open_rounded, size: 18),
+                    label: const Text('瀏覽…'),
+                  ),
+                  TextButton.icon(
+                    onPressed: _manual,
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    label: const Text('輸入路徑'),
+                  ),
+                ],
+              ),
+            ],
             if (_error != null)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
@@ -251,7 +299,13 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
               ),
             const SizedBox(height: 12),
             FilledButton(
-              onPressed: _busy || _agentId == null || _cwd == null
+              onPressed:
+                  _busy ||
+                      _agentId == null ||
+                      state.client?.isOnline != true ||
+                      (_projectless
+                          ? state.client?.supportsProjectless != true
+                          : _cwd == null)
                   ? null
                   : _start,
               style: FilledButton.styleFrom(
@@ -342,10 +396,12 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
             IconButton(
               tooltip: '新增資料夾',
               icon: const Icon(Icons.create_new_folder_outlined),
-              onPressed: _loading ? null : () async {
-                final path = await showCreateFolder(context, _path!);
-                if (path != null && mounted) await _open(path);
-              },
+              onPressed: _loading
+                  ? null
+                  : () async {
+                      final path = await showCreateFolder(context, _path!);
+                      if (path != null && mounted) await _open(path);
+                    },
             ),
           if (_path != null)
             TextButton(
@@ -370,7 +426,12 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
                   ),
                 if (_path == null) ...[
                   if (!_allowAllPaths)
-                    const Padding(padding: EdgeInsets.all(16), child: Text('要瀏覽其他磁碟，請在電腦 bridge 設定啟用「允許已配對裝置瀏覽所有磁碟與資料夾」。這會讓所有已配對裝置存取此帳號可讀取的檔案；僅在信任配對裝置時啟用。')),
+                    const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Text(
+                        '要瀏覽其他磁碟，請在電腦 bridge 設定啟用「允許已配對裝置瀏覽所有磁碟與資料夾」。這會讓所有已配對裝置存取此帳號可讀取的檔案；僅在信任配對裝置時啟用。',
+                      ),
+                    ),
                   if (_roots.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(16),

@@ -7,6 +7,7 @@ import { logger } from "../util/log.js";
 import { createDirectory, gitDiff, gitStatus, listDir, readFile, searchFiles, type PathGuard } from "./ext.js";
 import type { TerminalManager } from "../terminal/manager.js";
 import { CpaUsageService } from "./cpa.js";
+import { codeawMeta } from "../session/types.js";
 
 const log = logger("client");
 
@@ -61,7 +62,10 @@ export class FrontendConnection implements ClientHandle {
         return manager.initializeResponse();
       })
       .onRequest("authenticate", () => ({}))
-      .onRequest("session/new", (ctx) => this.flushed(manager.newSession(this, { ...bind(ctx).params, cwd: deps.guard.directory(ctx.params.cwd) })))
+      .onRequest("session/new", (ctx) => this.flushed(manager.newSession(this, {
+        ...bind(ctx).params,
+        cwd: codeawMeta(ctx.params).projectless === true ? "" : deps.guard.directory(ctx.params.cwd),
+      })))
       .onRequest("session/load", (ctx) => this.flushed(manager.loadSession(this, bind(ctx).params)))
       .onRequest("session/resume", (ctx) => this.flushed(manager.resumeSession(this, bind(ctx).params)))
       .onRequest("session/list", (ctx) => manager.listSessions(this, bind(ctx).params))

@@ -12,6 +12,7 @@ const log = logger("store");
  *   sessions/<safe id>/meta.json     SessionMeta
  *   sessions/<safe id>/events.jsonl  one LogEntry per line, append-only
  *   blobs/<sha256>                   image bytes, blobs/<sha256>.mime holds the MIME type
+ *   chats/<uuid>/                    working files for a projectless conversation
  */
 export class SessionStore {
   private readonly sessionsDir: string;
@@ -44,6 +45,20 @@ export class SessionStore {
       if (meta?.id) out.push(meta);
     }
     return out;
+  }
+
+  createChatDirectory(): string {
+    const root = path.resolve(this.dataDir, "chats");
+    fs.mkdirSync(root, { recursive: true });
+    const cwd = path.join(root, crypto.randomUUID());
+    fs.mkdirSync(cwd);
+    return cwd;
+  }
+
+  /** Creation failed: remove only our empty allocation, never agent-created files. */
+  discardEmptyChatDirectory(cwd: string): void {
+    if (path.dirname(cwd) !== path.resolve(this.dataDir, "chats") || !/^[0-9a-f-]{36}$/.test(path.basename(cwd))) return;
+    try { fs.rmdirSync(cwd); } catch { /* Preserve nonempty directories. */ }
   }
 
   readEntries(id: string): LogEntry[] {

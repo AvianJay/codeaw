@@ -39,11 +39,13 @@ class SessionSummary {
     this.pending = 0,
     this.queued = 0,
     this.known = false,
+    this.projectless = false,
   });
 
   final String id;
   final String agentId;
   final String cwd;
+  final bool projectless;
   String? title;
   DateTime? updatedAt;
   String state;
@@ -64,10 +66,12 @@ class SessionSummary {
       pending: (m['pending'] as num?)?.toInt() ?? 0,
       queued: (m['queued'] as num?)?.toInt() ?? 0,
       known: m['known'] == true,
+      projectless: m['projectless'] == true,
     );
   }
 
-  String get displayTitle => (title?.trim().isNotEmpty ?? false) ? title!.trim() : folderName(cwd);
+  String get displayLocation => projectless ? '無專案' : folderName(cwd);
+  String get displayTitle => (title?.trim().isNotEmpty ?? false) ? title!.trim() : displayLocation;
 }
 
 String folderName(String path) {

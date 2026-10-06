@@ -9,6 +9,7 @@ import { logger } from "../util/log.js";
 const log = logger("live-activity");
 export interface ActivitySnapshot {
   sessionId: string; agentId: string; title?: string; state: TurnState;
+  projectless?: boolean;
   turnPromptId?: string; turnStartedAt?: number; completedTurn?: CompletedTurn; work: WorkStatus;
 }
 export interface ActivityContent {

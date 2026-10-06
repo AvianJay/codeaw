@@ -75,6 +75,7 @@ The response is a normal `InitializeResponse` with
 "_meta": { "codeaw": {
   "version": 1,
   "host": "my-pc",
+  "projectless": true,                // supports managed no-project conversations
   "agents": [ AgentInfo, ... ]
 }}
 ```
@@ -101,12 +102,26 @@ agent) plus
 ```jsonc
 "_meta": { "codeaw": {
   "agentId": "claude",                       // required unless only one agent is configured
+  "projectless": true,                        // optional: no selected project; cwd may be ""
   "initialConfig": { "mode": "default" }     // optional: set_config_option calls applied right after creation
 }}
 ```
 
 Response: the agent's `NewSessionResponse` with `sessionId` rewritten and
-`models` removed, plus `_meta.codeaw = { agentId, lastSeq, epoch }`.
+`models` removed, plus `_meta.codeaw = { agentId, lastSeq, epoch, cwd, projectless }`.
+
+When `projectless: true`, the bridge ignores the supplied `cwd` and
+`additionalDirectories`, creates a unique persistent `<dataDir>/chats/<uuid>/`
+directory, and uses it as the agent's cwd. Attachments remain under that chat's
+`.codeaw-uploads/`. It works with no configured workspaces and without enabling
+`filesystem.allowAllPaths`. Each chat gets a distinct folder; normal project
+creation still requires an existing allowed directory. New/load/resume/list
+responses retain `_meta.codeaw.projectless`, and activity notifications carry
+`projectless` with `work.project: "無專案"`. Clients should display this label
+instead of the generated folder name and omit these folders from recent project
+suggestions. Check `initialize._meta.codeaw.projectless` before offering creation
+against an older bridge. Failed creation removes only an empty allocated folder;
+deleting session history preserves working files. This is not an agent sandbox.
 
 ### `session/load` (attach + replay)
 
@@ -397,7 +412,7 @@ out on the bridge.
 | `_codeaw/cpa/accounts` | `{endpoint, managementKey}` | `{accounts: CpaAccount[], checkedAt}` |
 | `_codeaw/cpa/quota` | `{endpoint, managementKey, accountId}` | `CpaQuota` |
 
-File-system methods and `session/new` only accept paths inside the configured
+File-system methods and project-based `session/new` only accept paths inside the configured
 workspaces or a known session `cwd`, unless the PC administrator opts into
 `filesystem.allowAllPaths: true`. The opt-in adds existing Windows drive roots
 (or `/` on POSIX) and allows all absolute paths accessible to the bridge account.

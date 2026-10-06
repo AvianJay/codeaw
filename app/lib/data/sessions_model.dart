@@ -73,6 +73,7 @@ class SessionsModel extends ChangeNotifier {
                       'pending': s.pending,
                       'queued': s.queued,
                       'known': s.known,
+                      'projectless': s.projectless,
                     },
                   },
                 },

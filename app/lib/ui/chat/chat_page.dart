@@ -5,7 +5,6 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
-import '../../data/models.dart';
 import '../../data/session_controller.dart';
 import '../../data/timeline.dart';
 import '../../data/tool_display.dart';
@@ -59,8 +58,9 @@ class _ChatPageState extends State<ChatPage> {
     _c = null;
     final hub = state.hub;
     if (hub == null || widget.sessionId.isEmpty) return;
-    final cwd = widget.cwd ?? state.sessions?.byId(widget.sessionId)?.cwd;
-    _c = hub.open(widget.sessionId, cwd: cwd);
+    final summary = state.sessions?.byId(widget.sessionId);
+    final cwd = widget.cwd ?? summary?.cwd;
+    _c = hub.open(widget.sessionId, cwd: cwd, projectless: summary?.projectless);
     _toasts = _c!.toasts.listen((msg) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -86,7 +86,7 @@ class _ChatPageState extends State<ChatPage> {
       builder: (context, _) {
         final quotaConfigured = state.cpa?.settings != null;
         final summary = state.sessions?.byId(c.sessionId);
-        final title = c.timeline.title ?? summary?.title ?? folderName(c.cwd);
+        final title = c.timeline.title ?? summary?.title ?? c.displayLocation;
         final agentName = c.agent?.name ?? c.agentId;
         return LayoutBuilder(
           builder: (context, constraints) {
@@ -115,7 +115,7 @@ class _ChatPageState extends State<ChatPage> {
                 titleSpacing: useWideLayout(context) ? 20 : 0,
                 title: ChatHeaderTitle(
                   title: title,
-                  subtitle: '$agentName · ${folderName(c.cwd)}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
+                  subtitle: '$agentName · ${c.displayLocation}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
                   agentId: c.agentId,
                   agentName: agentName,
                   usage: state.cpa,
@@ -151,7 +151,7 @@ class _ChatPageState extends State<ChatPage> {
                     icon: const Icon(Icons.folder_outlined),
                     onPressed: c.cwd.isEmpty ? null : () => context.push('/files?path=${Uri.encodeQueryComponent(c.cwd)}'),
                   ),
-                  if (!compact)
+                  if (!compact && !c.projectless)
                     IconButton(
                       tooltip: 'Git 變更',
                       icon: const Icon(Icons.difference_outlined),
@@ -187,7 +187,7 @@ class _ChatPageState extends State<ChatPage> {
                       if (subagentCount > 0 && quotaConfigured && constraints.maxWidth < 430) const PopupMenuItem(value: 'subagents', child: Text('所有子代理')),
                       if (quotaConfigured && constraints.maxWidth < 360) PopupMenuItem(value: 'files', enabled: c.cwd.isNotEmpty, child: const Text('檔案')),
                       if (compact) PopupMenuItem(value: 'terminal', enabled: c.cwd.isNotEmpty, child: const Text('終端機')),
-                      if (compact) PopupMenuItem(value: 'git', enabled: c.cwd.isNotEmpty, child: const Text('Git 變更')),
+                      if (compact && !c.projectless) PopupMenuItem(value: 'git', enabled: c.cwd.isNotEmpty, child: const Text('Git 變更')),
                       const PopupMenuItem(value: 'reimport', child: Text('從電腦重新載入歷史')),
                       PopupMenuItem(value: 'close', child: Text(c.desktopSync ? '停止桌面同步' : '釋放 agent 資源')),
                       PopupMenuItem(value: 'copy', child: Text('複製 session id')),

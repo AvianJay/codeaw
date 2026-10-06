@@ -239,7 +239,7 @@ export class SessionManager implements AgentHandlers {
       },
       agentInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
       authMethods: [],
-      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe() } },
+      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true } },
     };
   }
 
@@ -590,13 +590,15 @@ export class SessionManager implements AgentHandlers {
     const native = s.desktop?.turnId ? s.desktop : undefined;
     const disconnected = native?.connected === false;
     const state = disconnected ? "running" : s.state;
+    const work = s.work.view(s.meta.cwd, state, native?.turnId, s.stopReason);
+    if (s.meta.projectless) work.project = "無專案";
     return {
       sessionId: s.id, agentId: s.meta.agentId, title: s.meta.title,
+      projectless: s.meta.projectless === true,
       state, turnPromptId: native?.turnId ?? s.turn?.promptId,
       turnStartedAt: native?.startedAt ?? s.turn?.startedAt,
       completedTurn: state === "idle" ? s.completedTurn : undefined,
-      work: disconnected ? { project: s.work.view(s.meta.cwd, "running").project, phase: "disconnected", summary: "桌面連線中斷，等待重新同步", updatedAt: Date.now() }
-        : s.work.view(s.meta.cwd, state, native?.turnId, s.stopReason),
+      work: disconnected ? { project: work.project, phase: "disconnected", summary: "桌面連線中斷，等待重新同步", updatedAt: Date.now() } : work,
     };
   }
 
@@ -709,6 +711,7 @@ export class SessionManager implements AgentHandlers {
           ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: s.desktop?.connected === true } : {}),
           title: s.meta.title,
           cwd: s.meta.cwd,
+          projectless: s.meta.projectless === true,
         },
       },
     };
@@ -868,12 +871,21 @@ export class SessionManager implements AgentHandlers {
     if (!agentId) throw acp.RequestError.invalidParams(undefined, "_meta.codeaw.agentId is required");
     const agent = this.requireAgent(agentId);
     await agent.ensureStarted();
-    const req: Record<string, unknown> = { cwd: params.cwd, mcpServers: [] };
-    if (params.additionalDirectories?.length && agent.capabilities?.sessionCapabilities?.additionalDirectories) {
+    const projectless = m.projectless === true;
+    const cwd = projectless ? this.store.createChatDirectory() : params.cwd;
+    const req: Record<string, unknown> = { cwd, mcpServers: [] };
+    if (!projectless && params.additionalDirectories?.length && agent.capabilities?.sessionCapabilities?.additionalDirectories) {
       req.additionalDirectories = params.additionalDirectories;
     }
-    const resp = await agent.request<any>("session/new", req);
-    const s = this.createSession({ id: extId(agentId, resp.sessionId), agentId, backendId: resp.sessionId, cwd: params.cwd, origin: "bridge" });
+    let resp: any;
+    let s: BridgeSession;
+    try {
+      resp = await agent.request<any>("session/new", req);
+      s = this.createSession({ id: extId(agentId, resp.sessionId), agentId, backendId: resp.sessionId, cwd, ...(projectless ? { projectless: true } : {}), origin: "bridge" });
+    } catch (error) {
+      if (projectless) this.store.discardEmptyChatDirectory(cwd);
+      throw error;
+    }
     s.backendGen = agent.generation;
     this.applySetup(s, resp);
     this.flushOrphans(s);
@@ -983,6 +995,7 @@ export class SessionManager implements AgentHandlers {
             queued: s?.queue.length ?? 0,
             lastSeq: meta?.lastSeq ?? 0,
             known: !!meta,
+            projectless: meta?.projectless === true,
             ...(meta?.connection === "desktop" ? { connection: "desktop", desktopConnected: s?.desktop?.connected === true } : {}),
           },
         },
