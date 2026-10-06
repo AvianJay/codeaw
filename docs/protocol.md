@@ -246,8 +246,16 @@ Agents that failed to list are reported in `_meta.codeaw.errors: [{agentId, mess
 ### `session/close`, `session/delete`
 
 `close` releases the agent-side session (the bridge keeps the log; the session
-can be reopened). `delete` deletes it on the agent (if supported) and removes
-the bridge log.
+can be reopened). `delete` removes the bridge log and persists a deletion marker,
+so retained agent histories cannot reappear through listing or loading after
+reconnect/restart. For ordinary sessions it also attempts agent-side deletion
+when supported. Desktop-linked sessions are only detached and removed from
+Codeaw; the desktop conversation remains. Project directories and uploads are
+preserved. Busy sessions (running turns, pending requests or queued messages)
+reject deletion rather than cancelling work. Successful deletion broadcasts
+`_codeaw/activity {sessionId, agentId, deleted: true}` to paired clients, which
+remove the session list entry and persisted timeline/cache. Repeated deletion
+is idempotent. The App requires explicit confirmation before sending it.
 
 ## Event log and replay
 

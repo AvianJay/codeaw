@@ -94,6 +94,7 @@ class SessionController extends ChangeNotifier {
   Timer? _flushTimer;
   StreamSubscription<void>? _connSub;
   bool _disposed = false;
+  bool _historyDeleted = false;
 
   bool get running => timeline.running;
 
@@ -317,6 +318,7 @@ class SessionController extends ChangeNotifier {
   }
 
   void _scheduleSave() {
+    if (_disposed || _historyDeleted) return;
     _cacheRevision++;
     _saveTimer ??= Timer(const Duration(seconds: 2), () {
       _saveTimer = null;
@@ -328,7 +330,7 @@ class SessionController extends ChangeNotifier {
   Future<void> persist() async {
     _saveTimer?.cancel();
     _saveTimer = null;
-    if (_replayingFull || epoch == null || _savedRevision == _cacheRevision) {
+    if (_historyDeleted || _replayingFull || epoch == null || _savedRevision == _cacheRevision) {
       return;
     }
     _savedRevision = _cacheRevision;
@@ -635,9 +637,7 @@ class SessionHub {
     _activitySub = client.activity.listen((event) {
       if (event['deleted'] == true && event['sessionId'] is String) {
         final id = event['sessionId'] as String;
-        _controllers.remove(id)?.dispose();
-        _lru.remove(id);
-        unawaited(this.cache.remove(id));
+        unawaited(forget(id));
       }
     });
   }
@@ -672,6 +672,16 @@ class SessionHub {
   }
 
   SessionController? peek(String sessionId) => _controllers[sessionId];
+
+  Future<void> forget(String id) async {
+    final controller = _controllers.remove(id);
+    if (controller != null) {
+      controller._historyDeleted = true;
+      controller.dispose();
+    }
+    _lru.remove(id);
+    await cache.remove(id);
+  }
 
   /// A controller for a session just created through `session/new` (already attached).
   SessionController adopt(

@@ -9,6 +9,7 @@ import '../common/adaptive.dart';
 import '../common/widgets.dart';
 import 'host_sheet.dart';
 import 'new_session_sheet.dart';
+import 'delete_chat.dart';
 
 class SessionsPage extends StatefulWidget {
   const SessionsPage({
@@ -373,6 +374,12 @@ class _SessionsPageState extends State<SessionsPage> {
     s,
     compact: widget.sidebar,
     selected: s.id == widget.selectedSessionId,
+    onDelete: _client?.isOnline == true && s.state == 'idle' && s.pending == 0 && s.queued == 0 && AppScope.read(context).sessions?.isDeleting(s.id) != true
+        ? () async {
+            final deleted = await confirmDeleteChat(context, sessionId: s.id, title: s.displayTitle, desktopSync: s.desktopSync);
+            if (deleted && mounted && widget.selectedSessionId == s.id) GoRouter.of(context).go('/');
+          }
+        : null,
     onTap: () {
       final router = GoRouter.of(context);
       final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
@@ -410,11 +417,13 @@ class _SessionTile extends StatelessWidget {
     required this.compact,
     required this.selected,
     required this.onTap,
+    this.onDelete,
   });
   final SessionSummary s;
   final bool compact;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -462,7 +471,13 @@ class _SessionTile extends StatelessWidget {
               Padding(padding: const EdgeInsets.only(top: 4), child: badge),
           ],
         ),
-        trailing: compact ? null : badge,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!compact) badge,
+            IconButton(tooltip: '刪除聊天', icon: const Icon(Icons.delete_outline_rounded), onPressed: onDelete),
+          ],
+        ),
         onTap: onTap,
       ),
     );

@@ -274,6 +274,20 @@ describe("Codex desktop synchronization", () => {
     await load(a); expect(a.events(nativeId, "state").at(-1)?.event.desktopConnected).toBe(true);
   });
 
+  it("removes an idle desktop-linked chat from Codeaw without deleting or interrupting its desktop owner", async () => {
+    const { a, desktop } = await setup(); await load(a);
+    desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
+    await expect(a.request("session/delete", { sessionId: nativeId })).rejects.toThrow(/busy/);
+    expect(desktop.requests.filter(r => r.method === "thread-follower-interrupt-turn")).toHaveLength(0);
+    desktop.finish(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "idle");
+    const history = structuredClone(desktop.conversation.turns);
+    await a.request("session/delete", { sessionId: nativeId });
+    expect(desktop.conversation.turns).toEqual(history);
+    expect(desktop.requests.filter(r => r.method === "thread-follower-interrupt-turn")).toHaveLength(0);
+    expect((await a.request("session/list", {})).sessions.some((s: any) => s.sessionId === nativeId)).toBe(false);
+    await expect(load(a)).rejects.toThrow(/deleted/);
+  });
+
   it("recovers a lost IPC connection without starting another runtime or duplicating transcript text", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); desktop.text("before");

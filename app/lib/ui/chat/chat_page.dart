@@ -17,6 +17,7 @@ import 'items.dart';
 import 'subagent_panel.dart';
 import 'working_indicator.dart';
 import 'scroll_to_latest.dart';
+import '../sessions/delete_chat.dart';
 
 const _chatContentWidth = 960.0;
 
@@ -199,6 +200,8 @@ class _ChatPageState extends State<ChatPage> {
                           }
                         case 'copy':
                           await Clipboard.setData(ClipboardData(text: c.sessionId.substring(c.sessionId.indexOf(':') + 1)));
+                        case 'delete':
+                          if (await confirmDeleteChat(context, sessionId: c.sessionId, title: title, desktopSync: c.desktopSync) && context.mounted) context.go('/');
                       }
                     },
                     itemBuilder: (_) => [
@@ -210,6 +213,7 @@ class _ChatPageState extends State<ChatPage> {
                       const PopupMenuItem(value: 'reimport', child: Text('從電腦重新載入歷史')),
                       PopupMenuItem(value: 'close', child: Text(c.desktopSync ? '停止桌面同步' : '釋放 agent 資源')),
                       PopupMenuItem(value: 'copy', child: Text('複製 session id')),
+                      PopupMenuItem(value: 'delete', enabled: c.client.isOnline && !c.loading && !c.running && c.pending.isEmpty && c.timeline.queued == 0, child: const Text('刪除聊天')),
                     ],
                   ),
                 ],
