@@ -199,11 +199,19 @@ cache entries may be evicted. Image/file references are retained, but fetching
 their bytes and deferred tool output requires the bridge. Forgetting a pairing or
 the Settings cache control removes its local cache; bridge history is unaffected.
 
-The WebSocket server negotiates `permessage-deflate` with native and browser
-clients. Context takeover is disabled in both directions, compression concurrency
+On runtimes that support it, the WebSocket server negotiates `permessage-deflate`
+with native and browser clients. Context takeover is disabled in both directions, compression concurrency
 is bounded, and messages smaller than 1 KiB stay uncompressed. Clients that do not
 offer compression continue to work. Compression does not change sequence numbers,
 the JSON protocol or durable history, and images/files use separate HTTP requests.
+
+Codeaw App also opts into `?codeawCompression=gzip` on `/acp`. The bridge sends
+JSON messages of at least 1 KiB as binary gzip frames when this reduces their
+size; smaller/incompressible messages stay text. App clients decode either form
+before JSON-RPC handling. This works in packaged Bun runtimes whose `ws` server
+shim does not implement permessage-deflate. Without the query, clients retain
+ordinary ACP text frames. Older bridges ignore the query and still send text.
+Gzip frames disable additional WebSocket compression to avoid double compression.
 
 Desktop turns can start outside codeaw, so state events may refer to native
 turn ids. Desktop-origin messages are echoed from the desktop stream rather

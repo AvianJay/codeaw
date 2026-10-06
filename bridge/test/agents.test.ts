@@ -134,7 +134,8 @@ describe("agent installation", () => {
     // Hardlinks can be created without Windows developer mode or elevation.
     fs.linkSync(path.join(root, "agent"), path.join(root, "link"));
     const links = path.join(root, "links.tar.gz");
-    await tar.c({ file: links, gzip: true, cwd: root }, ["agent", "link"]);
+    // tar's async hardlink pack can finish gzip twice; build this fixture synchronously.
+    tar.c({ file: links, gzip: true, cwd: root, sync: true }, ["agent", "link"]);
     const other = path.join(root, "other"); fs.mkdirSync(other);
     await expect(extractArchive(links, other, "tar")).rejects.toThrow(/unsafe entries/);
   });
