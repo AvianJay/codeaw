@@ -227,6 +227,36 @@ describe("Codex desktop synchronization", () => {
     expect(a.text(nativeId)).toBe("earlier desktop replyhello desktopphone reply");
   });
 
+  it("finishes statusless desktop searches as work advances and retains completion on replay", async () => {
+    const { a, desktop, bridge } = await setup(); await load(a);
+    desktop.begin();
+    const turnIndex = desktop.conversation.turns.length - 1;
+    const turnId = desktop.conversation.turns[turnIndex].turnId;
+    const search = (id: string) => ({ type: "webSearch", id, query: id });
+    const status = (client: TestClient, id: string) => client.updates(nativeId)
+      .findLast((entry) => entry.update.toolCallId === `${turnId}:${id}`)?.update.status;
+    desktop.patch([{ op: "add", path: ["turns", turnIndex, "items", 1], value: search("first") }]);
+    await a.waitFor(() => status(a, "first") === "in_progress");
+    desktop.patch([{ op: "add", path: ["turns", turnIndex, "items", 2], value: search("second") }]);
+    await a.waitFor(() => status(a, "second") === "in_progress");
+    expect(status(a, "first")).toBe("completed");
+    desktop.patch([{ op: "add", path: ["turns", turnIndex, "items", 3], value: { ...search("stale"), status: "inProgress" } }]);
+    await a.waitFor(() => status(a, "stale") === "in_progress");
+    expect(status(a, "second")).toBe("completed");
+    desktop.finish();
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "idle");
+    expect(status(a, "stale")).toBe("completed");
+    const b = await TestClient.connect(bridge.url, bridge.tokenFor("search replay")); clients.push(b); await load(b);
+    expect(status(b, "first")).toBe("completed");
+    expect(status(b, "second")).toBe("completed");
+    expect(status(b, "stale")).toBe("completed");
+    desktop.begin();
+    await b.waitFor(() => b.events(nativeId, "state").at(-1)?.event.state === "running");
+    expect(status(b, "first")).toBe("completed");
+    expect(status(b, "second")).toBe("completed");
+    expect(status(b, "stale")).toBe("completed");
+  });
+
   it("steers desktop-started turns and honors explicit queueing after they finish", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
@@ -351,6 +381,7 @@ describe("Codex desktop synchronization", () => {
     desktop.patch([{ op: "add", path: ["requests", 0], value: { id: "question-1", method: "item/tool/requestUserInput", params: { questions: [{ id: "choice", header: "Choose", question: "Which option?", options: [{ label: "A" }, { label: "B" }] }] } } }]);
     await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-submit-user-input"));
     expect(desktop.requests.find((message) => message.method === "thread-follower-submit-user-input").params.response).toEqual({ answers: { choice: { answers: ["A"] } } });
+    await a.waitFor(() => a.events(nativeId, "elicitation_resolved").length > 0);
     expect(a.events(nativeId, "elicitation_resolved").at(-1)?.event).not.toHaveProperty("content");
   });
 
@@ -532,6 +563,50 @@ describe("desktop IPC wire and state", () => {
     const earlier = structuredClone(changed);
     earlier.turns.unshift({ turnId: "older", status: "completed", params: { input: [] }, items: [{ type: "commandExecution", id: "older-command", command: "echo older", status: "completed", aggregatedOutput: "old" }] });
     expect(desktopRecordChanges(projectDesktopConversation(changed).records, projectDesktopConversation(earlier).records).reset).toBe(true);
+  });
+
+  it("infers statusless search completion from the latest activity, ignoring user input and hooks", () => {
+    // Native desktop webSearch items contain query/action but no status field.
+    const turn = { turnId: "one", status: "inProgress", items: [
+      { type: "webSearch", id: "first", query: "first query" },
+      { type: "webSearch", id: "latest", query: "latest query" },
+      { type: "userMessage", id: "user", content: [] },
+      { type: "hookPrompt", id: "hook" },
+      { type: "steeringUserMessage", id: "steering", input: [] },
+      { type: "steered", id: "steered" },
+    ] };
+    const before = projectDesktopConversation({ turns: [turn] }).records;
+    expect(before.map((r) => r.update)).toMatchObject([
+      { toolCallId: "one:first", status: "completed" },
+      { toolCallId: "one:latest", status: "in_progress" },
+    ]);
+    for (const successor of [
+      { type: "agentMessage", id: "reply", text: "answer" },
+      { type: "reasoning", id: "thought", summary: ["thinking"] },
+      { type: "commandExecution", id: "command", command: "echo fixture", status: "inProgress" },
+    ]) {
+      const after = projectDesktopConversation({ turns: [{ ...turn, items: [...turn.items, successor] }] }).records;
+      const delta = desktopRecordChanges(before, after);
+      expect(delta.reset).toBe(false);
+      expect(delta.updates).toContainEqual(expect.objectContaining({ sessionUpdate: "tool_call_update", toolCallId: "one:latest", status: "completed" }));
+    }
+  });
+
+  it.each(["completed", "interrupted", "cancelled", "failed"])("stops statusless search progress in %s turns, including canonical history", (status) => {
+    const turn = { turnId: "one", status, items: [{ type: "webSearch", id: "search", query: "fixture" }] };
+    const conversation = { turns: [], turnHistory: { kind: "canonical", history: { entitiesByKey: { one: turn }, islands: [{ entries: [{ value: "one" }] }] } } };
+    expect(projectDesktopConversation(conversation).records[0].update).toMatchObject({ toolCallId: "one:search", status: "completed" });
+  });
+
+  it.each(["completed", "interrupted", "cancelled", "failed"])("ends stale tool progress when the desktop turn is %s without hiding tool failures", (status) => {
+    const types = ["webSearch", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "collabAgentToolCall"];
+    const items = types.map((type) => ({ type, id: type, status: "inProgress" }));
+    items.push({ type: "webSearch", id: "failed-search", status: "failed" });
+    items.push({ type: "commandExecution", id: "finished-command", status: "completed" });
+    const updates = projectDesktopConversation({ turns: [{ turnId: "one", status, items }] }).records.map((r) => r.update);
+    expect(updates.slice(0, types.length).map((u: any) => u.status)).toEqual(types.map(() => status === "failed" ? "failed" : "completed"));
+    expect(updates.at(-2)).toMatchObject({ status: "failed" });
+    expect(updates.at(-1)).toMatchObject({ status: "completed" });
   });
 
   it("names MCP calls by server and tool like codex-acp", () => {

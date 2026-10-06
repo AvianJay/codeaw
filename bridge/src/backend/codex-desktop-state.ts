@@ -107,10 +107,21 @@ export function codexInput(blocks: acp.ContentBlock[]): any[] {
   });
 }
 
-function toolStatus(item: any, turn: any): acp.ToolCallStatus {
+const ACTIVE_TURN_STATUSES = new Set(["inProgress", "in_progress", "running", "requires_action"]);
+const INPUT_ITEM_TYPES = new Set(["userMessage", "hookPrompt", "steeringUserMessage", "steered"]);
+
+function toolStatus(item: any, turn: any, latestActivity: boolean): acp.ToolCallStatus {
+  if (["failed", "error", "declined"].includes(item.status)) return "failed";
+  if (["completed", "interrupted", "cancelled"].includes(item.status)) return "completed";
+  // Native webSearch items have no status. Like desktop, only the latest
+  // activity can still be searching; user input and hooks do not end it.
+  if (item.type === "webSearch" && item.status == null) {
+    return ACTIVE_TURN_STATUSES.has(turn.status) && latestActivity ? "in_progress" : "completed";
+  }
+  // A terminal turn cannot retain stale tool progress or approval spinners.
+  if (["failed", "error", "declined"].includes(turn.status)) return "failed";
+  if (["completed", "interrupted", "cancelled"].includes(turn.status)) return "completed";
   const status = item.status ?? turn.status;
-  if (["failed", "error", "declined"].includes(status)) return "failed";
-  if (["completed", "interrupted", "cancelled"].includes(status)) return "completed";
   if (["pending", "requiresApproval"].includes(status)) return "pending";
   return "in_progress";
 }
@@ -127,7 +138,9 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
     const id = String(turn.turnId ?? turn.id ?? turn.params?.clientUserMessageId ?? `turn-${index}`);
     const input = inputBlocks(turn.params?.input ?? turn.input);
     if (input.length) message(`${id}:user`, "user_message_chunk", input, turn.params?.clientUserMessageId);
-    (turn.items ?? []).forEach((item: any, itemIndex: number) => {
+    const items = turn.items ?? [];
+    const lastActivityIndex = items.findLastIndex((item: any) => item && !INPUT_ITEM_TYPES.has(item.type));
+    items.forEach((item: any, itemIndex: number) => {
       const key = `${id}:${item.id ?? item.itemId ?? `${item.type}-${itemIndex}`}`;
       if (item.type === "userMessage") {
         if (!input.length) message(`${id}:user`, "user_message_chunk", inputBlocks(item.content ?? item.input), turn.params?.clientUserMessageId);
@@ -155,7 +168,7 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
         records.push({ key, update: {
           sessionUpdate: "tool_call", toolCallId: key,
           title: mcp ? `mcp.${item.server}.${item.tool}` : command ?? item.title ?? item.tool ?? item.query ?? (item.type === "fileChange" ? "檔案變更" : item.type),
-          kind, status: toolStatus(item, turn), content,
+          kind, status: toolStatus(item, turn, itemIndex === lastActivityIndex), content,
           locations: changes.filter((change: any) => typeof change.path === "string").map((change: any) => ({ path: change.path })),
           rawInput: mcp ? { server: item.server, tool: item.tool, arguments: item.arguments ?? {} } : item.arguments ?? (command ? { command, cwd: item.cwd ?? conversation.cwd } : item.input ?? {}),
           rawOutput: item.result ?? (output ? { output, exitCode: item.exitCode } : undefined),
@@ -164,7 +177,7 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
     });
   });
   const last = turns.at(-1);
-  const active = turns.findLast((turn) => ["inProgress", "in_progress", "running", "requires_action"].includes(turn.status));
+  const active = turns.findLast((turn) => ACTIVE_TURN_STATUSES.has(turn.status));
   const requests = desktopRequests(conversation);
   const startedAt = Number(active?.turnStartedAtMs ?? active?.startedAt);
   const state: DesktopState = {
