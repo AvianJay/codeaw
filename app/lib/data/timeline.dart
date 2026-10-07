@@ -215,6 +215,18 @@ class TurnSummaryItem extends TimelineItem {
 
   String get responseText => messages.where((m) => m.role == MessageRole.agent).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
   String get thoughtText => messages.where((m) => m.role == MessageRole.thought).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
+  /// Latest Codex summary heading, without Markdown markers, for compact views.
+  String? get latestThoughtSummary {
+    for (final message in messages.reversed) {
+      if (message.role != MessageRole.thought) continue;
+      final text = message.text.trim();
+      if (text.isEmpty) continue;
+      final heading = RegExp(r'(?:^|\n)\s*\*\*([^\n]+)').allMatches(text).lastOrNull?.group(1);
+      final latest = (heading ?? text.split(RegExp(r'\n\s*\n')).last).trim().replaceAll('**', '').replaceAll(RegExp(r'\s+'), ' ');
+      if (latest.isNotEmpty) return latest;
+    }
+    return null;
+  }
   String get transcript => [
         if (prompt != null && prompt!.promptText.isNotEmpty) '你：\n${prompt!.promptText}',
         for (final p in steeredPrompts) if (p.promptText.isNotEmpty) '你（插入回合）：\n${p.promptText}',

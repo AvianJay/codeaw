@@ -190,6 +190,7 @@ void main() {
       'title': 'Fix tests',
       'phase': 'running',
       'detail': 'Run flutter test',
+      'shortText': '執行指令',
       'startedAt': 1700000000000,
       'steps': ['completed', 'in_progress', 'pending'],
     });
@@ -319,9 +320,93 @@ void main() {
     h.client.goOffline();
     await tester.pump(const Duration(seconds: 1));
     expect(h.channel.sent.last, containsPair('phase', 'offline'));
+    expect(h.channel.sent.last?['shortText'], '離線');
     expect(h.channel.sent.last?['detail'], '連線中斷，重新連線中…');
     h.dispose();
   });
+
+  testWidgets(
+    'uses streamed Codex summaries in notifications and actions in the compact chip',
+    (tester) async {
+      final h = _Harness();
+      await h.setUp([_listed('codex:a', 'running')]);
+      final c = h.open('codex:a');
+      h.tracker.viewing = 'codex:a';
+      h.tracker.visible = false;
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['shortText'], '執行指令');
+
+      h.update('codex:a', {
+        'sessionUpdate': 'tool_call_update',
+        'toolCallId': 't1',
+        'status': 'completed',
+      });
+      h.update('codex:a', {
+        'sessionUpdate': 'agent_thought_chunk',
+        'content': {'type': 'text', 'text': '**Checking Android SDK tools**'},
+        '_meta': {
+          'codeaw': {'mid': 'thought'},
+        },
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['detail'], 'Checking Android SDK tools');
+      expect(h.channel.sent.last?['shortText'], '思考中');
+
+      var timelineUpdates = 0;
+      c.timeline.addListener(() => timelineUpdates++);
+      h.update('codex:a', {
+        'sessionUpdate': 'agent_thought_chunk',
+        'content': {
+          'type': 'text',
+          'text': '\n**Filtering OTA endpoint metadata**',
+        },
+        '_meta': {
+          'codeaw': {'mid': 'thought'},
+        },
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(
+        timelineUpdates,
+        0,
+        reason: 'streaming thought chunks notify their message',
+      );
+      expect(h.channel.sent.last?['detail'], 'Filtering OTA endpoint metadata');
+      expect(h.channel.sent.last?['shortText'], '思考中');
+
+      h.update('codex:a', {
+        'sessionUpdate': 'tool_call',
+        'toolCallId': 'mcp',
+        'title': 'mcp.browser.inspect',
+        'kind': 'execute',
+        'status': 'in_progress',
+        'rawInput': {
+          'server': 'browser',
+          'tool': 'inspect',
+          'arguments': {'title': '檢查更新頁面'},
+        },
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['detail'], '檢查更新頁面');
+      expect(h.channel.sent.last?['shortText'], '使用整合');
+
+      h.update('codex:a', {
+        'sessionUpdate': 'tool_call_update',
+        'toolCallId': 'mcp',
+        'status': 'completed',
+      });
+      h.update('codex:a', {
+        'sessionUpdate': 'agent_message_chunk',
+        'content': {'type': 'text', 'text': '檢查完成'},
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['shortText'], '回覆中');
+
+      h.event('codex:a', {'type': 'state', 'state': 'requires_action'});
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['shortText'], '待批准');
+      h.dispose();
+    },
+  );
 
   testWidgets(
     'picks up a conversation opened after it was armed and coalesces updates',

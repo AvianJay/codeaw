@@ -86,6 +86,7 @@ class LiveActivityTracker extends ChangeNotifier {
   SessionHub? _hub;
   StreamSubscription<SessionMessage>? _messages;
   SessionController? _watched;
+  MessageItem? _watchedThought;
   String? _target;
   String? _viewing;
   bool _visible = true;
@@ -245,12 +246,23 @@ class LiveActivityTracker extends ChangeNotifier {
   /// Follows the open controller of [id] for its activity, plan and pending requests.
   void _watch(String? id) {
     final c = id == null ? null : _hub?.peek(id);
-    if (identical(c, _watched)) return;
-    _watched?.removeListener(_sync);
-    _watched?.timeline.removeListener(_sync);
-    _watched = c;
-    c?.addListener(_sync);
-    c?.timeline.addListener(_sync);
+    if (!identical(c, _watched)) {
+      _watched?.removeListener(_sync);
+      _watched?.timeline.removeListener(_sync);
+      _watched = c;
+      c?.addListener(_sync);
+      c?.timeline.addListener(_sync);
+    }
+    final thought = c?.agentId == 'codex'
+        ? c?.timeline.currentTurn?.messages
+              .where((m) => m.role == MessageRole.thought)
+              .lastOrNull
+        : null;
+    if (!identical(thought, _watchedThought)) {
+      _watchedThought?.removeListener(_sync);
+      _watchedThought = thought;
+      thought?.addListener(_sync);
+    }
   }
 
   Map<String, Object?> _content(String id) {
@@ -274,7 +286,10 @@ class LiveActivityTracker extends ChangeNotifier {
                   ? '需要你的批准'
                   : '${request.isPermission ? '需要你的批准' : '需要你的回覆'}：${request.title}',
             ),
-            'running' => ('running', _doing(timeline)),
+            'running' => (
+              'running',
+              _doing(timeline, showThoughts: agentId == 'codex'),
+            ),
             _ => ('running', '準備處理下一則排隊訊息…'),
           };
     return {
@@ -284,6 +299,12 @@ class LiveActivityTracker extends ChangeNotifier {
       'title': _clip(title, 100),
       'phase': phase,
       'detail': _clip(detail, 200),
+      'shortText': switch (phase) {
+        'offline' => '離線',
+        'approval' => request != null && !request.isPermission ? '待回覆' : '待批准',
+        _ when _status(id).state != 'running' => '排隊中',
+        _ => _shortText(timeline),
+      },
       'startedAt': timeline?.turnStartedAt?.millisecondsSinceEpoch,
       // ACP plan entry statuses: pending, in_progress, completed.
       'steps': [
@@ -294,11 +315,12 @@ class LiveActivityTracker extends ChangeNotifier {
   }
 
   /// The working indicator's wording, with the tool's own title when there is one.
-  static String _doing(Timeline? t) {
+  static String _doing(Timeline? t, {bool showThoughts = false}) {
     final tool = t?.activeTool;
+    final thought = showThoughts ? t?.currentTurn?.latestThoughtSummary : null;
     return switch (t?.activity) {
       null => '執行中…',
-      TurnActivity.thinking => '思考中…',
+      TurnActivity.thinking => thought ?? '思考中…',
       TurnActivity.responding => '回覆中…',
       TurnActivity.tool when _text(tool?.title) != null => _text(
         tool!.displayTitle,
@@ -315,6 +337,26 @@ class LiveActivityTracker extends ChangeNotifier {
       },
     };
   }
+
+  /// Action labels for Android's compact Live Update chip.
+  static String _shortText(Timeline? t) => switch (t?.activity) {
+    null => '執行中',
+    TurnActivity.thinking => '思考中',
+    TurnActivity.responding => '回覆中',
+    TurnActivity.tool when t?.activeTool?.mcp != null => '使用整合',
+    TurnActivity.tool => switch (t?.activeTool?.kind) {
+      'read' => '讀取檔案',
+      'edit' => '修改檔案',
+      'delete' => '刪除檔案',
+      'move' => '移動檔案',
+      'execute' => '執行指令',
+      'search' => '搜尋中',
+      'fetch' => '取得資料',
+      'think' => '思考中',
+      'switch_mode' => '切換模式',
+      _ => '使用工具',
+    },
+  };
 
   static String? _text(String? s) {
     final t = s?.replaceAll(RegExp(r'\s+'), ' ').trim();

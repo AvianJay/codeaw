@@ -38,14 +38,9 @@ class _ThoughtSummaryState extends State<ThoughtSummary> {
             .toList();
         if (texts.isEmpty) return const SizedBox.shrink();
         final scheme = Theme.of(context).colorScheme;
-        final heading = RegExp(
-          r'(?:^|\n)\s*\*\*([^\n]+)',
-        ).allMatches(texts.last).lastOrNull?.group(1);
-        final latest = (heading ?? texts.last.split(RegExp(r'\n\s*\n')).last)
-            .trim()
-            .replaceAll('**', '')
-            .replaceAll(RegExp(r'\s+'), ' ');
-        final label = widget.live && !_open ? latest : '思考摘要';
+        final label = widget.live && !_open
+            ? widget.turn.latestThoughtSummary ?? '思考摘要'
+            : '思考摘要';
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [

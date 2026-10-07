@@ -171,11 +171,13 @@ object LiveUpdates {
             phase == "running" -> builder.setStyle(NotificationCompat.ProgressStyle().setProgressIndeterminate(true))
             else -> builder.setStyle(NotificationCompat.BigTextStyle().bigText(detail))
         }
-        // The status bar chip shows this text, or else the elapsed time.
-        when (phase) {
-            "approval" -> builder.setShortCriticalText("待批准")
-            "offline" -> builder.setShortCriticalText("離線")
+        // Always name the current action in the status bar chip.
+        val shortText = (c["shortText"] as? String)?.takeIf { it.isNotBlank() } ?: when (phase) {
+            "approval" -> "待批准"
+            "offline" -> "離線"
+            else -> "執行中"
         }
+        builder.setShortCriticalText(shortText)
         if (startedAt != null) {
             builder.setWhen(startedAt).setShowWhen(true).setUsesChronometer(true)
         } else {
