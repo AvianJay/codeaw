@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../data/timeline.dart';
+import 'thought_summary.dart';
 
 String formatTurnElapsed(Duration elapsed) {
   final seconds = elapsed.isNegative ? 0 : elapsed.inSeconds;
@@ -33,9 +34,10 @@ class TurnSpeed extends StatelessWidget {
 }
 
 class TurnSummaryView extends StatelessWidget {
-  const TurnSummaryView({super.key, required this.turn, this.onReusePrompt});
+  const TurnSummaryView({super.key, required this.turn, this.onReusePrompt, this.showThoughts = false});
   final TurnSummaryItem turn;
   final VoidCallback? onReusePrompt;
+  final bool showThoughts;
 
   Future<void> _copy(BuildContext context, String text, String label) async {
     await Clipboard.setData(ClipboardData(text: text));
@@ -130,6 +132,8 @@ class TurnSummaryView extends StatelessWidget {
               );
             },
           ),
+          if (showThoughts)
+            ThoughtSummary(key: ValueKey('thoughts:${turn.key}'), turn: turn),
         ],
       ),
     );

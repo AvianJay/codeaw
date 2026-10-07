@@ -3,14 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../data/timeline.dart';
+import 'thought_summary.dart';
 import 'turn_summary.dart';
 
 /// A turn's actual activity and elapsed wall time; only this widget ticks.
 class WorkingIndicator extends StatefulWidget {
-  const WorkingIndicator({super.key, required this.timeline, this.waitingForInput = false, this.now = DateTime.now});
+  const WorkingIndicator({super.key, required this.timeline, this.waitingForInput = false, this.showThoughts = false, this.now = DateTime.now});
 
   final Timeline timeline;
   final bool waitingForInput;
+  final bool showThoughts;
   final DateTime Function() now;
 
   @override
@@ -112,6 +114,11 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
                           ),
+                        ),
+                      if (timeline.currentTurn case final turn? when widget.showThoughts)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: ThoughtSummary(key: ValueKey('thoughts:${turn.key}'), turn: turn, live: true),
                         ),
                       if (timeline.queued > 0)
                         Padding(

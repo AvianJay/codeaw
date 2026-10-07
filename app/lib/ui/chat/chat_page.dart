@@ -292,7 +292,7 @@ class _TimelineList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final items = controller.timeline.rootItems;
+    final items = chatTimelineItems(controller);
     final running = controller.running;
     final older = controller.hasOlder;
     if (items.isEmpty && !running && !older) {
@@ -320,6 +320,7 @@ class _TimelineList extends StatelessWidget {
             return WorkingIndicator(
               key: ValueKey('working:${controller.sessionId}'),
               timeline: controller.timeline,
+              showThoughts: controller.agentId == 'codex',
               waitingForInput: controller.pending.values.any((req) => !req.isPermission),
             );
           }

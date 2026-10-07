@@ -21,6 +21,19 @@ import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
 import 'turn_summary.dart';
 
+/// Codex thought messages stay in the log; their turn's card presents them once.
+/// Thoughts without a matching turn remain visible, including older histories.
+List<TimelineItem> chatTimelineItems(SessionController controller) {
+  final timeline = controller.timeline;
+  final roots = timeline.rootItems;
+  if (controller.agentId != 'codex') return roots;
+  final grouped = <MessageItem>{
+    for (final turn in [...roots.whereType<TurnSummaryItem>(), ?timeline.currentTurn])
+      ...turn.messages.where((m) => m.role == MessageRole.thought),
+  };
+  return roots.where((item) => !grouped.contains(item)).toList();
+}
+
 /// Builds the widget for one timeline item; rebuilt only when that item changes.
 class TimelineItemView extends StatelessWidget {
   const TimelineItemView({super.key, required this.item, required this.controller, required this.isLast, this.depth = 0, this.expandSubagent = false});
@@ -58,6 +71,7 @@ class TimelineItemView extends StatelessWidget {
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
         TurnSummaryItem t => TurnSummaryView(
             turn: t,
+            showThoughts: controller.agentId == 'codex',
             onReusePrompt: controller.running || t.prompt?.promptText.isNotEmpty != true ? null : () => controller.reusePrompt(t.prompt!),
           ),
         _ => const SizedBox.shrink(),
