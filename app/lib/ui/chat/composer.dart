@@ -748,7 +748,7 @@ class _ComposerState extends State<Composer> {
     final attachments = _attachActions();
     final canSend =
         c.client.isOnline &&
-        (!c.desktopSync || c.desktopConnected) &&
+        !c.waitingForDesktop &&
         _readingImages == 0 &&
         !_uploads.any((u) => u.file == null) &&
         (_text.text.trim().isNotEmpty ||

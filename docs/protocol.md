@@ -168,6 +168,18 @@ another app-server process. The external session id is unchanged. The response
 adds `_meta.codeaw.connection: "desktop"` and `desktopConnected: boolean`.
 These fields are also included in state events and activity notifications.
 
+For a previously desktop-linked conversation, load/resume replays the bridge's
+saved history even when the desktop pipe or owner is unavailable after reboot.
+It returns `connection: "desktop", desktopConnected: false` without starting
+ACP, registering the conversation for automatic owner discovery. When the owner
+becomes available, an authoritative full replay replaces the saved history and
+state events report `desktopConnected: true`, without another client load.
+The owner must have that conversation open in Codex desktop; no alternate owner
+is created. Prompts and settings require a connected owner and are rejected
+before acceptance while disconnected. The app keeps the draft and disables send.
+Recovery never overwrites current desktop settings with cached bridge settings
+or automatically resends prompts whose delivery is uncertain.
+
 The desktop's snapshot and revisioned patches are authoritative. A historical
 edit or newly loaded older history can trigger a new epoch and a live full
 replay. Such a replay ends with `_codeaw/replay` `{mode: "complete", epoch,

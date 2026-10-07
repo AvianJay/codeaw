@@ -173,6 +173,13 @@ async function load(client: TestClient): Promise<any> { return client.request("s
 const nativeId = "fake:desktop-thread";
 function send(client: TestClient, text: string, queue = false): Promise<any> { return client.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text }], ...(queue ? { _meta: { codeaw: { delivery: "queue" } } } : {}) }); }
 
+/** Read the visible text after the latest replacement replay, not all wire copies. */
+function replayedText(client: TestClient): string {
+  const start = client.received.findLastIndex((r) => r.method === "_codeaw/replay" && r.params.sessionId === nativeId && r.params.mode === "full");
+  return client.received.slice(Math.max(0, start)).filter((r) => r.method === "session/update" && r.params.sessionId === nativeId &&
+    r.params.update.sessionUpdate === "agent_message_chunk" && r.params.update.content.type === "text").map((r) => r.params.update.content.text).join("");
+}
+
 describe("Codex desktop synchronization", () => {
   it("returns the current snapshot before delayed older history and then replaces it completely", async () => {
     const { a, desktop } = await setup();
@@ -301,7 +308,8 @@ describe("Codex desktop synchronization", () => {
     await a.request("session/close", { sessionId: nativeId });
     expect(desktop.conversation.turns.at(-1).status).toBe("inProgress");
     expect(desktop.requests.filter((message) => message.method === "thread-follower-interrupt-turn")).toHaveLength(1);
-    await load(a); expect(a.events(nativeId, "state").at(-1)?.event.desktopConnected).toBe(true);
+    await load(a);
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.desktopConnected === true);
   });
 
   it("removes an idle desktop-linked chat from Codeaw without deleting or interrupting its desktop owner", async () => {
@@ -490,7 +498,7 @@ describe("Codex desktop synchronization", () => {
     expect(forms[0].params.requestedSchema.required).toEqual([JSON.stringify(["request_user_input_async", "latest-question", 0])]);
   });
 
-  it("persists desktop affinity across bridge restarts and refuses to resume an unavailable owner through ACP", async () => {
+  it("replays saved desktop history after restart and recovers a late owner without a second load or ACP runtime", async () => {
     const { a, desktop, bridge: first } = await setup(); await load(a);
     const home = first.home;
     // Keep the generated test directory across this one restart.
@@ -503,7 +511,56 @@ describe("Codex desktop synchronization", () => {
     const restarted = await startBridge(config, { hosts: ["127.0.0.1"], port: 0 });
     try {
       const b = await TestClient.connect(`ws://127.0.0.1:${restarted.port()}/acp`, first.tokenFor("phone")); clients.push(b);
-      await expect(b.request("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] })).rejects.toThrow(/desktop/i);
+      const loaded = await b.request<any>("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] });
+      expect(loaded._meta.codeaw).toMatchObject({ connection: "desktop", desktopConnected: false });
+      expect(replayedText(b)).toBe("earlier desktop reply");
+      const promptId = randomUUID();
+      await expect(b.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text: "must not be sent" }],
+        _meta: { codeaw: { clientPromptId: promptId } } })).rejects.toThrow(/desktop.*reconnect/i);
+      expect(b.events(nativeId, "prompt_receipt").some((r) => r.event.promptId === promptId)).toBe(false);
+      expect(desktop.requests.filter((r) => r.method === "thread-follower-start-turn")).toHaveLength(0);
+      expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
+      // The owner's latest settings win over the bridge's saved settings.
+      desktop.conversation.latestThreadSettings.sandboxPolicy = { type: "readOnly" };
+      desktop.available = true;
+      await b.waitFor(() => b.events(nativeId, "state").at(-1)?.event.desktopConnected === true, 7000);
+      expect(replayedText(b)).toBe("earlier desktop reply");
+      expect(desktop.requests.filter((r) => r.method === "thread-follower-update-thread-settings")).toHaveLength(0);
+      const sending = send(b, "after recovery");
+      await b.waitFor(() => desktop.requests.some((r) => r.method === "thread-follower-start-turn"));
+      desktop.text("recovered reply"); desktop.finish(); await sending;
+      expect(replayedText(b)).toBe("earlier desktop replyrecovered reply");
+      expect(desktop.requests.filter((r) => r.method === "thread-follower-start-turn")).toHaveLength(1);
+      expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
+      b.close(); clients.splice(clients.indexOf(b), 1);
+    } finally {
+      await restarted.stop();
+      if (path.dirname(home) !== path.resolve(os.tmpdir()) || !path.basename(home).startsWith("codeaw-test-")) throw new Error("Invalid test cleanup directory");
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("loads saved desktop history while the IPC pipe is absent and reconnects when desktop starts later", async () => {
+    const { a, desktop, bridge: first } = await setup(); await load(a);
+    const home = first.home, config = first.loaded;
+    a.close(); clients.splice(clients.indexOf(a), 1);
+    await first.bridge.stop(); bridge = undefined;
+    for (const socket of desktop.sockets) socket.destroy();
+    await new Promise<void>((resolve) => desktop.server.close(() => resolve()));
+    const { startBridge } = await import("../src/bridge.js");
+    const restarted = await startBridge(config, { hosts: ["127.0.0.1"], port: 0 });
+    try {
+      const b = await TestClient.connect(`ws://127.0.0.1:${restarted.port()}/acp`, first.tokenFor("phone")); clients.push(b);
+      const loaded = await b.request<any>("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] });
+      expect(loaded._meta.codeaw).toMatchObject({ connection: "desktop", desktopConnected: false });
+      expect(b.text(nativeId)).toBe("earlier desktop reply");
+      expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
+      await desktop.start();
+      await b.waitFor(() => b.events(nativeId, "state").at(-1)?.event.desktopConnected === true, 7000);
+      desktop.begin(); desktop.text("desktop started late"); desktop.finish();
+      await b.waitFor(() => b.text(nativeId).includes("desktop started late"));
+      expect(replayedText(b)).toBe("earlier desktop replydesktop started late");
+      expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
       b.close(); clients.splice(clients.indexOf(b), 1);
     } finally {
       await restarted.stop();

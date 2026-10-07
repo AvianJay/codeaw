@@ -103,6 +103,7 @@ class _ChatPageState extends State<ChatPage> {
     return ListenableBuilder(
       listenable: Listenable.merge([c, c.timeline, if (state.cpa != null) state.cpa!]),
       builder: (context, _) {
+        final scheme = Theme.of(context).colorScheme;
         final quotaConfigured = state.cpa?.settings != null;
         final summary = state.sessions?.byId(c.sessionId);
         final title = c.timeline.title ?? summary?.title ?? c.displayLocation;
@@ -230,6 +231,18 @@ class _ChatPageState extends State<ChatPage> {
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               const ConnectionBanner(),
+                              if (c.waitingForDesktop && c.client.isOnline)
+                                Material(
+                                  color: scheme.secondaryContainer,
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                                    child: Row(children: [
+                                      const Icon(Icons.sync_rounded, size: 16),
+                                      const SizedBox(width: 8),
+                                      Expanded(child: Text('等待桌面恢復連線，歷史與草稿已保留。若持續未連線，請在 Codex 桌面開啟此聊天。', style: TextStyle(color: scheme.onSecondaryContainer, fontSize: 12))),
+                                    ]),
+                                  ),
+                                ),
                               if (c.error != null)
                                 MaterialBanner(
                                   content: Text(c.error!),

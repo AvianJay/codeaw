@@ -83,6 +83,8 @@ class SessionController extends ChangeNotifier {
   bool attached = false;
   bool desktopSync = false;
   bool desktopConnected = false;
+  bool get waitingForDesktop =>
+      desktopSync && (!attached || loading || !desktopConnected);
   String? error;
   final pending = <String, PendingRequest>{};
 
@@ -539,6 +541,10 @@ class SessionController extends ChangeNotifier {
     List<Map<String, dynamic>> blocks, {
     bool queue = false,
   }) async {
+    if (waitingForDesktop) {
+      _toast('等待 Codex 桌面恢復連線；草稿已保留');
+      return false;
+    }
     final random = Random.secure();
     final bytes = List<int>.generate(16, (_) => random.nextInt(256));
     bytes[6] = (bytes[6] & 0x0f) | 0x40;

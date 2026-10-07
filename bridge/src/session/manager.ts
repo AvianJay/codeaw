@@ -760,26 +760,31 @@ export class SessionManager implements AgentHandlers {
   }
 
   /** Makes sure the agent process holds this session live, resuming it after restarts. */
-  private async ensureActive(s: BridgeSession): Promise<AgentBackend> {
+  private async ensureActive(s: BridgeSession, allowDisconnected = false): Promise<AgentBackend> {
     const agent = this.requireAgent(s.meta.agentId);
     if (s.meta.connection === "desktop" && !agent.sessionConnection) throw acp.RequestError.invalidRequest(undefined, "Enable Codex desktop synchronization to reopen this desktop-linked conversation");
-    await agent.ensureStarted();
+    // A remembered desktop session must never start ACP merely because desktop
+    // has not started yet. Its saved log is independent of the owner's readiness.
+    if (s.meta.connection !== "desktop") await agent.ensureStarted();
     if (s.meta.connection === "desktop" ? agent.sessionConnected?.(s.meta.backendId) : s.backendGen === agent.generation) return agent;
     if (!s.activating) {
-      s.activating = this.activate(s, agent).finally(() => {
+      s.activating = this.activate(s, agent, allowDisconnected).finally(() => {
         s.activating = undefined;
       });
     }
     await s.activating;
+    if (s.meta.connection === "desktop" && !allowDisconnected && !agent.sessionConnected?.(s.meta.backendId)) {
+      throw acp.RequestError.invalidRequest(undefined, "Codex desktop is disconnected. Open this chat in Codex desktop; the bridge will reconnect automatically");
+    }
     return agent;
   }
 
-  private async activate(s: BridgeSession, agent: AgentBackend): Promise<void> {
+  private async activate(s: BridgeSession, agent: AgentBackend, allowDisconnected = false): Promise<void> {
     const caps = agent.capabilities;
-    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
+    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
     const lastMode = modeOf(s.meta);
     let resp: any;
-    if (caps?.sessionCapabilities?.resume) {
+    if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
       resp = await agent.request("session/resume", base);
     } else if (caps?.loadSession) {
       // We already have the history; drop the agent's replay.
@@ -794,6 +799,9 @@ export class SessionManager implements AgentHandlers {
     }
     s.backendGen = agent.generation;
     this.applySetup(s, resp);
+    // The owner's next snapshot supplies its current settings. Saved bridge
+    // settings must not overwrite changes made on desktop while disconnected.
+    if (s.meta.connection === "desktop") return;
     // Some agents (Codex) reset the mode on resume; put back what the user had.
     const nowMode = modeOf(s.meta);
     if (lastMode && nowMode && lastMode !== nowMode) {
@@ -843,8 +851,11 @@ export class SessionManager implements AgentHandlers {
   private async sessionForAttach(id: string, cwd?: string): Promise<BridgeSession> {
     if (this.store.isDeleted(id) || this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "This chat has been deleted from Codeaw");
     const s = this.sessions.get(id) ?? this.fromDisk(id);
-    if (s && !s.stale) {
-      if (s.meta.connection === "desktop" || (s.meta.origin === "native" && s.backendGen === 0)) await this.ensureActive(s);
+    if (s && (s.meta.connection === "desktop" || !s.stale)) {
+      if (s.meta.connection === "desktop") {
+        s.stale = false; // The authoritative desktop snapshot rebuilds history when it arrives.
+        await this.ensureActive(s, true);
+      } else if (s.meta.origin === "native" && s.backendGen === 0) await this.ensureActive(s);
       return s;
     }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;

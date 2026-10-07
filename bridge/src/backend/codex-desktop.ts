@@ -92,26 +92,37 @@ export class CodexDesktopBackend implements AgentBackend {
     if (typeof id === "string" && params?._meta?.codeaw?.connection === "desktop") this.forcedDesktop.add(id);
     if ((method === "session/load" || method === "session/resume") && typeof id === "string") {
       const force = params?._meta?.codeaw?.connection === "desktop" || this.forcedDesktop.has(id);
+      if (force) {
+        const session = this.desktopSession(id);
+        this.ipc.setReconnectWanted(true);
+        if (params?._meta?.codeaw?.allowDisconnected === true) {
+          // Register before discovering the owner: after a reboot neither the pipe
+          // nor the owner may exist yet. Saved bridge history can be replayed now.
+          if (!session.connected) {
+            this.publishState(session);
+            void this.attach(session).catch(() => this.scheduleRecovery());
+          }
+        } else {
+          try { await this.attach(session); }
+          catch { throw new Error("Codex desktop is disconnected. Open this chat in Codex desktop; the bridge will reconnect automatically"); }
+        }
+        return { ...(session.conversation ? { configOptions: this.configOptions(session) } : {}),
+          _meta: { codeaw: { connection: "desktop", desktopConnected: this.sessionConnected(id) } } } as T;
+      }
       let owner: string | undefined;
       try {
         const response = await this.ipc.request("thread-owner-discovery", { hostId: "local", conversationId: id });
         owner = response.handledByClientId;
       } catch (error) {
-        if (force) throw new Error("This session is linked to Codex desktop. Reopen it there to reconnect; no separate session was started");
         if (error instanceof DesktopIpcRequestError && error.response.error !== "no-client-found") throw error;
       }
       if (owner) {
         this.forcedDesktop.add(id);
-        let session = this.sessions.get(id);
-        if (!session) {
-          session = { id, owner, revision: -1, connected: false, snapshotWaiters: new Set(), prompts: new Set(), requests: new Map() };
-          this.sessions.set(id, session);
-        }
+        const session = this.desktopSession(id);
         session.owner = owner;
         await this.attach(session);
         return { configOptions: this.configOptions(session), _meta: { codeaw: { connection: "desktop", desktopConnected: true } } } as T;
       }
-      if (force) throw new Error("Codex desktop no longer owns this session. Reopen it on desktop before reconnecting");
     }
     if (typeof id === "string" && this.forcedDesktop.has(id)) {
       const session = this.sessions.get(id);
@@ -144,6 +155,15 @@ export class CodexDesktopBackend implements AgentBackend {
     return this.acp.request<T>(method, raw, options);
   }
 
+  private desktopSession(id: string): DesktopSession {
+    let session = this.sessions.get(id);
+    if (!session) {
+      session = { id, revision: -1, connected: false, snapshotWaiters: new Set(), prompts: new Set(), requests: new Map() };
+      this.sessions.set(id, session);
+    }
+    return session;
+  }
+
   async notify(method: string, raw: unknown): Promise<void> {
     const id = (raw as any)?.sessionId;
     if (method === "session/cancel" && this.forcedDesktop.has(id)) {
@@ -162,7 +182,9 @@ export class CodexDesktopBackend implements AgentBackend {
     if (!session.attaching) {
       session.attaching = (async () => {
         await this.ipc.ensureReady();
+        if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
         const owner = await this.ipc.request("thread-owner-discovery", { hostId: "local", conversationId: session.id });
+        if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
         if (!owner.handledByClientId) throw new Error("Codex desktop session owner is unavailable");
         session.owner = owner.handledByClientId;
         session.revision = -1;
@@ -281,9 +303,10 @@ export class CodexDesktopBackend implements AgentBackend {
         projection = projectDesktopConversation(session.conversation, session.messagePromptIds);
       }
     }
+    const firstSnapshot = session.records === undefined;
     const changes = desktopRecordChanges(session.records, projection.records);
     session.records = projection.records;
-    if (changes.reset) this.handlers.onHistoryReset?.(this.id, session.id, changes.updates);
+    if (firstSnapshot || changes.reset) this.handlers.onHistoryReset?.(this.id, session.id, changes.updates);
     else for (const update of changes.updates) this.handlers.onUpdate(this.id, { sessionId: session.id, update });
     const configOptions = this.configOptions(session);
     if (changes.reset || JSON.stringify(configOptions) !== JSON.stringify(session.configOptions)) {
