@@ -37,6 +37,11 @@ class MessageItem extends TimelineItem {
   bool steered = false;
   String? receipt;
   bool optimistic = false;
+  bool removed = false;
+
+  bool get canRemovePending => role == MessageRole.user && promptId != null &&
+      !removed && !steered && receipt != 'read' && dequeued != 'started' &&
+      (queued || optimistic || ['sending', 'unknown', 'received', 'failed'].contains(receipt));
 
   /// `started` / `cancelled` once a queued prompt left the queue.
   String? dequeued;
@@ -529,6 +534,12 @@ class Timeline extends ChangeNotifier {
     _detachedPromptEvents
       ..clear()
       ..addAll(source._detachedPromptEvents);
+    // A removed uncertain send may have only a tombstone in the new epoch.
+    for (final message in uncertain) {
+      for (final event in _detachedPromptEvents.remove(message.promptId) ?? const <Map<String, dynamic>>[]) {
+        _applyEvent(event, DateTime.now());
+      }
+    }
     _revision = source._revision;
     _anon = source._anon;
     plan = source.plan;
@@ -584,6 +595,7 @@ class Timeline extends ChangeNotifier {
                 'steered': m.steered,
                 'receipt': m.receipt,
                 'optimistic': m.optimistic,
+                'removed': m.removed,
                 'dequeued': m.dequeued,
               },
               ToolItem t => {
@@ -701,6 +713,7 @@ class Timeline extends ChangeNotifier {
                 ..steered = j['steered'] == true
                 ..receipt = j['receipt'] as String?
                 ..optimistic = j['optimistic'] == true
+                ..removed = j['removed'] == true
                 ..dequeued = j['dequeued'] as String?;
         case 'tool':
           item = ToolItem(key, j['id'] as String)
@@ -832,7 +845,11 @@ class Timeline extends ChangeNotifier {
     for (final item in older.items) {
       final existing = _byKey[item.key];
       if (existing is TurnSummaryItem) continue;
-      if (existing is PermissionItem && item is PermissionItem) {
+      if (existing is MessageItem && item is MessageItem) {
+        item.removed = item.removed || existing.removed;
+        item.dequeued = existing.dequeued ?? item.dequeued;
+        if (existing.receipt == 'read' || item.receipt != 'read') item.receipt = existing.receipt ?? item.receipt;
+      } else if (existing is PermissionItem && item is PermissionItem) {
         item.toolCall ??= existing.toolCall;
         if (item.options.isEmpty) item.options = existing.options;
         if (existing.resolved) {
@@ -1111,6 +1128,11 @@ class Timeline extends ChangeNotifier {
         final item = _byKey['user_message_chunk:$mid'];
         if (item is MessageItem) {
           item.dequeued = e['cancelled'] == true ? 'cancelled' : 'started';
+          if (e['removed'] == true) {
+            item.removed = true;
+            item.optimistic = false;
+            _structureChanged = _snapshotChanged = true;
+          }
           _touch(item);
         } else {
           (_detachedPromptEvents['${e['promptId']}'] ??= []).add(e);

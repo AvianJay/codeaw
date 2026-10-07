@@ -69,6 +69,8 @@ class SessionController extends ChangeNotifier {
   /// Unsent text survives navigating between recently opened conversations.
   String draft = '';
   final _promptReceipts = <String, Completer<bool>>{};
+  final _removingPrompts = <String>{};
+  bool removingPrompt(String id) => _removingPrompts.contains(id);
 
   /// `@` tokens picked for [draft] → their `file:` URIs.
   final draftMentions = <String, String>{};
@@ -319,6 +321,10 @@ class SessionController extends ChangeNotifier {
       final event = msg.params['event'] as Map?;
       if (event?['type'] == 'prompt_receipt' &&
           ['received', 'read'].contains(event?['status'])) {
+        final receipt = _promptReceipts[event?['promptId']];
+        if (receipt != null && !receipt.isCompleted) receipt.complete(true);
+      }
+      if (event?['type'] == 'dequeued' && event?['cancelled'] == true) {
         final receipt = _promptReceipts[event?['promptId']];
         if (receipt != null && !receipt.isCompleted) receipt.complete(true);
       }
@@ -606,6 +612,56 @@ class SessionController extends ChangeNotifier {
   }
 
   void cancel() => client.notify('session/cancel', {'sessionId': sessionId});
+
+  /// Withdraw one pending message. Never falls back to stopping the whole turn.
+  Future<bool> removePrompt(MessageItem prompt) async {
+    final id = prompt.promptId;
+    if (id == null ||
+        !prompt.canRemovePending ||
+        !client.isOnline ||
+        !_removingPrompts.add(id)) {
+      return false;
+    }
+    _notify();
+    try {
+      final response =
+          await client.request('_codeaw/session/remove_prompt', {
+                'sessionId': sessionId,
+                'promptId': id,
+              })
+              as Map;
+      if (response['removed'] != true) {
+        _toast('這則訊息已開始處理，無法取消待送');
+        return false;
+      }
+      final params = <String, dynamic>{
+        'event': {
+          'type': 'dequeued',
+          'promptId': id,
+          'cancelled': true,
+          'removed': true,
+        },
+      };
+      timeline.apply('_codeaw/event', params);
+      _incoming?.apply('_codeaw/event', params);
+      timeline.flush();
+      final receipt = _promptReceipts[id];
+      if (receipt != null && !receipt.isCompleted) receipt.complete(true);
+      _scheduleSave();
+      return true;
+    } on RpcError catch (e) {
+      _toast(
+        e.code == RpcError.methodNotFound ? '請先更新電腦 bridge，才能取消待送訊息' : e.detail,
+      );
+      return false;
+    } catch (e) {
+      _toast('取消失敗：$e');
+      return false;
+    } finally {
+      _removingPrompts.remove(id);
+      _notify();
+    }
+  }
 
   void reusePrompt(MessageItem prompt) {
     draft = draft.trim().isEmpty ? prompt.promptText : '$draft\n\n${prompt.promptText}';

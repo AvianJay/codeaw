@@ -76,6 +76,8 @@ class BridgeSession {
   turn?: Turn;
   desktop?: DesktopState;
   queue: QueuedPrompt[] = [];
+  readonly steering = new Set<string>();
+  dequeues?: Map<string, Extract<CodeawEvent, { type: "dequeued" }>>;
   readonly pending = new Map<string, PendingRequest>();
   receipts?: Map<string, "received" | "read" | "failed">;
   /** Agent process generation in which this session is live; 0 = not live. */
@@ -180,6 +182,10 @@ export class SessionManager implements AgentHandlers {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     for (const s of this.sessions.values()) {
       if (s.workTimer) clearTimeout(s.workTimer);
+      for (const q of s.queue.splice(0)) {
+        this.appendEvent(s, { type: "dequeued", promptId: q.promptId, cancelled: true });
+        q.resolve({ stopReason: "cancelled" });
+      }
       this.saveMeta(s, true);
     }
     this.store.closeAll();
@@ -276,11 +282,14 @@ export class SessionManager implements AgentHandlers {
     if (this.shuttingDown) return;
     const s = this.sessions.get(extId(agentId, backendId)) ?? this.fromDisk(extId(agentId, backendId));
     if (!s) return;
+    const entries = this.ensureEntries(s);
     const receipts = this.receiptStates(s);
+    const dequeues = this.dequeueStates(s);
     const nativeIds = new Set(updates.filter((u) => u.sessionUpdate === "user_message_chunk").map((u) => codeawMeta(u).promptId));
     // A native snapshot has no unsent codeaw queue. Preserve those messages and
     // receipt states across its epoch rebuild, including after reconnect.
-    const waiting = (s.entries ?? this.store.readEntries(s.id)).filter((entry) => entry.kind === "update" && entry.update.sessionUpdate === "user_message_chunk" &&
+    const waiting = entries.filter((entry) => entry.kind === "update" && entry.update.sessionUpdate === "user_message_chunk" &&
+      dequeues.get(codeawMeta(entry.update).promptId)?.removed !== true &&
       ["received", "failed"].includes(receipts.get(codeawMeta(entry.update).promptId) ?? "") && !nativeIds.has(codeawMeta(entry.update).promptId));
     this.store.truncate(s.id);
     s.entries = [];
@@ -300,6 +309,7 @@ export class SessionManager implements AgentHandlers {
       for (const update of updates) this.ingest(s, update);
       for (const entry of waiting) if (entry.kind === "update") this.append(s, { kind: "update", update: entry.update });
       for (const [promptId, status] of receipts) this.appendEvent(s, { type: "prompt_receipt", promptId, status });
+      for (const event of dequeues.values()) this.appendEvent(s, event);
       for (const pending of s.pending.values()) {
         if (pending.kind === "permission") this.appendEvent(s, { type: "permission_request", requestId: pending.id, toolCall: pending.params.toolCall, options: pending.params.options });
         else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
@@ -507,7 +517,23 @@ export class SessionManager implements AgentHandlers {
   // ───────────────────────────── log & broadcast ─────────────────────────────
 
   private ensureEntries(s: BridgeSession): LogEntry[] {
-    if (!s.entries) s.entries = this.store.readEntries(s.id);
+    if (!s.entries) {
+      s.entries = this.store.readEntries(s.id);
+      // Queue promises cannot survive a bridge restart. Older versions left the
+      // saved user bubbles queued forever; settle them without redelivering them.
+      const waiting = new Map<string, boolean>();
+      for (const entry of s.entries) {
+        if (entry.kind !== "update" || entry.update.sessionUpdate !== "user_message_chunk") continue;
+        const meta = codeawMeta(entry.update);
+        if (typeof meta.promptId === "string" && typeof meta.queued === "boolean") waiting.set(meta.promptId, meta.queued && meta.steered !== true);
+      }
+      const receipts = this.receiptStates(s), dequeues = this.dequeueStates(s);
+      for (const [promptId, queued] of waiting) {
+        if (queued && !dequeues.has(promptId) && receipts.get(promptId) !== "read") {
+          this.appendEvent(s, { type: "dequeued", promptId, cancelled: true });
+        }
+      }
+    }
     return s.entries;
   }
 
@@ -525,7 +551,18 @@ export class SessionManager implements AgentHandlers {
 
   private appendEvent(s: BridgeSession, event: CodeawEvent): void {
     if (event.type !== "dequeued" && event.type !== "prompt_receipt") s.midRun = undefined;
+    if (event.type === "dequeued") this.dequeueStates(s).set(event.promptId, event);
     this.append(s, { kind: "event", event });
+  }
+
+  private dequeueStates(s: BridgeSession): Map<string, Extract<CodeawEvent, { type: "dequeued" }>> {
+    if (!s.dequeues) {
+      s.dequeues = new Map();
+      for (const entry of s.entries ?? this.store.readEntries(s.id)) {
+        if (entry.kind === "event" && entry.event.type === "dequeued") s.dequeues.set(entry.event.promptId, entry.event);
+      }
+    }
+    return s.dequeues;
   }
 
   private receiptStates(s: BridgeSession): Map<string, "received" | "read" | "failed"> {
@@ -1067,13 +1104,20 @@ export class SessionManager implements AgentHandlers {
   async prompt(c: ClientHandle, params: acp.PromptRequest): Promise<acp.PromptResponse> {
     const s = this.requireLoaded(params.sessionId);
     if (!s.subscribers.has(c)) await this.attach(c, s);
-    const agent = await this.ensureActive(s);
     const delivery: string = codeawMeta(params as any).delivery ?? "auto";
     const clientPromptId = codeawMeta(params as any).clientPromptId;
     if (clientPromptId !== undefined && (typeof clientPromptId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientPromptId))) {
       throw acp.RequestError.invalidParams(undefined, "Invalid clientPromptId");
     }
     const promptId = clientPromptId ?? crypto.randomUUID();
+    if (this.dequeueStates(s).get(promptId)?.cancelled) return { stopReason: "cancelled", _meta: { codeaw: { duplicate: true, promptId } } };
+    if (this.receiptStates(s).has(promptId)) {
+      if (s.turn && s.turn.promptId === promptId) return s.turn.done;
+      return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
+    }
+    const agent = await this.ensureActive(s);
+    // A removal request can race the asynchronous owner/agent connection.
+    if (this.dequeueStates(s).get(promptId)?.cancelled) return { stopReason: "cancelled", _meta: { codeaw: { duplicate: true, promptId } } };
     if (this.receiptStates(s).has(promptId)) {
       if (s.turn && s.turn.promptId === promptId) return s.turn.done;
       return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
@@ -1084,6 +1128,7 @@ export class SessionManager implements AgentHandlers {
     this.logUserMessage(s, blocks, promptId, { queued: busy, steered: busy && delivery !== "queue" && agent.supportsSteering });
     this.receipt(s, promptId, "received");
     if (busy && delivery !== "queue" && agent.supportsSteering && (s.meta.connection === "desktop" || s.backendGen === agent.generation)) {
+      s.steering.add(promptId);
       try {
         const r = await agent.request<any>("_session/steering", {
           sessionId: s.meta.backendId,
@@ -1098,13 +1143,17 @@ export class SessionManager implements AgentHandlers {
       } catch (err) {
         if (s.meta.connection === "desktop") { this.receipt(s, promptId, "failed"); throw err; }
         log.warn(`steering failed for ${s.id}, queueing instead: ${errorMessage(err)}`);
-        this.logUserMessage(s, [{ type: "text", text: "" }], promptId, { queued: true, steered: false });
+      } finally {
+        s.steering.delete(promptId);
       }
+      this.logUserMessage(s, [{ type: "text", text: "" }], promptId, { queued: true, steered: false });
     }
     if (busy) {
       return new Promise<acp.PromptResponse>((resolve, reject) => {
         s.queue.push({ promptId, blocks, resolve, reject });
         this.emitState(s);
+        // Steering can decline after the previous turn has already finished.
+        this.startNext(s);
       });
     }
     return this.runTurn(s, promptId, blocks);
@@ -1159,6 +1208,29 @@ export class SessionManager implements AgentHandlers {
     if (!next) return;
     this.appendEvent(s, { type: "dequeued", promptId: next.promptId });
     this.runTurn(s, next.promptId, next.blocks).then(next.resolve, next.reject);
+  }
+
+  /** Remove one unsent prompt without interrupting a turn or opening the backend. */
+  removePrompt(params: { sessionId?: unknown; promptId?: unknown }): { removed: boolean; reason?: "processing" } {
+    const s = this.requireLoaded(params.sessionId);
+    const promptId = params.promptId;
+    if (typeof promptId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(promptId)) {
+      throw acp.RequestError.invalidParams(undefined, "Invalid promptId");
+    }
+    this.ensureEntries(s);
+    const previous = this.dequeueStates(s).get(promptId);
+    if (previous?.removed) return { removed: true };
+    const dispatched = this.ensureEntries(s).some((entry) => entry.kind === "event" && entry.event.type === "state" && entry.event.turnPromptId === promptId);
+    if (this.receiptStates(s).get(promptId) === "read" || dispatched || s.turn?.promptId === promptId || s.steering.has(promptId) || (previous && !previous.cancelled)) {
+      return { removed: false, reason: "processing" };
+    }
+    const index = s.queue.findIndex((q) => q.promptId === promptId);
+    const queued = index < 0 ? undefined : s.queue.splice(index, 1)[0];
+    // Persist even an unknown id: a late in-flight request must not resurrect it.
+    this.appendEvent(s, { type: "dequeued", promptId, cancelled: true, removed: true });
+    queued?.resolve({ stopReason: "cancelled" });
+    this.emitState(s);
+    return { removed: true };
   }
 
   async cancel(_c: ClientHandle, params: acp.CancelNotification): Promise<void> {

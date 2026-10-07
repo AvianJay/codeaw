@@ -347,7 +347,7 @@ Every session has an append-only log. Each entry has a per-session `seq`
 | `permission_resolved` | `requestId`, `outcome`, `optionName?`, `by?` | answered (by device name) or cancelled |
 | `elicitation_request` | `requestId`, `request` | an agent asked for structured input |
 | `elicitation_resolved` | `requestId`, `action`, `by?` | |
-| `dequeued` | `promptId`, `cancelled?` | a queued prompt started (or was dropped) |
+| `dequeued` | `promptId`, `cancelled?`, `removed?` | a queued prompt started (or was dropped); `removed: true` hides a withdrawn unsent message |
 | `error` | `message`, `code?` | turn failed, agent crashed, … |
 
 User prompts are logged as `user_message_chunk` updates with
@@ -415,6 +415,17 @@ The response arrives when the turn that handled the prompt ends (a steered
 prompt resolves with the running turn). `session/cancel` cancels the running
 turn, drops queued prompts (they resolve with `cancelled`) and answers every
 open permission/elicitation request with `cancelled`.
+
+`_codeaw/session/remove_prompt` is a request with `{sessionId, promptId}` (a UUID).
+It returns `{removed: true}` after withdrawing only that queued/uncertain prompt;
+it does not stop the active turn, settle permission requests or clear other prompts.
+The bridge broadcasts and persists `dequeued` with `cancelled: true, removed: true`.
+An unknown UUID also gets a tombstone, preventing a late request from sending it.
+Already dispatched/read prompts return `{removed: false, reason: "processing"}`.
+No desktop owner or agent process is needed to withdraw a pending prompt. Repeated
+removal is safe, including after reconnect and a desktop history rebuild.
+Queued requests resolve with `stopReason: "cancelled"`. On bridge restart, old
+unsent queue entries are marked cancelled and are never automatically resent.
 
 Clients may supply a UUID `_meta.codeaw.clientPromptId`. The bridge uses it as
 the logged `promptId` and suppresses duplicate delivery within that session,
@@ -491,6 +502,7 @@ out on the bridge.
 | `_codeaw/terminal/detach` | `{terminalId}` | `{}` |
 | `_codeaw/terminal/close` | `{terminalId}` | `{}` |
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
+| `_codeaw/session/remove_prompt` | `{sessionId, promptId}` | `{removed, reason?: "processing"}` |
 | `_codeaw/history/tool` | `{sessionId, epoch, toolCallId}` | `{epoch, seq, t, update}` (see deferred tool history) |
 | `_codeaw/history/page` | `{sessionId, epoch, before, pageBytes?}` | `{}` after the `_codeaw/history/page` notification (see paged history) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |

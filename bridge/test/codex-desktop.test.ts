@@ -278,6 +278,27 @@ describe("Codex desktop synchronization", () => {
     expect(a.text(nativeId, "user_message_chunk").match(/look here/g)).toHaveLength(1);
   });
 
+  it("removes a queued desktop prompt without interrupting the owner and keeps its tombstone through history rebuilds", async () => {
+    const { a, desktop } = await setup(); await load(a);
+    desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
+    const id = randomUUID();
+    const queued = a.request("session/prompt", { sessionId: nativeId, prompt: [{ type: "text", text: "remove only this queue" }],
+      _meta: { codeaw: { delivery: "queue", clientPromptId: id } } });
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.queued === 1);
+    expect(await a.request("_codeaw/session/remove_prompt", { sessionId: nativeId, promptId: id })).toEqual({ removed: true });
+    expect((await queued).stopReason).toBe("cancelled");
+    expect(desktop.conversation.turns.at(-1).status).toBe("inProgress");
+    expect(desktop.requests.some((r) => r.method === "thread-follower-interrupt-turn")).toBe(false);
+    desktop.patch([{ op: "replace", path: ["turns", 0, "items", 0, "text"], value: "edited after removal" }]);
+    await a.waitFor(() => a.received.some((r) => r.method === "_codeaw/replay" && r.params.mode === "complete"));
+    const b = await TestClient.connect(bridge!.url, bridge!.tokenFor("removed replay")); clients.push(b); await load(b);
+    expect(b.text(nativeId, "user_message_chunk")).not.toContain("remove only this queue");
+    expect(b.events(nativeId, "dequeued").findLast((e) => e.event.promptId === id)?.event).toMatchObject({ cancelled: true, removed: true });
+    desktop.finish();
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "idle");
+    expect(desktop.requests.some((r) => r.method === "thread-follower-start-turn")).toBe(false);
+  });
+
   it("keeps queued receipts through native history rebuilds and marks read only after desktop accepts", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");

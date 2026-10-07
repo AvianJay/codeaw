@@ -25,7 +25,7 @@ import 'turn_summary.dart';
 /// Thoughts without a matching turn remain visible, including older histories.
 List<TimelineItem> chatTimelineItems(SessionController controller) {
   final timeline = controller.timeline;
-  final roots = timeline.rootItems;
+  final roots = timeline.rootItems.where((item) => item is! MessageItem || !item.removed).toList();
   if (controller.agentId != 'codex') return roots;
   final grouped = <MessageItem>{
     for (final turn in [...roots.whereType<TurnSummaryItem>(), ?timeline.currentTurn])
@@ -50,7 +50,7 @@ class TimelineItemView extends StatelessWidget {
       listenable: item,
       builder: (context, _) => switch (item) {
         MessageItem m => m.role == MessageRole.user
-            ? UserMessageView(m)
+            ? UserMessageView(m, controller: controller)
             : m.role == MessageRole.thought
                 ? ThoughtView(m)
                 : AgentMessageView(m, streaming: isLast && controller.running, client: controller.client, basePath: controller.cwd),
@@ -111,12 +111,14 @@ class _Note extends StatelessWidget {
 }
 
 class UserMessageView extends StatelessWidget {
-  const UserMessageView(this.m, {super.key});
+  const UserMessageView(this.m, {super.key, this.controller});
   final MessageItem m;
+  final SessionController? controller;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    if (m.removed) return const SizedBox.shrink();
     final badges = <String>[
       if (m.steered) '插入回合中',
       if (m.queued && m.dequeued == null) '排隊中',
@@ -146,6 +148,17 @@ class UserMessageView extends StatelessWidget {
               child: Wrap(spacing: 5, crossAxisAlignment: WrapCrossAlignment.center, children: [
                 if (badges.isNotEmpty) Text(badges.join(' · '), style: TextStyle(fontSize: 11, color: scheme.outline)),
                 if (m.receipt != null) _MessageReceipt(m.receipt!),
+                if (controller != null && m.canRemovePending)
+                  ListenableBuilder(
+                    listenable: controller!,
+                    builder: (context, _) => TextButton.icon(
+                      onPressed: controller!.client.isOnline && !controller!.removingPrompt(m.promptId!)
+                          ? () => controller!.removePrompt(m) : null,
+                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(0, 40)),
+                      icon: const Icon(Icons.close_rounded, size: 16),
+                      label: const Text('取消待送訊息', style: TextStyle(fontSize: 12)),
+                    ),
+                  ),
               ]),
             ),
         ]),
