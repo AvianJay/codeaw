@@ -395,7 +395,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
     };
     final exit = t.exitCode;
     final mcp = t.mcp;
-    final summary = open || !t.bareTitle ? null : argumentSummary(mcp?.arguments ?? objectMap(t.rawInput));
+    final arguments = mcp?.arguments ?? objectMap(t.rawInput);
+    final inputTitle = argumentTitle(arguments);
+    final sourceTitle = toolTitle(title: t.title, name: t.name, metadata: t.meta);
+    final summary = open || !t.bareTitle ? null : argumentSummary({
+      for (final entry in arguments.entries)
+        if (inputTitle == null || entry.key != 'title') entry.key: entry.value,
+    });
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       child: Material(
@@ -412,14 +418,28 @@ class _ToolCallCardState extends State<ToolCallCard> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    if (inputTitle != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 3),
+                        child: Text(
+                          inputTitle,
+                          maxLines: open ? 4 : 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
+                        ),
+                      ),
                     Text.rich(
                       TextSpan(children: [
                         if (mcp != null) WidgetSpan(alignment: PlaceholderAlignment.middle, child: _McpServerTag(mcp)),
-                        TextSpan(text: mcp?.tool ?? t.displayTitle),
+                        TextSpan(text: mcp?.tool ?? sourceTitle),
                       ]),
                       maxLines: open ? 4 : 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
+                      style: TextStyle(
+                        fontSize: inputTitle == null ? 13.5 : 12,
+                        fontWeight: inputTitle == null ? FontWeight.w500 : FontWeight.normal,
+                        color: inputTitle == null ? null : scheme.onSurfaceVariant,
+                      ),
                     ),
                     if (summary != null)
                       Padding(

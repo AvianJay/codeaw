@@ -60,6 +60,14 @@ void main() {
       expect(mcpToolOf(title: title), isNull, reason: title);
     }
     expect(toolTitle(title: 'mcp__context7__query-docs'), 'context7 · query-docs');
+    expect(
+      toolTitle(title: 'mcp.browser.navigate', rawInput: {'server': 'browser', 'tool': 'navigate', 'arguments': {'title': '  開啟\n  專案頁面  '}}),
+      '開啟 專案頁面',
+    );
+    expect(toolTitle(title: 'computer_use', rawInput: {'title': '檢查畫面'}), '檢查畫面');
+    for (final value in [null, '', '  ', 123, true, ['title'], {'title': 'nested'}]) {
+      expect(toolTitle(title: 'mcp__browser__navigate', rawInput: {'title': value}), 'browser · navigate');
+    }
     expect(toolTitle(title: ' ', name: 'ToolSearch'), 'ToolSearch');
     expect(toolTitle(), '工具');
   });
@@ -119,11 +127,13 @@ void main() {
     expect(find.textContaining('mcp__'), findsNothing);
     expect(find.byIcon(Icons.extension_outlined), findsNWidgets(2));
     expect(find.text('libraryId: /flutter/flutter · query: MenuAnchor alignment'), findsOneWidget);
-    expect(find.text('title: Crash'), findsOneWidget);
+    expect(find.text('Crash'), findsOneWidget);
+    expect(find.text('title: Crash'), findsNothing);
+    expect(tester.getTopLeft(find.text('Crash')).dy, lessThan(tester.getTopLeft(find.textContaining('create_issue')).dy));
     // Codex reports the MCP result only as rawOutput.
     await tester.tap(find.textContaining('create_issue'));
     await tester.pump();
-    expect(find.text('title: Crash'), findsNothing);
+    expect(find.text('Crash'), findsOneWidget);
     expect(find.text('Created issue #12'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -154,6 +164,15 @@ void main() {
     await tester.pump();
     expect(find.text('使用 MCP 工具中…'), findsOneWidget);
     expect(find.text('context7 · query-docs'), findsNWidgets(2));
+    update(c.timeline, {
+      'sessionUpdate': 'tool_call_update',
+      'toolCallId': 'docs',
+      'rawInput': {'title': '查詢 Flutter 選單用法', 'query': 'MenuAnchor'},
+    });
+    await tester.pump();
+    // The card and working indicator both pick up titles arriving with arguments.
+    expect(find.text('查詢 Flutter 選單用法'), findsNWidgets(2));
+    expect(find.text('query: MenuAnchor'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
   });
 }

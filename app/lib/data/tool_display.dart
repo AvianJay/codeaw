@@ -52,8 +52,13 @@ McpToolRef? mcpToolOf({String? title, String? name, Object? rawInput, Object? me
 }
 
 /// One line of tool title for lists, banners and progress text.
-String toolTitle({String? title, String? name, Object? rawInput, Object? metadata}) =>
-    mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: metadata)?.label ?? nonEmptyString(title) ?? nonEmptyString(name) ?? '工具';
+String toolTitle({String? title, String? name, Object? rawInput, Object? metadata}) {
+  final mcp = mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: metadata);
+  return argumentTitle(mcp?.arguments ?? objectMap(rawInput)) ?? mcp?.label ?? nonEmptyString(title) ?? nonEmptyString(name) ?? '工具';
+}
+
+/// Some tools include a readable title in the call's JSON arguments.
+String? argumentTitle(Map<dynamic, dynamic> arguments) => nonEmptyString(arguments['title'])?.replaceAll(RegExp(r'\s+'), ' ');
 
 /// `key: value` pairs of scalar arguments, for calls whose title does not describe them.
 String? argumentSummary(Map<dynamic, dynamic> arguments) {

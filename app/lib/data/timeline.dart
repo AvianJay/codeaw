@@ -989,7 +989,7 @@ class Timeline extends ChangeNotifier {
         }
         _touch(item);
       case 'tool_call' || 'tool_call_update':
-        final before = (activeTool, activeTool?.title, activeTool?.kind, activity);
+        final before = (activeTool, activeTool?.title, activeTool?.displayTitle, activeTool?.kind, activity);
         final id = '${u['toolCallId']}';
         final item = _upsert('tool:$id', () => ToolItem('tool:$id', id));
         // Hydration may arrive ahead of pending WebSocket notifications.
@@ -1015,7 +1015,7 @@ class Timeline extends ChangeNotifier {
             _recordActivity(TurnActivity.thinking, at);
           }
         }
-        if (before != (activeTool, activeTool?.title, activeTool?.kind, activity)) _snapshotChanged = true;
+        if (before != (activeTool, activeTool?.title, activeTool?.displayTitle, activeTool?.kind, activity)) _snapshotChanged = true;
       case 'plan':
         plan = (u['entries'] as List?)?.whereType<Map<String, dynamic>>().toList();
         _snapshotChanged = true;
