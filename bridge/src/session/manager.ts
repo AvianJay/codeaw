@@ -256,7 +256,7 @@ export class SessionManager implements AgentHandlers {
       },
       agentInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
       authMethods: [],
-      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true, editPrompts: true } },
+      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true, editPrompts: true, fileArchives: true } },
     };
   }
 

@@ -22,6 +22,8 @@ the extra screens (files, git, pairing).
 | `GET /api/device` | validate the saved device token; returns `deviceId` | Bearer |
 | `GET /api/blobs/<sha256>` | image bytes referenced from the event log | Bearer |
 | `GET /api/fs/raw?path=<abs path>` | raw file bytes (image preview) | Bearer |
+| `GET /api/fs/raw?path=<abs path>&download=1` | original file bytes with an attachment filename, no preview/upload size cap | Bearer |
+| `POST /api/fs/archive` | stream a ZIP of selected files/folders, `{path: <base directory>, paths: [<absolute paths>]}` | Bearer |
 | `POST /api/uploads?sessionId=<id>&name=<filename>` | upload session attachment bytes, at most 512 MiB; HTTP 201 | Bearer |
 | `POST /api/uploads?name=<filename>` | upload bridge-scoped attachment bytes, at most 512 MiB; HTTP 200 | Bearer |
 
@@ -82,6 +84,7 @@ The response is a normal `InitializeResponse` with
   "host": "my-pc",
   "projectless": true,                // supports managed no-project conversations
   "editPrompts": true,                // supports _codeaw/session/fork (editing sent messages)
+  "fileArchives": true,               // supports authenticated POST /api/fs/archive
   "agents": [ AgentInfo, ... ]
 }}
 ```
@@ -633,6 +636,40 @@ of the same duration within each account. The chat header selects the current
 agent's provider; missing windows are hidden, never borrowed from another
 provider. Quota colors reflect remaining amount: green >=50, amber
 20–49.9, red <20. Account details still show unsupported or unknown quotas.
+
+### File downloads and ZIP exports
+
+`GET /api/fs/raw?path=<absolute-path>&download=1` returns the complete file as an
+attachment with its MIME type, byte length and RFC 5987 Unicode filename.
+It uses `Cache-Control: no-store` so downloads reflect current PC contents.
+Single files have no preview/upload size cap. Authentication and `resolveReadable`
+workspace/session/upload-root checks are unchanged.
+
+When `initialize._meta.codeaw.fileArchives` is true, authenticated
+`POST /api/fs/archive` accepts JSON `{path: <allowed base directory>,
+paths: [<absolute selected files/folders>]}`. The body is limited to 64 KiB,
+with 1–500 selections, at most 10,000 archive entries and 2 GiB of file content.
+Every selection must be below the base directory and pass the readable path guard.
+The full manifest is validated before sending headers; invalid selections return
+JSON with HTTP 400/403/404/413 rather than a partial archive.
+
+The response is an `application/zip` attachment, using ZIP STORE to keep its
+final `Content-Length` known and avoid compression load during live AI turns.
+UTF-8 names, relative directory structure and empty folders are retained;
+overlapping selections are deduplicated. Folder traversal skips symlinks and
+Windows junctions. Each file is rechecked and opened lazily, one at a time;
+backpressure bounds memory. Cancelling the HTTP response closes the active file.
+Changes to file sizes or read errors during transfer terminate the response;
+clients must reject incomplete downloads, never export their partial files.
+
+Native clients stream into a unique local temporary directory. On completion
+they hand the local file to the OS save picker or share sheet and clean it up
+afterwards; sharing never includes a PC path or device token. Web clients keep
+the response in a browser Blob rather than copying it into Dart byte arrays.
+They download via a Blob URL or invoke Web Share from a fresh user gesture.
+Progress uses received bytes and `Content-Length`, and cancellation/failure
+removes the local partial file or Blob. A 100% progress event alone does not
+mean the file is ready; the full HTTP response must complete first.
 
 ### File uploads
 

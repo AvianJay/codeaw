@@ -27,6 +27,12 @@ IconData fileIcon(String name) {
     return Icons.image_outlined;
   }
   if (n.endsWith('.pdf')) return Icons.picture_as_pdf_outlined;
+  if (RegExp(r'\.(wav|mp3|m4a|flac|ogg|midi?)$').hasMatch(n)) {
+    return Icons.audio_file_outlined;
+  }
+  if (RegExp(r'\.(zip|7z|rar|tar|gz)$').hasMatch(n)) {
+    return Icons.folder_zip_outlined;
+  }
   if (RegExp(r'\.(md|txt|rst)$').hasMatch(n)) return Icons.article_outlined;
   if (RegExp(r'\.(json|ya?ml|toml|ini|xml|lock)$').hasMatch(n)) {
     return Icons.data_object_rounded;

@@ -12,6 +12,10 @@ import 'bridge_frame.dart';
 import 'host.dart';
 import 'models.dart';
 import 'upload_progress.dart';
+import 'file_download.dart';
+import 'file_download_web.dart'
+    if (dart.library.io) 'file_download_io.dart'
+    as file_download;
 import 'upload_transport_web.dart'
     if (dart.library.io) 'upload_transport_io.dart'
     as upload_transport;
@@ -50,6 +54,7 @@ class BridgeClient extends ChangeNotifier {
 
   /// The bridge can branch a chat from an edited, already sent message.
   bool supportsPromptEditing = false;
+  bool supportsFileArchives = false;
 
   // Synchronous on purpose: a replayed entry must reach its SessionController before the
   // `session/load` response does, or the response's lastSeq would mark it as a duplicate.
@@ -192,6 +197,7 @@ class BridgeClient extends ChangeNotifier {
         bridgeHost = meta?['host'] as String?;
         supportsProjectless = meta?['projectless'] == true;
         supportsPromptEditing = meta?['editPrompts'] == true;
+        supportsFileArchives = meta?['fileArchives'] == true;
         activeUrl = url;
         lastError = null;
         if (host.urls.first != url) {
@@ -239,7 +245,10 @@ class BridgeClient extends ChangeNotifier {
   void _handleNotification(String method, Map<String, dynamic> params) {
     if (_disposed) return;
     switch (method) {
-      case 'session/update' || '_codeaw/event' || '_codeaw/replay' || '_codeaw/history/page':
+      case 'session/update' ||
+          '_codeaw/event' ||
+          '_codeaw/replay' ||
+          '_codeaw/history/page':
         _messages.add(SessionMessage(method, params));
       case '_codeaw/activity':
         _activity.add(params);
@@ -296,6 +305,34 @@ class BridgeClient extends ChangeNotifier {
   Map<String, String> get authHeaders => {
     'Authorization': 'Bearer ${host.token}',
   };
+
+  Future<DownloadedFile> downloadFile(
+    String path, {
+    required String name,
+    DownloadProgress? onProgress,
+    CancelToken? cancel,
+  }) => file_download.fetchDownload(
+    httpUri('/api/fs/raw', {'path': path, 'download': '1'}),
+    authHeaders,
+    name: name,
+    onProgress: onProgress,
+    cancel: cancel,
+  );
+
+  Future<DownloadedFile> downloadArchive(
+    String path,
+    List<String> paths, {
+    required String name,
+    DownloadProgress? onProgress,
+    CancelToken? cancel,
+  }) => file_download.fetchDownload(
+    httpUri('/api/fs/archive'),
+    authHeaders,
+    name: name,
+    body: jsonEncode({'path': path, 'paths': paths}),
+    onProgress: onProgress,
+    cancel: cancel,
+  );
 
   Future<Map<String, dynamic>> uploadFile(
     String sessionId,

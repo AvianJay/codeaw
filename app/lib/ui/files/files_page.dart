@@ -7,6 +7,7 @@ import '../../data/models.dart';
 import '../common/widgets.dart';
 import '../common/create_folder.dart';
 import 'file_view_page.dart';
+import 'file_export.dart';
 
 /// Directory listing on the PC (limited by the bridge to workspaces and session folders).
 class FilesPage extends StatefulWidget {
@@ -25,6 +26,8 @@ class _FilesPageState extends State<FilesPage> {
   bool _showHidden = false;
   String? _error;
   String? _selectedPath;
+  bool _selecting = false;
+  final _selection = <String>{};
 
   @override
   void initState() {
@@ -37,7 +40,11 @@ class _FilesPageState extends State<FilesPage> {
     setState(() {
       _loading = true;
       _error = null;
-      if (path != _path) _selectedPath = null;
+      if (path != _path) {
+        _selectedPath = null;
+        _selection.clear();
+        _selecting = false;
+      }
     });
     try {
       final r =
@@ -50,6 +57,9 @@ class _FilesPageState extends State<FilesPage> {
         _entries = (r['entries'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
             .toList();
+        final paths = _entries.map((entry) => entry['path']).toSet();
+        _selection.removeWhere((path) => !paths.contains(path));
+        if (!paths.contains(_selectedPath)) _selectedPath = null;
       });
     } on RpcError catch (e) {
       if (mounted) setState(() => _error = e.detail);
@@ -65,16 +75,37 @@ class _FilesPageState extends State<FilesPage> {
         .where((e) => _showHidden || !'${e['name']}'.startsWith('.'))
         .toList();
     return PopScope(
-      canPop: _parent == null || _path == widget.path,
+      canPop: !_selecting && (_parent == null || _path == widget.path),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _parent != null) _load(_parent!);
+        if (!didPop && _selecting) {
+          setState(() {
+            _selecting = false;
+            _selection.clear();
+          });
+        } else if (!didPop && _parent != null) {
+          _load(_parent!);
+        }
       },
       child: Scaffold(
         appBar: AppBar(
+          leading: _selecting
+              ? IconButton(
+                  tooltip: '取消選取',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => setState(() {
+                    _selecting = false;
+                    _selection.clear();
+                  }),
+                )
+              : null,
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(folderName(_path)),
+              Text(
+                _selecting ? '已選取 ${_selection.length} 個項目' : folderName(_path),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
               Text(
                 _path,
                 maxLines: 1,
@@ -84,41 +115,141 @@ class _FilesPageState extends State<FilesPage> {
             ],
           ),
           actions: [
-            IconButton(
-              tooltip: '新增資料夾',
-              icon: const Icon(Icons.create_new_folder_outlined),
-              onPressed: _loading ? null : () async {
-                final path = await showCreateFolder(context, _path);
-                if (path != null && mounted) await _load(path);
-              },
-            ),
-            IconButton(
-              tooltip: '終端機',
-              icon: const Icon(Icons.terminal_rounded),
-              onPressed: () => context.push(
-                '/terminal?cwd=${Uri.encodeQueryComponent(_path)}',
+            if (_selecting) ...[
+              IconButton(
+                tooltip: '全選',
+                icon: const Icon(Icons.select_all_rounded),
+                onPressed: () => setState(() {
+                  final paths = visible.map((e) => '${e['path']}').toSet();
+                  if (_selection.containsAll(paths)) {
+                    _selection.removeAll(paths);
+                  } else {
+                    _selection.addAll(paths);
+                  }
+                }),
               ),
-            ),
-            IconButton(
-              tooltip: _showHidden ? '隱藏 . 開頭的檔案' : '顯示 . 開頭的檔案',
-              icon: Icon(
-                _showHidden
-                    ? Icons.visibility_rounded
-                    : Icons.visibility_off_outlined,
+            ] else ...[
+              IconButton(
+                tooltip: '新增資料夾',
+                icon: const Icon(Icons.create_new_folder_outlined),
+                onPressed: _loading
+                    ? null
+                    : () async {
+                        final path = await showCreateFolder(context, _path);
+                        if (path != null && mounted) await _load(path);
+                      },
               ),
-              onPressed: () => setState(() => _showHidden = !_showHidden),
-            ),
-            IconButton(
-              tooltip: 'Git 變更',
-              icon: const Icon(Icons.difference_outlined),
-              onPressed: () =>
-                  context.push('/git?cwd=${Uri.encodeQueryComponent(_path)}'),
-            ),
+              IconButton(
+                tooltip: '選取檔案',
+                icon: const Icon(Icons.checklist_rounded),
+                onPressed: _loading
+                    ? null
+                    : () => setState(() => _selecting = true),
+              ),
+              PopupMenuButton<String>(
+                tooltip: '檔案操作',
+                onSelected: (value) async {
+                  switch (value) {
+                    case 'folder':
+                      final path = await showCreateFolder(context, _path);
+                      if (path != null && mounted) await _load(path);
+                    case 'terminal':
+                      if (context.mounted) {
+                        context.push(
+                          '/terminal?cwd=${Uri.encodeQueryComponent(_path)}',
+                        );
+                      }
+                    case 'hidden':
+                      setState(() => _showHidden = !_showHidden);
+                    case 'git':
+                      if (context.mounted) {
+                        context.push(
+                          '/git?cwd=${Uri.encodeQueryComponent(_path)}',
+                        );
+                      }
+                  }
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
+                    value: 'folder',
+                    child: ListTile(
+                      leading: Icon(Icons.create_new_folder_outlined),
+                      title: Text('新增資料夾'),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'terminal',
+                    child: ListTile(
+                      leading: Icon(Icons.terminal_rounded),
+                      title: Text('終端機'),
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'hidden',
+                    child: ListTile(
+                      leading: Icon(
+                        _showHidden
+                            ? Icons.visibility_rounded
+                            : Icons.visibility_off_outlined,
+                      ),
+                      title: Text(_showHidden ? '隱藏 . 開頭的檔案' : '顯示 . 開頭的檔案'),
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'git',
+                    child: ListTile(
+                      leading: Icon(Icons.difference_outlined),
+                      title: Text('Git 變更'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
         body: Column(
           children: [
             const ConnectionBanner(),
+            if (_selecting)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      onPressed:
+                          _selection.isEmpty ||
+                              !AppScope.of(context).client!.supportsFileArchives
+                          ? null
+                          : () => showFileExport(
+                              context,
+                              path: _path,
+                              paths: _selection.toList(),
+                            ),
+                      icon: const Icon(Icons.folder_zip_outlined),
+                      label: const Text('打包 ZIP 下載'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed:
+                          _selection.isEmpty ||
+                              !AppScope.of(context).client!.supportsFileArchives
+                          ? null
+                          : () => showFileExport(
+                              context,
+                              path: _path,
+                              paths: _selection.toList(),
+                              action: FileExportAction.share,
+                            ),
+                      icon: const Icon(Icons.ios_share_rounded),
+                      label: const Text('打包 ZIP 分享'),
+                    ),
+                    if (!AppScope.of(context).client!.supportsFileArchives)
+                      const Text('請先更新電腦端 bridge 以使用 ZIP'),
+                  ],
+                ),
+              ),
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
@@ -150,17 +281,29 @@ class _FilesPageState extends State<FilesPage> {
                               for (final e in visible)
                                 ListTile(
                                   dense: true,
-                                  selected: _selectedPath == e['path'],
+                                  selected: _selecting
+                                      ? _selection.contains(e['path'])
+                                      : _selectedPath == e['path'],
                                   selectedTileColor: scheme.primaryContainer
                                       .withValues(alpha: .4),
-                                  leading: Icon(
-                                    e['type'] == 'dir'
-                                        ? Icons.folder_rounded
-                                        : fileIcon('${e['name']}'),
-                                    color: e['type'] == 'dir'
-                                        ? scheme.primary
-                                        : scheme.outline,
-                                  ),
+                                  leading: _selecting
+                                      ? Checkbox(
+                                          value: _selection.contains(e['path']),
+                                          onChanged: (_) => setState(() {
+                                            final path = '${e['path']}';
+                                            if (!_selection.remove(path)) {
+                                              _selection.add(path);
+                                            }
+                                          }),
+                                        )
+                                      : Icon(
+                                          e['type'] == 'dir'
+                                              ? Icons.folder_rounded
+                                              : fileIcon('${e['name']}'),
+                                          color: e['type'] == 'dir'
+                                              ? scheme.primary
+                                              : scheme.outline,
+                                        ),
                                   title: Text(
                                     '${e['name']}',
                                     maxLines: 1,
@@ -173,7 +316,13 @@ class _FilesPageState extends State<FilesPage> {
                                         ),
                                   onTap: () {
                                     final path = '${e['path']}';
-                                    if (e['type'] == 'dir') {
+                                    if (_selecting) {
+                                      setState(() {
+                                        if (!_selection.remove(path)) {
+                                          _selection.add(path);
+                                        }
+                                      });
+                                    } else if (e['type'] == 'dir') {
                                       _load(path);
                                     } else if (split) {
                                       setState(() => _selectedPath = path);
@@ -183,6 +332,31 @@ class _FilesPageState extends State<FilesPage> {
                                       );
                                     }
                                   },
+                                  onLongPress: () => setState(() {
+                                    _selecting = true;
+                                    _selection.add('${e['path']}');
+                                  }),
+                                  trailing: _selecting || e['type'] == 'dir'
+                                      ? null
+                                      : PopupMenuButton<FileExportAction>(
+                                          tooltip: '下載或分享 ${e['name']}',
+                                          onSelected: (action) =>
+                                              showFileExport(
+                                                context,
+                                                path: '${e['path']}',
+                                                action: action,
+                                              ),
+                                          itemBuilder: (_) => const [
+                                            PopupMenuItem(
+                                              value: FileExportAction.save,
+                                              child: Text('下載檔案'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: FileExportAction.share,
+                                              child: Text('分享檔案'),
+                                            ),
+                                          ],
+                                        ),
                                 ),
                             ],
                           ),

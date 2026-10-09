@@ -13,6 +13,9 @@ import { enableGzipFrames } from "./compression.js";
 import type { SessionStore } from "../session/store.js";
 import { receiveUpload, UploadError, UploadTooLargeError, type UploadStore } from "./uploads.js";
 import { findWebRoot, serveWeb } from "./web.js";
+import path from "node:path";
+import { pipeline } from "node:stream/promises";
+import { attachmentHeader, DownloadError, sendArchive } from "./downloads.js";
 
 const log = logger("http");
 const HEARTBEAT_MS = 20_000;
@@ -134,7 +137,25 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
           return sendJson(res, 403, { error: (err as Error).message });
         }
         if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return sendJson(res, 404, { error: "Not found" });
+        if (url.searchParams.get("download") === "1") {
+          const source = fs.createReadStream(file);
+          res.writeHead(200, { "Content-Type": mimeFor(file) ?? "application/octet-stream", "Content-Length": fs.statSync(file).size,
+            "Content-Disposition": attachmentHeader(path.basename(file)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+          await pipeline(source, res);
+          return;
+        }
         return sendFile(res, file, mimeFor(file) ?? "application/octet-stream");
+      }
+      if (req.method === "POST" && url.pathname === "/api/fs/archive") {
+        let body: unknown;
+        try { body = JSON.parse(await readBody(req, 64 * 1024)); }
+        catch { return sendJson(res, 400, { error: "Invalid or oversized archive request" }); }
+        try { await sendArchive(res, deps.guard, body); }
+        catch (error) {
+          if (error instanceof DownloadError && !res.headersSent) return sendJson(res, error.status, { error: error.message });
+          if (!res.destroyed) throw error;
+        }
+        return;
       }
       if (req.method === "POST" && url.pathname === "/api/uploads") {
         if (url.searchParams.has("sessionId")) {

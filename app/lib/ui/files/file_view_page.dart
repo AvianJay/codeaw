@@ -7,6 +7,8 @@ import '../../data/models.dart';
 import '../common/code_view.dart';
 import '../common/adaptive.dart';
 import '../common/markdown.dart';
+import '../common/widgets.dart';
+import 'file_export.dart';
 
 class FileViewPage extends StatefulWidget {
   const FileViewPage({
@@ -99,9 +101,50 @@ class _FileViewPageState extends State<FileViewPage> {
         );
       } else {
         body = Center(
-          child: Text(
-            '二進位檔案（${f['size']} bytes），無法預覽',
-            style: TextStyle(color: scheme.outline),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  mime?.startsWith('audio/') == true
+                      ? Icons.audio_file_outlined
+                      : Icons.insert_drive_file_outlined,
+                  size: 56,
+                  color: scheme.primary,
+                ),
+                const SizedBox(height: 16),
+                Text(folderName(widget.path), textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text(
+                  '${formatBytes(f['size'] as num? ?? 0)} · 無法在 App 預覽',
+                  style: TextStyle(color: scheme.outline),
+                ),
+                const SizedBox(height: 20),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () =>
+                          showFileExport(context, path: widget.path),
+                      icon: const Icon(Icons.download_rounded),
+                      label: const Text('下載檔案'),
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => showFileExport(
+                        context,
+                        path: widget.path,
+                        action: FileExportAction.share,
+                      ),
+                      icon: const Icon(Icons.ios_share_rounded),
+                      label: const Text('分享檔案'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         );
       }
@@ -164,7 +207,11 @@ class _FileViewPageState extends State<FileViewPage> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(folderName(widget.path)),
+            Text(
+              folderName(widget.path),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
             Text(
               widget.path,
               maxLines: 1,
@@ -174,6 +221,20 @@ class _FileViewPageState extends State<FileViewPage> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: '下載檔案',
+            icon: const Icon(Icons.download_rounded),
+            onPressed: () => showFileExport(context, path: widget.path),
+          ),
+          IconButton(
+            tooltip: '分享檔案',
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: () => showFileExport(
+              context,
+              path: widget.path,
+              action: FileExportAction.share,
+            ),
+          ),
           if (isMarkdown)
             IconButton(
               tooltip: _rendered ? '顯示原始碼' : '顯示排版',
@@ -182,11 +243,12 @@ class _FileViewPageState extends State<FileViewPage> {
               ),
               onPressed: () => setState(() => _rendered = !_rendered),
             ),
-          IconButton(
-            tooltip: _wrap ? '不自動換行' : '自動換行',
-            icon: Icon(_wrap ? Icons.wrap_text_rounded : Icons.notes_rounded),
-            onPressed: () => setState(() => _wrap = !_wrap),
-          ),
+          if (f?['binary'] != true)
+            IconButton(
+              tooltip: _wrap ? '不自動換行' : '自動換行',
+              icon: Icon(_wrap ? Icons.wrap_text_rounded : Icons.notes_rounded),
+              onPressed: () => setState(() => _wrap = !_wrap),
+            ),
         ],
       ),
       body: body,

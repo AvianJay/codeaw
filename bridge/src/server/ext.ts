@@ -21,6 +21,17 @@ const MIME_BY_EXT: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".pdf": "application/pdf",
+  ".wav": "audio/wav",
+  ".mp3": "audio/mpeg",
+  ".m4a": "audio/mp4",
+  ".flac": "audio/flac",
+  ".ogg": "audio/ogg",
+  ".mid": "audio/midi",
+  ".midi": "audio/midi",
+  ".mp4": "video/mp4",
+  ".mov": "video/quicktime",
+  ".zip": "application/zip",
+  ".txt": "text/plain",
 };
 
 export function mimeFor(file: string): string | undefined {
