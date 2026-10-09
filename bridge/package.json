@@ -29,6 +29,7 @@
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
     "smoke:desktop": "tsx scripts/desktop-smoke.ts",
     "smoke:remote-desktop": "tsx scripts/remote-desktop-smoke.ts",
+    "smoke:remote-desktop-input": "tsx scripts/remote-desktop-smoke.ts --input",
     "smoke:remote-desktop-webrtc": "node scripts/remote-desktop-webrtc-smoke.mjs",
     "smoke:tray": "node scripts/tray-smoke.mjs",
     "smoke:background-job": "node scripts/background-job-smoke.mjs",

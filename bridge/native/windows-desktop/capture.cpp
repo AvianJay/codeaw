@@ -8,12 +8,13 @@
 void enterDesktop() {
   struct DesktopHandle { HDESK value = nullptr; std::wstring name; ~DesktopHandle() { if (value) CloseDesktop(value); } };
   static thread_local DesktopHandle current;
-  HDESK next = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP);
-  if (!next) throw std::runtime_error("Input desktop unavailable");
+  // SendInput requires journal-playback access on the desktop attached to this thread.
+  HDESK next = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP | DESKTOP_JOURNALPLAYBACK);
+  if (!next) throw DesktopWindowsError("open_input_desktop", GetLastError());
   wchar_t name[256]{}; DWORD size = 0;
-  if (!GetUserObjectInformationW(next, UOI_NAME, name, sizeof(name), &size)) { CloseDesktop(next); throw std::runtime_error("Input desktop unavailable"); }
+  if (!GetUserObjectInformationW(next, UOI_NAME, name, sizeof(name), &size)) { DWORD error = GetLastError(); CloseDesktop(next); throw DesktopWindowsError("inspect_input_desktop", error); }
   if (current.name == name) { CloseDesktop(next); return; }
-  if (!SetThreadDesktop(next)) { CloseDesktop(next); throw std::runtime_error("Input desktop unavailable"); }
+  if (!SetThreadDesktop(next)) { DWORD error = GetLastError(); CloseDesktop(next); throw DesktopWindowsError("attach_input_desktop", error); }
   if (current.value) CloseDesktop(current.value);
   current.value = next; current.name = name;
 }

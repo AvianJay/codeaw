@@ -49,7 +49,9 @@ int worker() {
       input.release(); capture.reset();
       const char* code = inputKind == "sas" ? "sas_disabled" : command == "input" ? "input_blocked" : "capture_unavailable";
       const char* message = inputKind == "sas" ? "Windows 安全政策不允許軟體 Ctrl+Alt+Del，請由電腦管理員調整服務 SAS 政策" : command == "input" ? "此視窗無法接受輸入，可能需要進階權限" : "桌面暫時無法使用；鎖定或 UAC 可能需要進階權限";
-      output({{"replyTo", id}, {"error", {{"code", code}, {"message", message}}}});
+      Json error = {{"code", code}, {"message", message}};
+      try { throw; } catch (const DesktopWindowsError& detail) { error["operation"] = detail.operation; error["nativeCode"] = detail.code; } catch (...) {}
+      output({{"replyTo", id}, {"error", error}});
     }
     SecureZeroMemory(line.data(), line.size()); line.clear();
   }

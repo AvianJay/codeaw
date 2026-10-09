@@ -13,6 +13,10 @@
 using Json = nlohmann::json;
 template<class T> using Com = Microsoft::WRL::ComPtr<T>;
 inline void check(HRESULT hr) { if (FAILED(hr)) throw std::runtime_error("Windows desktop operation failed"); }
+struct DesktopWindowsError : std::runtime_error {
+  const char* operation; DWORD code;
+  DesktopWindowsError(const char* op, DWORD errorCode) : std::runtime_error("Windows desktop operation failed"), operation(op), code(errorCode) {}
+};
 inline std::wstring wide(const std::string& s) {
   if (s.empty()) return {};
   int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);

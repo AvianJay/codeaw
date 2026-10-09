@@ -1,7 +1,10 @@
 #include "desktop.h"
 #include <set>
 #include <cmath>
-static void send(INPUT in) { if (SendInput(1, &in, sizeof(in)) != 1) throw std::runtime_error("Input unavailable"); }
+static void send(INPUT in) {
+  SetLastError(ERROR_SUCCESS);
+  if (SendInput(1, &in, sizeof(in)) != 1) throw DesktopWindowsError("send_input", GetLastError());
+}
 static DWORD buttonFlag(const std::string& button, bool down) {
   if (button == "left") return down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP;
   if (button == "right") return down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP;
