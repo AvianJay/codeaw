@@ -301,6 +301,15 @@ jobs:
       - name: Verify native desktop image and H.264 pipeline
         if: matrix.platform == 'windows-x64'
         run: npm run smoke:remote-desktop -- --synthetic-only
+      - name: Verify packaged Windows private HTTP and WebSocket pipe relay
+        if: matrix.platform == 'windows-x64'
+        shell: pwsh
+        run: |
+          $smokeExe = Join-Path $env:RUNNER_TEMP 'codeaw-private-http-smoke.exe'
+          bun build scripts/private-http-smoke.ts --compile --minify --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-windows-x64 --outfile $smokeExe
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot build private HTTP smoke test' }
+          & $smokeExe (Resolve-Path dist/bin/codeaw-desktop.exe).Path
+          if ($LASTEXITCODE -ne 0) { throw 'Windows private HTTP relay smoke test failed' }
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')
         shell: pwsh

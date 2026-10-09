@@ -25,6 +25,7 @@ import { gatewayRegistration, type GatewayManifest } from "./remote-desktop/gate
 import { desktopHelper } from "./remote-desktop/native.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { listenPrivateHttp, type PrivateHttpListener } from "./remote-desktop/private-http.js";
 
 const log = logger("bridge");
 
@@ -103,8 +104,8 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     backendFactory: opts.desktopBackendFactory, ...(opts.desktopBackendFactory ? { available: () => true } : {}) });
   const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop });
 
-  const servers = new Map<string, http.Server>();
-  const draining = new Set<http.Server>();
+  const servers = new Map<string, PrivateHttpListener>();
+  const draining = new Set<PrivateHttpListener>();
   const binding = new Set<string>();
   let stopping: Promise<void> | undefined;
   let retry: NodeJS.Timeout | undefined;
@@ -152,16 +153,12 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   })();
 
   const listenPipe = async (pipe: string, registration?: GatewayManifest) => {
-    const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
-    server.on("upgrade", handlers.onUpgrade);
-    try {
-      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(pipe, resolve); });
+    return listenPrivateHttp(pipe, handlers.onRequest, handlers.onUpgrade, async () => {
       if (registration) {
         const helper = desktopHelper(); if (!helper) throw new Error("Desktop helper is required to protect the backend pipe");
         await promisify(execFile)(helper, ["--protect-pipe", pipe, registration.ownerSid], { windowsHide: true, timeout: 10_000 });
       }
-      return server;
-    } catch (error) { server.closeAllConnections?.(); server.close(); throw error; }
+    });
   };
 
   const startRetry = () => {
@@ -180,7 +177,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     if (pipe === opts.gatewayPipe) return;
     if (stopping) throw new Error("Bridge is stopping");
     if (retry) { clearInterval(retry); retry = undefined; }
-    const prepared = new Map<string, http.Server>();
+    const prepared = new Map<string, PrivateHttpListener>();
     try {
       if (pipe) prepared.set(pipe, await listenPipe(pipe, next));
       else for (const host of wanted()) {

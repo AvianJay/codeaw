@@ -3,7 +3,6 @@ import http from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
 import os from "node:os";
-import { parseArgs } from "node:util";
 import { DeviceStore } from "../server/auth.js";
 import { serveWeb } from "../server/web.js";
 import { VERSION } from "../version.js";
@@ -12,7 +11,6 @@ import { DesktopManager } from "./manager.js";
 import { NativeDesktop } from "./native.js";
 import { GatewayManifest } from "./gateway-config.js";
 import { BackendSocket } from "./backend-socket.js";
-import { pathToFileURL } from "node:url";
 
 /** This entry imports no agent runtime or user configuration loader. */
 export async function startDesktopGateway(manifest: GatewayManifest, overrides: {
@@ -78,14 +76,4 @@ export async function startDesktopGateway(manifest: GatewayManifest, overrides: 
   try { for (const host of wanted()) { try { await listen(host); } catch (e) { if (host === "127.0.0.1" || manifest.hosts !== "auto") throw e; } } }
   catch (e) { await close(); throw e; }
   return { port: () => port, close };
-}
-
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href || (globalThis as any).Bun?.isStandaloneExecutable) {
-  const { values } = parseArgs({ options: { manifest: { type: "string" } } });
-  try {
-    if (!values.manifest) throw new Error();
-    const manifest = GatewayManifest.parse(JSON.parse(fs.readFileSync(values.manifest, "utf8")));
-    const gateway = await startDesktopGateway(manifest);
-    for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => { void gateway.close().finally(() => process.exit(0)); });
-  } catch { process.stderr.write("Desktop gateway startup failed\n"); process.exitCode = 1; }
 }

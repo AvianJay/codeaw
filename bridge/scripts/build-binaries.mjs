@@ -30,7 +30,7 @@ if (windows) {
     "--arch", values.target.endsWith("arm64") ? "arm64" : "x64"], { cwd: bridgeDir, stdio: "inherit", windowsHide: true });
   if (helper.error) throw helper.error;
   if (helper.status !== 0) process.exit(helper.status ?? 1);
-  const gateway = spawn.sync("bun", ["build", path.join(bridgeDir, "dist/remote-desktop/gateway.js"), "--compile", "--minify",
+  const gateway = spawn.sync("bun", ["build", path.join(bridgeDir, "dist/remote-desktop/gateway-main.js"), "--compile", "--minify",
     "--no-compile-autoload-dotenv", "--no-compile-autoload-bunfig", `--target=${values.target}`,
     "--outfile", path.join(outputDir, "codeaw-desktop-gateway.exe")], { cwd: bridgeDir, stdio: "inherit", windowsHide: true });
   if (gateway.error) throw gateway.error;
