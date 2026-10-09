@@ -92,3 +92,21 @@ it("closes the active source and remains responsive when a ZIP download is cance
   await vi.waitFor(()=>expect(streams.every(s=>s.destroyed)).toBe(true));
   expect((await fetch(`${bridge.http}/api/health`)).status).toBe(200);
 });
+
+it("offers no-store Blob responses for browsers without triggering attachment handling", async () => {
+  bridge = await startTestBridge();
+  const file = path.join(bridge.home, "blob.wav"), bytes = Buffer.alloc(1024 * 1024 + 3, 0x52);
+  fs.writeFileSync(file, bytes);
+  const headers = { Authorization: `Bearer ${bridge.tokenFor("blob")}` };
+  const raw = await fetch(`${bridge.http}/api/fs/raw?download=1&inline=1&path=${encodeURIComponent(file)}`, { headers });
+  expect(raw.status).toBe(200); expect(raw.headers.get("content-disposition")).toBeNull();
+  expect(raw.headers.get("cache-control")).toBe("no-store");
+  expect(sha(Buffer.from(await raw.arrayBuffer()))).toBe(sha(bytes));
+  const response = await fetch(`${bridge.http}/api/fs/archive?inline=1`, { method: "POST", headers,
+    body: JSON.stringify({ path: bridge.home, paths: [file] }) });
+  expect(response.status).toBe(200); expect(response.headers.get("content-disposition")).toBeNull();
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const archive = Buffer.from(await response.arrayBuffer());
+  expect(archive.length).toBe(Number(response.headers.get("content-length")));
+  expect(sha((await unzip(archive)).get("blob.wav")!)).toBe(sha(bytes));
+});

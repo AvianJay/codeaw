@@ -667,6 +667,10 @@ they hand the local file to the OS save picker or share sheet and clean it up
 afterwards; sharing never includes a PC path or device token. Web clients keep
 the response in a browser Blob rather than copying it into Dart byte arrays.
 They download via a Blob URL or invoke Web Share from a fresh user gesture.
+Browser requests add `inline=1` to either export route to omit the attachment
+header while preserving `no-store` and the exact length. This avoids automatic
+attachment handling interrupting large XHR Blob transfers; the save click later
+supplies the filename through the local Blob URL's `download` attribute.
 Progress uses received bytes and `Content-Length`, and cancellation/failure
 removes the local partial file or Blob. A 100% progress event alone does not
 mean the file is ready; the full HTTP response must complete first.

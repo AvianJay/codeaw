@@ -140,7 +140,8 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
         if (url.searchParams.get("download") === "1") {
           const source = fs.createReadStream(file);
           res.writeHead(200, { "Content-Type": mimeFor(file) ?? "application/octet-stream", "Content-Length": fs.statSync(file).size,
-            "Content-Disposition": attachmentHeader(path.basename(file)), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
+            ...(url.searchParams.get("inline") === "1" ? {} : { "Content-Disposition": attachmentHeader(path.basename(file)) }),
+            "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
           await pipeline(source, res);
           return;
         }
@@ -150,7 +151,7 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
         let body: unknown;
         try { body = JSON.parse(await readBody(req, 64 * 1024)); }
         catch { return sendJson(res, 400, { error: "Invalid or oversized archive request" }); }
-        try { await sendArchive(res, deps.guard, body); }
+        try { await sendArchive(res, deps.guard, body, url.searchParams.get("inline") === "1"); }
         catch (error) {
           if (error instanceof DownloadError && !res.headersSent) return sendJson(res, error.status, { error: error.message });
           if (!res.destroyed) throw error;

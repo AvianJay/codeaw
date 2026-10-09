@@ -312,7 +312,11 @@ class BridgeClient extends ChangeNotifier {
     DownloadProgress? onProgress,
     CancelToken? cancel,
   }) => file_download.fetchDownload(
-    httpUri('/api/fs/raw', {'path': path, 'download': '1'}),
+    httpUri('/api/fs/raw', {
+      'path': path,
+      'download': '1',
+      if (kIsWeb) 'inline': '1',
+    }),
     authHeaders,
     name: name,
     onProgress: onProgress,
@@ -326,7 +330,7 @@ class BridgeClient extends ChangeNotifier {
     DownloadProgress? onProgress,
     CancelToken? cancel,
   }) => file_download.fetchDownload(
-    httpUri('/api/fs/archive'),
+    httpUri('/api/fs/archive', {if (kIsWeb) 'inline': '1'}),
     authHeaders,
     name: name,
     body: jsonEncode({'path': path, 'paths': paths}),

@@ -71,7 +71,7 @@ export async function prepareArchive(guard: PathGuard, body: any): Promise<{ nam
 }
 
 /** ZIP STORE keeps the final size known and streams each file with backpressure. */
-export async function sendArchive(res: http.ServerResponse, guard: PathGuard, body: any): Promise<void> {
+export async function sendArchive(res: http.ServerResponse, guard: PathGuard, body: any, inline = false): Promise<void> {
   const { name, entries } = await prepareArchive(guard, body);
   if (res.destroyed) return;
   const zip = new ZipFile();
@@ -103,7 +103,8 @@ export async function sendArchive(res: http.ServerResponse, guard: PathGuard, bo
     zip.end({ forceZip64Format: false, comment: "" }, ((size: number) => {
       if (!res.destroyed) res.writeHead(200, {
         "Content-Type": "application/zip", "Content-Length": size,
-        "Content-Disposition": attachmentHeader(name), "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+        ...(inline ? {} : { "Content-Disposition": attachmentHeader(name) }),
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
       });
     }) as () => void);
     await pipeline(output, res);
