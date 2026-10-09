@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
+import { selectDesktopStudio, desktopBuildDirectory, desktopConfigureArgs, desktopCmakeVersion } from './desktop-toolchain.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const nativeCache = process.env.CODEAW_NATIVE_BUILD_DIR ?? path.join(os.tmpdir(), 'codeaw-native', createHash('sha256').update(root).digest('hex').slice(0, 12));
 const { values } = parseArgs({ options: { arch: { type: 'string', default: process.arch === 'arm64' ? 'arm64' : 'x64' },
@@ -17,11 +18,16 @@ function run(command, args, capture = false) {
   return r.stdout?.trim();
 }
 const vswhere = path.join(process.env['ProgramFiles(x86)'] ?? 'C:/Program Files (x86)', 'Microsoft Visual Studio/Installer/vswhere.exe');
-const vs = run(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], true);
-const bundled = path.join(vs, 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe');
+const instances = JSON.parse(run(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+  ...(values.arch === 'arm64' ? ['Microsoft.VisualStudio.Component.VC.Tools.ARM64'] : []), '-format', 'json', '-utf8'], true));
+const studio = selectDesktopStudio(instances[0]);
+const bundled = path.join(studio.directory, 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe');
 let cmake = fs.existsSync(bundled) ? bundled : 'cmake';
-if (spawnSync(cmake, ['--version'], { windowsHide: true, stdio: 'ignore' }).status !== 0) {
-  const version = '3.31.6', name = `cmake-${version}-windows-x86_64`, cache = path.join(nativeCache, 'tools');
+const availableGenerators = spawnSync(cmake, ['-E', 'capabilities'], { windowsHide: true, encoding: 'utf8' });
+let supportsStudio = false;
+try { supportsStudio = JSON.parse(availableGenerators.stdout).generators.some((generator) => generator.name === studio.generator); } catch { /* Bootstrap a verified compatible CMake. */ }
+if (!supportsStudio) {
+  const version = desktopCmakeVersion(studio), name = `cmake-${version}-windows-x86_64`, cache = path.join(nativeCache, 'tools');
   cmake = path.join(cache, name, 'bin/cmake.exe');
   if (!fs.existsSync(cmake)) {
     fs.mkdirSync(cache, { recursive: true });
@@ -38,9 +44,12 @@ if (spawnSync(cmake, ['--version'], { windowsHide: true, stdio: 'ignore' }).stat
     run('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', extract, '-Archive', zip, '-Destination', cache]);
   }
 }
-const build = path.join(nativeCache, `native-${values.arch}${values['no-webrtc'] ? '-basic' : ''}`);
-run(cmake, ['-S', path.join(root, 'native/windows-desktop'), '-B', build, '-G', 'Visual Studio 17 2022', '-A', values.arch === 'arm64' ? 'ARM64' : 'x64',
-  `-DCODEAW_WEBRTC=${values['no-webrtc'] ? 'OFF' : 'ON'}`]);
+const cmakeVersion = run(cmake, ['--version'], true).match(/cmake version (\d+\.\d+\.\d+)/)?.[1];
+if (!cmakeVersion) throw new Error('Cannot identify the CMake version.');
+const webrtc = !values['no-webrtc'];
+const build = desktopBuildDirectory(nativeCache, values.arch, studio, webrtc);
+process.stdout.write(`Desktop toolchain: ${studio.generator}, ${values.arch}, CMake ${cmakeVersion}\n`);
+run(cmake, desktopConfigureArgs({ source: path.join(root, 'native/windows-desktop'), build, arch: values.arch, studio, webrtc, cmakeVersion }));
 run(cmake, ['--build', build, '--config', 'Release', '--target', 'codeaw-desktop', '--parallel', '4']);
 const out = path.resolve(root, values['out-dir']); fs.mkdirSync(out, { recursive: true });
 fs.copyFileSync(path.join(build, 'Release/codeaw-desktop.exe'), path.join(out, 'codeaw-desktop.exe'));

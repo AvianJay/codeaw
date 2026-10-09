@@ -296,7 +296,7 @@ jobs:
           }
       - name: Build every package bin
         run: |
-          node --test ../scripts/macos-icon.test.mjs ../scripts/macos-dmg.test.mjs
+          node --test ../scripts/macos-icon.test.mjs ../scripts/macos-dmg.test.mjs ../scripts/desktop-toolchain.test.mjs
           npm run build:bin -- --target=${{ matrix.target }}
       - name: Verify native desktop image and H.264 pipeline
         if: matrix.platform == 'windows-x64'
