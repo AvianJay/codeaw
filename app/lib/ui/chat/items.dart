@@ -142,12 +142,31 @@ class UserMessageView extends StatelessWidget {
             ),
             child: _UserParts(m.parts),
           ),
-          if (badges.isNotEmpty || m.receipt != null)
+          if (badges.isNotEmpty || m.receipt != null || (controller?.client.supportsPromptEditing ?? false))
             Padding(
               padding: const EdgeInsets.only(top: 3),
               child: Wrap(spacing: 5, crossAxisAlignment: WrapCrossAlignment.center, children: [
                 if (badges.isNotEmpty) Text(badges.join(' · '), style: TextStyle(fontSize: 11, color: scheme.outline)),
                 if (m.receipt != null) _MessageReceipt(m.receipt!),
+                if (controller != null)
+                  ListenableBuilder(
+                    listenable: controller!,
+                    builder: (context, _) {
+                      final c = controller!;
+                      if (!c.canEdit(m)) return const SizedBox.shrink();
+                      final checking = c.checkingEdit == m.mid;
+                      return IconButton(
+                        tooltip: '編輯並從這裡重新開始',
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        iconSize: 16,
+                        onPressed: c.checkingEdit == null && !c.submittingEdit ? () => c.startEdit(m) : null,
+                        icon: checking
+                            ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                            : Icon(Icons.edit_outlined, color: scheme.outline),
+                      );
+                    },
+                  ),
                 if (controller != null && m.canRemovePending)
                   ListenableBuilder(
                     listenable: controller!,

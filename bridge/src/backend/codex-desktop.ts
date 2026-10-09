@@ -62,6 +62,7 @@ export class CodexDesktopBackend implements AgentBackend {
     return this.acp.capabilities ?? (this.ipc.connected ? { loadSession: true, promptCapabilities: { image: true }, sessionCapabilities: { list: {}, resume: {}, close: {} } } : undefined);
   }
   get supportsSteering(): boolean { return this.acp.supportsSteering || this.sessions.size > 0; }
+  get supportsForkAtMessage(): boolean { return this.acp.supportsForkAtMessage; }
   get inflight(): number { return this.acp.inflight + [...this.sessions.values()].reduce((n, session) => n + session.prompts.size, 0); }
   get lastUsed(): number { return Math.max(this.lastActivity, this.acp.lastUsed); }
   describe(): AgentInfo { return { ...this.acp.describe(), ...(this.ipc.connected ? { status: "ready" as const, capabilities: this.capabilities } : {}), steering: this.supportsSteering }; }
@@ -70,6 +71,8 @@ export class CodexDesktopBackend implements AgentBackend {
     try { await this.ipc.ensureReady(); }
     catch { await this.acp.ensureStarted(); }
   }
+  /** Forks always run in the ACP adapter; desktop-linked chats cannot be forked. */
+  ensureForkRuntime(): Promise<void> { return this.acp.ensureStarted(); }
   sessionConnection(id: string): "desktop" | "acp" { return this.forcedDesktop.has(id) ? "desktop" : "acp"; }
   sessionConnected(id: string): boolean { return this.sessions.get(id)?.connected === true; }
 

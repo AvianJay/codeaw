@@ -56,6 +56,8 @@ export interface SessionMeta {
   /** Last known config state, so a reopened session can show selectors before reactivation. */
   configOptions?: acp.SessionConfigOption[] | null;
   modes?: acp.SessionModeState | null;
+  /** Created by editing `messageId` of another chat; `promptId` deduplicates retried edits. */
+  forkedFrom?: { sessionId: string; messageId: string; promptId: string };
 }
 
 export function isChunk(u: acp.SessionUpdate): u is Extract<acp.SessionUpdate, { sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk" }> {

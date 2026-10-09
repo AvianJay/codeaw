@@ -23,6 +23,28 @@ export interface AgentInfo {
   capabilities?: acp.AgentCapabilities;
   authMethods?: unknown[];
   steering: boolean;
+  /** `session/fork` honours a fork point, so a sent message can be edited (see docs/protocol.md). */
+  forkAtMessage?: boolean;
+}
+
+/**
+ * Adapters whose `session/fork` keeps history only up to `_meta.jetbrains.air.fork.messageId`.
+ * Older releases ignore the fork point and would copy the whole conversation.
+ */
+const FORK_POINT_ADAPTERS: Record<string, number[]> = {
+  "@agentclientprotocol/claude-agent-acp": [0, 71, 0],
+  "@agentclientprotocol/codex-acp": [1, 8, 0],
+};
+
+export function supportsForkPoint(init: acp.InitializeResponse | undefined): boolean {
+  if (!init?.agentCapabilities?.sessionCapabilities?.fork) return false;
+  const info = init.agentInfo as { name?: unknown; version?: unknown } | undefined | null;
+  const minimum = typeof info?.name === "string" ? FORK_POINT_ADAPTERS[info.name] : undefined;
+  if (!minimum || typeof info?.version !== "string") return false;
+  const version = info.version.split(/[-+]/)[0].split(".").map(Number);
+  if (version.length !== 3 || version.some((n) => !Number.isInteger(n))) return false;
+  for (let i = 0; i < 3; i++) if (version[i] !== minimum[i]) return version[i] > minimum[i];
+  return true;
 }
 
 /** Callbacks from the agent into the session layer. `agentId` identifies the sender. */
@@ -95,6 +117,10 @@ export class AgentProcess implements AgentBackend {
     return meta?.steering?.supported === true;
   }
 
+  get supportsForkAtMessage(): boolean {
+    return supportsForkPoint(this.init);
+  }
+
   get running(): boolean {
     return this.status === "ready" || this.status === "starting";
   }
@@ -109,6 +135,7 @@ export class AgentProcess implements AgentBackend {
       capabilities: this.init?.agentCapabilities ?? undefined,
       authMethods: this.init?.authMethods ?? undefined,
       steering: this.supportsSteering,
+      forkAtMessage: this.supportsForkAtMessage,
     };
   }
 

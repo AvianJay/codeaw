@@ -32,6 +32,7 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   SessionController? _c;
+  SessionHub? _hub;
   StreamSubscription<String>? _toasts;
   final _scaffold = GlobalKey<ScaffoldState>();
   bool? _showSubagents;
@@ -65,8 +66,9 @@ class _ChatPageState extends State<ChatPage> {
     }
     _toasts?.cancel();
     _showSubagents = null;
+    if (_c case final previous?) _hub?.release(previous.sessionId);
     _c = null;
-    final hub = state.hub;
+    final hub = _hub = state.hub;
     if (hub == null || widget.sessionId.isEmpty) return;
     final summary = state.sessions?.byId(widget.sessionId);
     final cwd = widget.cwd ?? summary?.cwd;
@@ -83,6 +85,8 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void dispose() {
     _toasts?.cancel();
+    // A chat replaced by an edited branch is forgotten once its page is gone.
+    if (_c case final c?) _hub?.release(c.sessionId);
     super.dispose();
   }
 

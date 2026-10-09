@@ -17,6 +17,35 @@ const historyPageBytes = 192 * 1024;
 const dataSaverPageBytes = 48 * 1024;
 const dataSaverToolBytes = 2 * 1024;
 
+/// A random (version 4) UUID, used as a client prompt id.
+String _uuid() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  final hex = bytes.map((v) => v.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
+
+/// The chat created by editing a sent message.
+typedef EditBranch = ({String sessionId, String cwd, bool replaced});
+
+/// User-facing reason the bridge refused to branch from a message.
+String editErrorText(RpcError e) {
+  if (e.code == RpcError.methodNotFound) return '請先更新電腦 bridge，才能編輯已送出的訊息';
+  final detail = e.detail;
+  if (detail.contains('only the first message')) {
+    return '這個 agent 只能編輯第一則訊息；從中間編輯需要 Claude Code（adapter 0.71 以上）或 Codex（adapter 1.8 以上）';
+  }
+  if (detail.contains('busy')) return '請先停止目前的回合，再編輯訊息';
+  if (detail.contains('inserted into a running turn')) return '插入回合中的訊息無法編輯';
+  if (detail.contains('has not started')) return '這則訊息尚未開始處理，請改用「取消待送訊息」';
+  if (detail.contains('no message ids')) return 'Agent 沒有提供之前訊息的 ID，無法從這裡分岔';
+  if (detail.contains('Codex desktop')) return 'Codex 桌面同步的聊天無法在 Codeaw 編輯訊息';
+  if (detail.contains('not in the chat history')) return '找不到這則訊息，請重新載入聊天後再試';
+  return detail;
+}
+
 /// A permission or elicitation request the bridge is waiting on.
 class PendingRequest {
   PendingRequest(this.method, this.params, this.token);
@@ -74,6 +103,19 @@ class SessionController extends ChangeNotifier {
 
   /// `@` tokens picked for [draft] → their `file:` URIs.
   final draftMentions = <String, String>{};
+
+  /// The sent message being edited in the composer; sending branches the chat before it.
+  MessageItem? editing;
+
+  /// Non-text parts of [editing] (images, embedded files) sent again unless removed.
+  final editKeep = <Map<String, dynamic>>[];
+  String? _editPromptId;
+  String _draftBeforeEdit = '';
+  final _mentionsBeforeEdit = <String, String>{};
+
+  /// Message id whose editability the bridge is checking.
+  String? checkingEdit;
+  bool submittingEdit = false;
   final timeline = Timeline();
 
   String get agentId => sessionId.split(':').first;
@@ -551,13 +593,7 @@ class SessionController extends ChangeNotifier {
       _toast('等待 Codex 桌面恢復連線；草稿已保留');
       return false;
     }
-    final random = Random.secure();
-    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    final hex = bytes.map((v) => v.toRadixString(16).padLeft(2, '0')).join();
-    final promptId =
-        '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+    final promptId = _uuid();
     final receipt = Completer<bool>();
     _promptReceipts[promptId] = receipt;
     timeline.addPendingPrompt(promptId, blocks);
@@ -659,6 +695,96 @@ class SessionController extends ChangeNotifier {
       return false;
     } finally {
       _removingPrompts.remove(id);
+      _notify();
+    }
+  }
+
+  /// Whether [m] offers editing; the bridge has the final say when it is opened.
+  bool canEdit(MessageItem m) =>
+      client.supportsPromptEditing && client.isOnline && attached && !desktopSync && !running &&
+      pending.isEmpty && timeline.queued == 0 && m.canEdit;
+
+  /// Puts [m] into the composer for editing once the bridge confirms it can branch there.
+  Future<void> startEdit(MessageItem m) async {
+    if (!canEdit(m) || checkingEdit != null || submittingEdit) return;
+    checkingEdit = m.mid;
+    _notify();
+    try {
+      await client.request('_codeaw/session/fork', {'sessionId': sessionId, 'messageId': m.mid, 'dryRun': true});
+    } on RpcError catch (e) {
+      _toast(e.code == RpcError.connectionClosed ? '連線中斷，請稍後再試' : editErrorText(e));
+      return;
+    } catch (e) {
+      _toast('$e');
+      return;
+    } finally {
+      checkingEdit = null;
+      _notify();
+    }
+    if (_disposed || running) return;
+    if (editing == null) {
+      _draftBeforeEdit = draft;
+      _mentionsBeforeEdit
+        ..clear()
+        ..addAll(draftMentions);
+    }
+    editing = m;
+    _editPromptId = _uuid();
+    draft = m.promptText;
+    draftMentions
+      ..clear()
+      ..addAll(m.mentions);
+    editKeep
+      ..clear()
+      ..addAll(m.parts.where((p) => p['type'] != 'text' && p['type'] != 'resource_link').map(Map<String, dynamic>.of));
+    _notify();
+  }
+
+  /// Leaves edit mode and brings back the draft that was there before.
+  void cancelEdit() {
+    if (editing == null || submittingEdit) return;
+    _endEdit();
+    _notify();
+  }
+
+  void _endEdit() {
+    editing = null;
+    _editPromptId = null;
+    editKeep.clear();
+    draft = _draftBeforeEdit;
+    draftMentions
+      ..clear()
+      ..addAll(_mentionsBeforeEdit);
+  }
+
+  /// Sends the edited message: the bridge branches the chat before [editing] and
+  /// starts a turn there. Retries reuse the same prompt id, so they never branch twice.
+  Future<EditBranch?> submitEdit(List<Map<String, dynamic>> blocks, {required bool replace}) async {
+    final m = editing, promptId = _editPromptId;
+    if (m == null || promptId == null || submittingEdit || blocks.isEmpty) return null;
+    submittingEdit = true;
+    _notify();
+    try {
+      final r =
+          await client.request('_codeaw/session/fork', {
+                'sessionId': sessionId,
+                'messageId': m.mid,
+                'prompt': blocks,
+                'clientPromptId': promptId,
+                if (replace) 'replace': true,
+              })
+              as Map<String, dynamic>;
+      final meta = (r['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
+      if (!_disposed) _endEdit();
+      return (sessionId: r['sessionId'] as String, cwd: meta['cwd'] as String? ?? cwd, replaced: r['replaced'] == true);
+    } on RpcError catch (e) {
+      _toast(e.code == RpcError.connectionClosed ? '連線中斷，結果待確認；重新連線後再送出一次，不會重複建立分支' : editErrorText(e));
+      return null;
+    } catch (e) {
+      _toast('$e');
+      return null;
+    } finally {
+      submittingEdit = false;
       _notify();
     }
   }
@@ -786,7 +912,11 @@ class SessionHub {
     _activitySub = client.activity.listen((event) {
       if (event['deleted'] == true && event['sessionId'] is String) {
         final id = event['sessionId'] as String;
-        unawaited(forget(id));
+        if (_held.contains(id)) {
+          _deletedWhileHeld.add(id);
+        } else {
+          unawaited(forget(id));
+        }
       }
     });
   }
@@ -799,6 +929,17 @@ class SessionHub {
   late final StreamSubscription<SessionMessage> _sub;
   late final StreamSubscription<Map<String, dynamic>> _activitySub;
   static const _keep = 4;
+  final _held = <String>{};
+  final _deletedWhileHeld = <String>{};
+
+  /// Keeps a chat's controller alive while its page navigates away after the chat was
+  /// replaced by an edited branch; [release] (from the page's dispose) forgets it then.
+  void hold(String sessionId) => _held.add(sessionId);
+
+  void release(String sessionId) {
+    if (!_held.remove(sessionId)) return;
+    if (_deletedWhileHeld.remove(sessionId)) unawaited(forget(sessionId));
+  }
 
   SessionController open(String sessionId, {String? cwd, bool? projectless}) {
     var c = _controllers[sessionId];

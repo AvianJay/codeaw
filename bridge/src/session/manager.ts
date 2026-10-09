@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentHandlers } from "../backend/agent-process.js";
 import type { AgentBackend } from "../backend/backend.js";
@@ -8,6 +9,7 @@ import type { PushNotifier, PushKind } from "../notify/ntfy.js";
 import { logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import { compactGroups, compactLog, type CompactGroup } from "./compact.js";
+import { planFork, type ForkPlan } from "./fork.js";
 import { historyOptions, olderPage, preferFullReplay, projectEntry, tailPage, type HistoryOptions, type HistoryPage } from "./history.js";
 import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
@@ -141,6 +143,7 @@ function toRequestError(err: unknown): acp.RequestError {
 }
 
 const DEFAULT_PAGE_BYTES = 192 * 1024;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function beforeOf(page: { before?: number }): { before?: number } {
   return page.before === undefined ? {} : { before: page.before };
@@ -161,6 +164,7 @@ export class SessionManager implements AgentHandlers {
   private readonly importing = new Map<string, Promise<BridgeSession>>();
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
+  private readonly forking = new Map<string, Promise<Record<string, unknown>>>();
   private sweepTimer?: NodeJS.Timeout;
   private shuttingDown = false;
   notifier?: PushNotifier;
@@ -252,7 +256,7 @@ export class SessionManager implements AgentHandlers {
       },
       agentInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
       authMethods: [],
-      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true } },
+      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true, editPrompts: true } },
     };
   }
 
@@ -1132,7 +1136,7 @@ export class SessionManager implements AgentHandlers {
       try {
         const r = await agent.request<any>("_session/steering", {
           sessionId: s.meta.backendId,
-          prompt: blocks,
+          prompt: this.withImageData(blocks),
           _meta: { steering: { idleBehavior: "promptRequired" }, codeaw: { promptId } },
         });
         if (r?.outcome === "injected") {
@@ -1177,7 +1181,7 @@ export class SessionManager implements AgentHandlers {
       let error: unknown;
       try {
         const agent = await this.ensureActive(s);
-        result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: blocks, _meta: { codeaw: { promptId } } });
+        result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: this.withImageData(blocks), _meta: { codeaw: { promptId } } });
       } catch (err) {
         error = err;
       }
@@ -1231,6 +1235,138 @@ export class SessionManager implements AgentHandlers {
     queued?.resolve({ stopReason: "cancelled" });
     this.emitState(s);
     return { removed: true };
+  }
+
+  /**
+   * Edits a sent prompt: branches the chat just before it (see fork.ts) and sends the
+   * new text there. The original chat is kept unless `replace` hides it from Codeaw.
+   * Retrying with the same `clientPromptId` returns the branch created the first time.
+   * `dryRun` only reports whether the message can be edited (starting the agent if needed).
+   */
+  async forkFromMessage(params: { sessionId?: unknown; messageId?: unknown; prompt?: unknown; clientPromptId?: unknown; replace?: unknown; dryRun?: unknown }): Promise<Record<string, unknown>> {
+    if (typeof params.messageId !== "string" || !params.messageId) throw acp.RequestError.invalidParams(undefined, "messageId is required");
+    if (params.dryRun === true) {
+      const { plan } = await this.checkFork(this.requireLoaded(params.sessionId), params.messageId);
+      return { ok: true, newSession: !plan.messageId };
+    }
+    const promptId = params.clientPromptId;
+    if (typeof promptId !== "string" || !UUID.test(promptId)) throw acp.RequestError.invalidParams(undefined, "Invalid clientPromptId");
+    if (!Array.isArray(params.prompt) || params.prompt.length === 0) throw acp.RequestError.invalidParams(undefined, "prompt is required");
+    const replace = params.replace === true;
+    const running = this.forking.get(promptId);
+    if (running) return running;
+    const existing = this.findFork(promptId);
+    if (existing) return Promise.resolve(this.forkView(existing, replace));
+    const s = this.requireLoaded(params.sessionId);
+    const operation = this.fork(s, params.messageId, params.prompt as acp.ContentBlock[], promptId, replace).finally(() => this.forking.delete(promptId));
+    this.forking.set(promptId, operation);
+    return operation;
+  }
+
+  private findFork(promptId: string): BridgeSession | undefined {
+    const metas = [...[...this.sessions.values()].map((s) => s.meta), ...this.store.listMetas()];
+    const meta = metas.find((m) => m.forkedFrom?.promptId === promptId && !this.store.isDeleted(m.id));
+    return meta && (this.sessions.get(meta.id) ?? this.fromDisk(meta.id));
+  }
+
+  private forkView(fork: BridgeSession, replace: boolean): Record<string, unknown> {
+    const source = fork.meta.forkedFrom?.sessionId;
+    return { ...this.setupView(fork), sessionId: fork.id, ...(replace ? { replaced: !!source && this.store.isDeleted(source) } : {}) };
+  }
+
+  private async checkFork(s: BridgeSession, messageId: string): Promise<{ plan: ForkPlan; agent: AgentBackend }> {
+    if (s.meta.connection === "desktop") throw acp.RequestError.invalidRequest(undefined, "Messages in a Codex desktop chat cannot be edited from Codeaw");
+    if (this.isBusy(s)) throw acp.RequestError.invalidRequest(undefined, "Chat is busy; stop the turn before editing a message");
+    const plan = planFork(this.ensureEntries(s), messageId);
+    const agent = this.requireAgent(s.meta.agentId);
+    await (agent.ensureForkRuntime?.() ?? agent.ensureStarted());
+    if (plan.messageId && !agent.supportsForkAtMessage) {
+      throw acp.RequestError.invalidRequest(undefined, `${agent.config.name} cannot branch from an earlier message; only the first message can be edited`);
+    }
+    return { plan, agent };
+  }
+
+  private isBusy(s: BridgeSession): boolean {
+    return s.turn !== undefined || s.state !== "idle" || s.pending.size > 0 || s.queue.length > 0;
+  }
+
+  private async fork(s: BridgeSession, messageId: string, prompt: acp.ContentBlock[], promptId: string, replace: boolean): Promise<Record<string, unknown>> {
+    const { plan, agent } = await this.checkFork(s, messageId);
+    let resp: any;
+    if (plan.messageId) {
+      resp = await agent.request("session/fork", {
+        sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [],
+        _meta: { jetbrains: { air: { fork: { version: 1, messageId: plan.messageId } } } },
+      });
+    } else {
+      resp = await agent.request("session/new", { cwd: s.meta.cwd, mcpServers: [] });
+    }
+    if (typeof resp?.sessionId !== "string" || !resp.sessionId) throw acp.RequestError.internalError(undefined, "The agent did not return the new session");
+    const fork = this.createSession({
+      id: extId(s.meta.agentId, resp.sessionId), agentId: s.meta.agentId, backendId: resp.sessionId, cwd: s.meta.cwd,
+      ...(s.meta.projectless ? { projectless: true } : {}), origin: "bridge", title: s.meta.title,
+      forkedFrom: { sessionId: s.id, messageId, promptId },
+    });
+    const entries = this.ensureEntries(fork);
+    for (const entry of plan.entries) {
+      const copy = { ...entry, seq: ++fork.meta.lastSeq } as LogEntry;
+      entries.push(copy);
+      this.store.append(fork.id, copy);
+    }
+    // A new session is live right away; a fork is resumed like any reopened chat.
+    if (!plan.messageId) fork.backendGen = agent.generation;
+    try {
+      this.applySetup(fork, resp);
+      this.flushOrphans(fork);
+      await this.ensureActive(fork);
+      await this.restoreSettings(fork, agent, s.meta);
+    } catch (err) {
+      log.warn(`could not open branch ${fork.id} of ${s.id}: ${errorMessage(err)}`);
+      await this.removeChat(fork.id, fork, { native: true });
+      throw err;
+    }
+    this.logUserMessage(fork, prompt, promptId, { queued: false, steered: false });
+    this.receipt(fork, promptId, "received");
+    void this.runTurn(fork, promptId, prompt);
+    this.activity(fork);
+    if (replace) {
+      if (this.isBusy(s)) log.info(`kept ${s.id}: it became busy while its edited branch was created`);
+      else await this.removeChat(s.id, s, { native: false });
+    }
+    return this.forkView(fork, replace);
+  }
+
+  /** Puts the original chat's model, effort, mode and other settings back on a branch. */
+  private async restoreSettings(fork: BridgeSession, agent: AgentBackend, source: SessionMeta): Promise<void> {
+    for (const wanted of (source.configOptions ?? []) as any[]) {
+      if (wanted.type !== "select" && wanted.type !== "boolean") continue;
+      const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
+      if (!current || current.type !== wanted.type || sameJson(current.currentValue, wanted.currentValue)) continue;
+      try {
+        await this.applyConfigOption(fork, agent, wanted.id, wanted.currentValue);
+      } catch (err) {
+        log.warn(`could not restore ${wanted.id} on ${fork.id}: ${errorMessage(err)}`);
+      }
+    }
+    const mode = source.modes?.currentModeId;
+    if (!mode || !fork.meta.modes || fork.meta.modes.currentModeId === mode || modeOf(fork.meta) === mode) return;
+    try {
+      await agent.request("session/set_mode", { sessionId: fork.meta.backendId, modeId: mode });
+      this.applySetup(fork, { modes: { ...fork.meta.modes, currentModeId: mode } });
+    } catch (err) {
+      log.warn(`could not restore mode ${mode} on ${fork.id}: ${errorMessage(err)}`);
+    }
+  }
+
+  /** Prompts may reuse an image already in the log (e.g. an edited message) by its blob URI. */
+  private withImageData(blocks: acp.ContentBlock[]): acp.ContentBlock[] {
+    return blocks.map((block: any) => {
+      if (block?.type !== "image" || block.data || typeof block.uri !== "string" || !block.uri.startsWith("codeaw-blob:")) return block;
+      const blob = this.store.blob(block.uri.slice("codeaw-blob:".length));
+      if (!blob) throw acp.RequestError.invalidParams(undefined, "An attached image is no longer stored on this PC; attach it again");
+      const { uri: _uri, ...rest } = block;
+      return { ...rest, mimeType: block.mimeType ?? blob.mimeType, data: fs.readFileSync(blob.file).toString("base64") };
+    });
   }
 
   async cancel(_c: ClientHandle, params: acp.CancelNotification): Promise<void> {
@@ -1308,7 +1444,7 @@ export class SessionManager implements AgentHandlers {
 
   async deleteSession(_c: ClientHandle, params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
     const id = params.sessionId;
-    const { agentId, backendId } = parseExtId(id);
+    const { backendId } = parseExtId(id);
     if (!backendId) throw acp.RequestError.invalidParams(undefined, "sessionId is required");
     if (this.store.isDeleted(id)) return {};
     if (this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "Chat deletion is already in progress");
@@ -1321,11 +1457,21 @@ export class SessionManager implements AgentHandlers {
     if (s && (s.turn || s.state !== "idle" || s.pending.size || s.queue.length)) {
       throw acp.RequestError.invalidRequest(undefined, "Chat is busy; stop the turn before deleting it");
     }
+    await this.removeChat(id, s, { native: true });
+    return {};
+  }
+
+  /**
+   * Removes a chat from Codeaw and leaves a deletion marker. `native: false` keeps the
+   * agent's own history (a chat replaced by an edited branch).
+   */
+  private async removeChat(id: string, s: BridgeSession | undefined, opts: { native: boolean }): Promise<void> {
+    const { agentId, backendId } = parseExtId(id);
     this.deleting.add(id);
     try {
       if (s) await this.releaseBackend(s);
       // Desktop close only detaches our follower; the desktop conversation is retained.
-      if (s?.meta.connection !== "desktop") {
+      if (opts.native && s?.meta.connection !== "desktop") {
         try {
           const agent = this.requireAgent(agentId);
           await agent.ensureStarted();
@@ -1344,7 +1490,6 @@ export class SessionManager implements AgentHandlers {
       this.nativeInfo.delete(id);
       this.orphans.delete(id);
       for (const client of this.clients) void client.notify("_codeaw/activity", { sessionId: id, agentId, deleted: true });
-      return {};
     } finally {
       this.deleting.delete(id);
     }

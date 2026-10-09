@@ -81,6 +81,7 @@ The response is a normal `InitializeResponse` with
   "version": 1,
   "host": "my-pc",
   "projectless": true,                // supports managed no-project conversations
+  "editPrompts": true,                // supports _codeaw/session/fork (editing sent messages)
   "agents": [ AgentInfo, ... ]
 }}
 ```
@@ -93,7 +94,8 @@ The response is a normal `InitializeResponse` with
   "error": "spawn failed ...",          // when status = error
   "agentInfo": { "name": "...", "version": "..." },  // from the agent, once started
   "capabilities": { /* the agent's agentCapabilities, once started */ },
-  "steering": true                       // agent supports mid-turn steering
+  "steering": true,                      // agent supports mid-turn steering
+  "forkAtMessage": true                  // session/fork honours a fork point (once started)
 }
 ```
 
@@ -427,6 +429,49 @@ removal is safe, including after reconnect and a desktop history rebuild.
 Queued requests resolve with `stopReason: "cancelled"`. On bridge restart, old
 unsent queue entries are marked cancelled and are never automatically resent.
 
+### Editing a sent message
+
+`_codeaw/session/fork` with `{sessionId, messageId, prompt, clientPromptId, replace?}`
+branches a chat just before one of its main-thread user messages and starts a turn
+with `prompt` there. `messageId` is the message's `update._meta.codeaw.mid`
+(`u-<promptId>` for prompts sent through codeaw). The response is the new chat's
+`session/new`-style setup (`sessionId`, `configOptions`, `modes`,
+`_meta.codeaw`) plus `replaced` when `replace` was requested. It arrives after the
+turn has been accepted, not when it ends; load the new session to follow it.
+
+- The branch keeps every turn before the edited prompt's turn. Its fork point is the
+  last main-thread `agent_message_chunk`/`agent_thought_chunk` `messageId` before
+  that turn (subagent messages do not count). The bridge calls the agent's
+  `session/fork` with `_meta.jetbrains.air.fork = {version: 1, messageId}`. That
+  fork point is honoured by claude-agent-acp 0.71.0+ and codex-acp 1.8.0+, which
+  `AgentInfo.forkAtMessage` reports once the agent has started. Other agents,
+  including older adapters that would copy the whole conversation, are refused.
+- Editing the first prompt needs no fork point: any agent gets a fresh
+  `session/new` in the same working directory.
+- Turns between the fork point and the edited prompt without any agent message id
+  (e.g. cancelled before output) are left out, both by the agent and in the copied
+  history. If earlier turns exist but none reported a message id, the edit is refused.
+- The new chat starts with the original log up to the fork point (renumbered, a new
+  epoch). Prompts that had not started by then are dropped. Model, effort, mode and
+  other select/boolean settings of the original chat are applied to the branch.
+- Refused: desktop-linked chats, busy chats (running turn, open requests or
+  queue), prompts inserted into a running turn (steered), and prompts that never
+  started. Files changed on the computer are never restored.
+- `replace: true` then removes the original chat from Codeaw like `session/delete`
+  (deletion marker and `_codeaw/activity {deleted: true}`), but keeps the agent's
+  own history. If the original became busy meanwhile it is kept and `replaced` is
+  false.
+- The same `clientPromptId` (a UUID, used as the new prompt's `promptId`) returns the
+  branch created first, so a retry after a dropped connection never branches twice.
+- `{sessionId, messageId, dryRun: true}` performs every check (starting the agent if
+  needed) without branching and returns `{ok: true, newSession}`; clients call it
+  before letting the user edit.
+
+Prompts may reuse an image already stored by the bridge as
+`{type: "image", data: "", uri: "codeaw-blob:<sha256>"}`; the bridge fills in the
+bytes before sending the prompt to the agent. An edited message can therefore keep
+its images without downloading them.
+
 Clients may supply a UUID `_meta.codeaw.clientPromptId`. The bridge uses it as
 the logged `promptId` and suppresses duplicate delivery within that session,
 including replay/reconnect. Older clients receive a bridge-generated UUID.
@@ -503,6 +548,7 @@ out on the bridge.
 | `_codeaw/terminal/close` | `{terminalId}` | `{}` |
 | `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
 | `_codeaw/session/remove_prompt` | `{sessionId, promptId}` | `{removed, reason?: "processing"}` |
+| `_codeaw/session/fork` | `{sessionId, messageId, prompt, clientPromptId, replace?}` or `{sessionId, messageId, dryRun: true}` | new chat setup + `replaced?`, or `{ok, newSession}` (see editing a sent message) |
 | `_codeaw/history/tool` | `{sessionId, epoch, toolCallId}` | `{epoch, seq, t, update}` (see deferred tool history) |
 | `_codeaw/history/page` | `{sessionId, epoch, before, pageBytes?}` | `{}` after the `_codeaw/history/page` notification (see paged history) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |

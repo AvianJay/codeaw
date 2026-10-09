@@ -62,6 +62,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Editing a sent message replaces the original chat instead of keeping it beside the branch.
+  bool editReplace = false;
+  Future<void> setEditReplace(bool replace) async {
+    editReplace = replace;
+    notifyListeners();
+    await store.saveEditReplace(replace);
+  }
+
   /// A pairing link received before/while the pair screen is shown (QR scanned by the system camera).
   PairingLink? pendingPairing;
 
@@ -71,6 +79,7 @@ class AppState extends ChangeNotifier {
     final library = await store.load();
     final appearance = await store.loadAppearance();
     dataSaver = await store.loadDataSaver();
+    editReplace = await store.loadEditReplace();
     themeMode =
         ThemeMode.values.where((mode) => mode.name == appearance).firstOrNull ??
         ThemeMode.system;

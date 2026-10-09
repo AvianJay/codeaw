@@ -46,6 +46,7 @@ export class AgyBackend implements AgentBackend {
   lastUsed = Date.now();
   inflight = 0;
   readonly supportsSteering = false;
+  readonly supportsForkAtMessage = false;
   readonly capabilities: acp.AgentCapabilities = {
     loadSession: false,
     promptCapabilities: { image: false, audio: false, embeddedContext: true },

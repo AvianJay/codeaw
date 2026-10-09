@@ -19,6 +19,8 @@ export const FAKE_AGENT = path.join(here, "fake-agent.ts");
 
 export interface TestBridgeOptions {
   steering?: boolean;
+  /** The fake agent supports `session/fork` from a message, like codex-acp ≥ 1.8. */
+  fork?: boolean;
   ntfy?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
   home?: string;
@@ -52,7 +54,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
         command: process.execPath,
         args: ["--import", "tsx", FAKE_AGENT],
         cwd: BRIDGE_DIR,
-        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0" },
+        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0" },
         ...(opts.desktopSync !== undefined ? { desktopSync: opts.desktopSync } : {}),
       },
     },

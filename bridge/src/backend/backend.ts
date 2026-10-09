@@ -10,10 +10,14 @@ export interface AgentBackend {
   readonly running: boolean;
   readonly capabilities: acp.AgentCapabilities | undefined;
   readonly supportsSteering: boolean;
+  /** `session/fork` can start from a given message (editing a sent prompt). */
+  readonly supportsForkAtMessage: boolean;
   readonly inflight: number;
   readonly lastUsed: number;
   describe(): AgentInfo;
   ensureStarted(): Promise<void>;
+  /** Starts whatever runtime answers `session/fork`, when that differs from ensureStarted(). */
+  ensureForkRuntime?(): Promise<void>;
   request<T = unknown>(method: string, params: unknown, options?: acp.SendRequestOptions): Promise<T>;
   notify(method: string, params: unknown): Promise<void>;
   stop(reason?: string): Promise<void>;

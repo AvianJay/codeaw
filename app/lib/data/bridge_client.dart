@@ -48,6 +48,9 @@ class BridgeClient extends ChangeNotifier {
   String? bridgeHost;
   bool supportsProjectless = false;
 
+  /// The bridge can branch a chat from an edited, already sent message.
+  bool supportsPromptEditing = false;
+
   // Synchronous on purpose: a replayed entry must reach its SessionController before the
   // `session/load` response does, or the response's lastSeq would mark it as a duplicate.
   final _messages = StreamController<SessionMessage>.broadcast(sync: true);
@@ -188,6 +191,7 @@ class BridgeClient extends ChangeNotifier {
             .toList();
         bridgeHost = meta?['host'] as String?;
         supportsProjectless = meta?['projectless'] == true;
+        supportsPromptEditing = meta?['editPrompts'] == true;
         activeUrl = url;
         lastError = null;
         if (host.urls.first != url) {

@@ -6,15 +6,20 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../app_state.dart';
 import '../../data/mentions.dart';
 import '../../data/models.dart';
 import '../../data/session_controller.dart';
+import '../../data/timeline.dart';
 import '../../data/upload_progress.dart';
+import '../../main.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'items.dart';
 
 class _FileUpload {
   _FileUpload(this.name, this.index, this.count);
@@ -142,6 +147,7 @@ class _ComposerState extends State<Composer> {
   late final VoidCallback _stopPasteListener;
   int _readingImages = 0;
   int _attachGeneration = 0;
+  MessageItem? _editing;
   bool _pickingFiles = false;
   _FileUpload? _fileUpload;
 
@@ -210,6 +216,8 @@ class _ComposerState extends State<Composer> {
         selection: TextSelection.collapsed(offset: c.draft.length),
       );
     }
+    if (c.editing != null && !identical(c.editing, _editing)) _focus.requestFocus();
+    _editing = c.editing;
   }
 
   void _onTextChanged() {
@@ -407,6 +415,10 @@ class _ComposerState extends State<Composer> {
 
   void _send({bool queue = false}) {
     if (_readingImages > 0 || _uploads.any((u) => u.file == null)) return;
+    if (c.editing != null) {
+      unawaited(_sendEdit());
+      return;
+    }
     final text = _text.text.trim();
     if (text.isEmpty && _images.isEmpty && _uploads.isEmpty) return;
     final blocks = <Map<String, dynamic>>[
@@ -446,6 +458,59 @@ class _ComposerState extends State<Composer> {
       _images.clear();
       _uploads.clear();
     });
+  }
+
+  /// Sends the edited message as the start of a new branch and opens that chat.
+  Future<void> _sendEdit() async {
+    final text = _text.text.trim();
+    final blocks = <Map<String, dynamic>>[
+      if (text.isNotEmpty) ...promptBlocks(text, c.draftMentions),
+      for (final upload in _uploads) upload.file!,
+      for (final img in _images)
+        {
+          'type': 'image',
+          'mimeType': img.mimeType,
+          'data': base64Encode(img.bytes),
+        },
+      ...c.editKeep,
+    ];
+    if (blocks.isEmpty) return;
+    final state = AppScope.read(context);
+    final router = GoRouter.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final wide = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
+    final target = c;
+    final hub = state.hub;
+    final replace = state.editReplace;
+    // The original chat's page must outlive its deletion until we navigate away.
+    if (replace) hub?.hold(target.sessionId);
+    final branch = await target.submitEdit(blocks, replace: replace);
+    if (branch == null || !branch.replaced) hub?.release(target.sessionId);
+    if (branch == null) return;
+    if (mounted && identical(c, target)) {
+      setState(() {
+        _images.clear();
+        _uploads.clear();
+      });
+    }
+    await state.sessions?.refresh();
+    final route = '${sessionRoute(branch.sessionId)}&cwd=${Uri.encodeQueryComponent(branch.cwd)}';
+    if (wide) {
+      router.go(route);
+    } else {
+      router.pushReplacement(route);
+    }
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          branch.replaced
+              ? '已從編輯的訊息重新開始，原對話已移除'
+              : replace
+              ? '已建立新分支；原對話仍有工作進行，因此保留'
+              : '已建立新分支，原對話保留',
+        ),
+      ),
+    );
   }
 
   /// Replaces `start..end` and puts the cursor after the inserted text.
@@ -746,14 +811,17 @@ class _ComposerState extends State<Composer> {
     final agent = c.agent;
     final commands = _commands;
     final attachments = _attachActions();
+    final editing = c.editing != null;
     final canSend =
         c.client.isOnline &&
         !c.waitingForDesktop &&
         _readingImages == 0 &&
         !_uploads.any((u) => u.file == null) &&
+        !(editing && (running || c.submittingEdit)) &&
         (_text.text.trim().isNotEmpty ||
             _images.isNotEmpty ||
-            _uploads.isNotEmpty);
+            _uploads.isNotEmpty ||
+            (editing && c.editKeep.isNotEmpty));
     final wide = useWideLayout(context);
     // Scaffold removes body viewInsets after resizing; read the actual view
     // so the Done control and compact composer still see the keyboard.
@@ -821,12 +889,25 @@ class _ComposerState extends State<Composer> {
                     )
                   else if (_mentioning)
                     _SuggestionList(children: _fileTiles(scheme)),
+                  if (editing)
+                    _EditBanner(
+                      replace: AppScope.of(context).editReplace,
+                      busy: c.submittingEdit,
+                      onReplace: c.submittingEdit
+                          ? null
+                          : (value) => unawaited(
+                              AppScope.read(context).setEditReplace(value),
+                            ),
+                      onCancel: c.submittingEdit ? null : c.cancelEdit,
+                    ),
                   if (!(compact && keyboard)) ConfigBar(controller: c),
                   if (_readingImages > 0 && _fileUpload == null)
                     const LinearProgressIndicator(),
                   if (_fileUpload case final progress?)
                     _UploadProgress(upload: progress),
-                  if (_images.isNotEmpty || _uploads.isNotEmpty)
+                  if (_images.isNotEmpty ||
+                      _uploads.isNotEmpty ||
+                      (editing && c.editKeep.isNotEmpty))
                     SizedBox(
                       height: compact ? 48 : 72,
                       child: ListView(
@@ -836,6 +917,20 @@ class _ComposerState extends State<Composer> {
                           vertical: 6,
                         ),
                         children: [
+                          if (editing)
+                            for (final block in c.editKeep)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: _KeptAttachment(
+                                  block: block,
+                                  compact: compact,
+                                  onRemove: c.submittingEdit
+                                      ? null
+                                      : () => setState(
+                                          () => c.editKeep.remove(block),
+                                        ),
+                                ),
+                              ),
                           for (final upload in _uploads)
                             Padding(
                               padding: const EdgeInsets.only(right: 8),
@@ -909,7 +1004,9 @@ class _ComposerState extends State<Composer> {
                                     )
                                   : null,
                               decoration: InputDecoration(
-                                hintText: running
+                                hintText: editing
+                                    ? '修改訊息，送出後從這裡重新開始'
+                                    : running
                                     ? (agent?.steering ?? false
                                           ? '補充指示，插入目前回合'
                                           : '下一則，排在目前回合後')
@@ -966,7 +1063,7 @@ class _ComposerState extends State<Composer> {
                             triggerMode: TooltipTriggerMode.manual,
                           ),
                           child: GestureDetector(
-                            onLongPress: canSend && running
+                            onLongPress: canSend && running && !editing
                                 ? () => _send(queue: true)
                                 : null,
                             child: IconButton.filled(
@@ -975,8 +1072,16 @@ class _ComposerState extends State<Composer> {
                                   borderRadius: BorderRadius.circular(12),
                                 ),
                               ),
-                              tooltip: running ? '送出（長按＝排隊）' : '送出',
-                              icon: const Icon(Icons.arrow_upward_rounded),
+                              tooltip: editing
+                                  ? '送出編輯'
+                                  : running
+                                  ? '送出（長按＝排隊）'
+                                  : '送出',
+                              icon: Icon(
+                                editing
+                                    ? Icons.call_split_rounded
+                                    : Icons.arrow_upward_rounded,
+                              ),
                               onPressed: canSend ? _send : null,
                             ),
                           ),
@@ -998,6 +1103,121 @@ class _ComposerState extends State<Composer> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Shown while a sent message is edited: how the edit is applied and what it keeps.
+class _EditBanner extends StatelessWidget {
+  const _EditBanner({
+    required this.replace,
+    required this.busy,
+    required this.onReplace,
+    required this.onCancel,
+  });
+  final bool replace;
+  final bool busy;
+  final ValueChanged<bool>? onReplace;
+  final VoidCallback? onCancel;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final style = TextStyle(fontSize: 12, color: scheme.onSurfaceVariant);
+    // A neutral surface, so the selected segment's container color stands out.
+    return Material(
+      color: scheme.surfaceContainerHigh,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 2, 4, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.edit_outlined, size: 16, color: scheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '編輯已送出的訊息',
+                    style: TextStyle(fontWeight: FontWeight.w600, color: scheme.onSurface),
+                  ),
+                ),
+                if (busy)
+                  const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                IconButton(
+                  tooltip: '取消編輯',
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  onPressed: onCancel,
+                ),
+              ],
+            ),
+            SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(
+                  value: false,
+                  icon: Icon(Icons.call_split_rounded, size: 16),
+                  label: Text('另開分支'),
+                ),
+                ButtonSegment(
+                  value: true,
+                  icon: Icon(Icons.swap_horiz_rounded, size: 16),
+                  label: Text('取代原對話'),
+                ),
+              ],
+              selected: {replace},
+              onSelectionChanged: onReplace == null ? null : (value) => onReplace!(value.first),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              replace
+                  ? '從這則訊息重新開始，之後的內容捨棄；原聊天會從 Codeaw 移除（agent 的歷史檔仍留在電腦上）。電腦上的檔案變更不會還原。'
+                  : '在新的聊天從這則訊息重新開始，原聊天保留。電腦上的檔案變更不會還原。',
+              style: style,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// An image or file from the edited message that is sent again unless removed.
+class _KeptAttachment extends StatelessWidget {
+  const _KeptAttachment({required this.block, required this.compact, required this.onRemove});
+  final Map<String, dynamic> block;
+  final bool compact;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = compact ? 36.0 : 60.0;
+    return Stack(
+      children: [
+        if (block['type'] == 'image')
+          SizedBox(
+            width: size,
+            height: size,
+            child: BlockImage(block, maxHeight: size),
+          )
+        else
+          SizedBox(height: size, child: Center(child: MentionChip(block))),
+        Positioned(
+          right: -10,
+          top: -10,
+          child: IconButton(
+            iconSize: 16,
+            tooltip: '移除附件',
+            icon: const Icon(Icons.cancel_rounded),
+            onPressed: onRemove,
+          ),
+        ),
+      ],
     );
   }
 }

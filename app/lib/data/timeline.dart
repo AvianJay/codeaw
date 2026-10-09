@@ -46,6 +46,10 @@ class MessageItem extends TimelineItem {
   /// `started` / `cancelled` once a queued prompt left the queue.
   String? dequeued;
 
+  /// A sent prompt whose turn has started; the bridge confirms it can branch there.
+  bool get canEdit => role == MessageRole.user && !removed && !steered && !optimistic &&
+      dequeued != 'cancelled' && (promptId == null || !queued || dequeued == 'started' || receipt == 'read');
+
   String get text => parts.where((p) => p['type'] == 'text').map((p) => p['text'] as String? ?? '').join();
 
   /// A prompt's text with its file mentions written back as `@name`, for copying and reuse.

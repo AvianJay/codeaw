@@ -10,6 +10,7 @@
  *   title <text>  session_info_update
  *   crash         exit the process mid-turn
  *   image         report the image block it received
+ *   history       list the user messages the agent remembers (to check forks)
  * State is persisted in $FAKE_AGENT_STATE so list/load/resume work across restarts.
  */
 import fs from "node:fs";
@@ -27,6 +28,8 @@ interface StoredSession {
 
 const stateFile = process.env.FAKE_AGENT_STATE;
 const steering = process.env.FAKE_AGENT_STEERING === "1";
+/** Advertise a fork-point capable `session/fork`, under a name the bridge recognises. */
+const forking = process.env.FAKE_AGENT_FORK === "1";
 const sessions: Record<string, StoredSession> = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
 const live = new Map<string, { cancelled: boolean; steer: string[]; running: boolean }>();
 
@@ -59,9 +62,9 @@ const app = acp
     agentCapabilities: {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
-      sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {} },
+      sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {}, ...(forking ? { fork: {} } : {}) },
     },
-    agentInfo: { name: "fake-agent", version: "1.0.0" },
+    agentInfo: forking ? { name: "@agentclientprotocol/codex-acp", version: "2.1.1" } : { name: "fake-agent", version: "1.0.0" },
     authMethods: [],
     ...(steering ? { _meta: { steering: { supported: true } } } : {}),
   }))
@@ -95,6 +98,24 @@ const app = acp
     // Like Codex: resume resets the mode.
     s.mode = "ask";
     return { configOptions: configOptions(s.mode) };
+  })
+  .onRequest("session/fork", (ctx) => {
+    const s = sessions[ctx.params.sessionId];
+    if (!s) throw acp.RequestError.invalidParams(undefined, "unknown session");
+    // Like codex-acp: keep the turn holding the fork point, drop everything after it.
+    const point = (ctx.params._meta as any)?.jetbrains?.air?.fork?.messageId;
+    let history = s.history;
+    if (point !== undefined) {
+      const at = history.findLastIndex((u: any) => u.messageId === point);
+      if (at < 0) throw acp.RequestError.invalidParams(undefined, `Fork point message ${point} was not found`);
+      const next = history.findIndex((u, i) => i > at && u.sessionUpdate === "user_message_chunk");
+      history = history.slice(0, next < 0 ? history.length : next);
+    }
+    const id = "s" + crypto.randomBytes(4).toString("hex");
+    // Like Claude: the fork has to be resumed before it can be prompted.
+    sessions[id] = { cwd: ctx.params.cwd, title: s.title, updatedAt: new Date().toISOString(), mode: "ask", history: [...history] };
+    save();
+    return { sessionId: id };
   })
   .onRequest("session/close", (ctx) => {
     live.delete(ctx.params.sessionId);
@@ -228,6 +249,11 @@ const app = acp
         case "image": {
           const img: any = ctx.params.prompt.find((b: any) => b.type === "image");
           await say(img ? `got image ${img.mimeType} ${img.data.length}` : "no image");
+          break;
+        }
+        case "history": {
+          const users = s.history.slice(0, -1).filter((u) => u.sessionUpdate === "user_message_chunk").map((u: any) => u.content.text);
+          await say(`remembers: ${users.join(" | ")}`);
           break;
         }
         default:

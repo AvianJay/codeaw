@@ -89,6 +89,8 @@ class HostStore {
   Future<void> saveAppearance(String mode) => _storage.write(key: 'codeaw.appearance', value: mode);
   Future<bool> loadDataSaver() async => await _storage.read(key: 'codeaw.dataSaver') == 'true';
   Future<void> saveDataSaver(bool enabled) => _storage.write(key: 'codeaw.dataSaver', value: '$enabled');
+  Future<bool> loadEditReplace() async => await _storage.read(key: 'codeaw.editReplace') == 'true';
+  Future<void> saveEditReplace(bool replace) => _storage.write(key: 'codeaw.editReplace', value: '$replace');
   static const _key = 'codeaw.host';
   final _storage = const FlutterSecureStorage();
   Future<void> _pendingWrite = Future.value();
