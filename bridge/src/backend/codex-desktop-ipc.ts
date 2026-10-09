@@ -30,6 +30,49 @@ export interface DesktopIpcOptions {
 }
 
 const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+
+/** Assemble a fragmented frame once, even for a large desktop history snapshot. */
+export class DesktopIpcFrameDecoder {
+  private readonly header = Buffer.alloc(4);
+  private headerBytes = 0;
+  private payload?: Buffer;
+  private payloadBytes = 0;
+
+  push(chunk: Buffer): Buffer[] {
+    const frames: Buffer[] = [];
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (!this.payload) {
+        const size = Math.min(4 - this.headerBytes, chunk.length - offset);
+        chunk.copy(this.header, this.headerBytes, offset, offset + size);
+        this.headerBytes += size;
+        offset += size;
+        if (this.headerBytes < 4) break;
+        const length = this.header.readUInt32LE(0);
+        if (length < 2 || length > MAX_FRAME_BYTES) throw new Error("Invalid Codex desktop IPC frame");
+        this.headerBytes = 0;
+        if (chunk.length - offset >= length) {
+          frames.push(chunk.subarray(offset, offset + length));
+          offset += length;
+          continue;
+        }
+        this.payload = Buffer.allocUnsafe(length);
+        this.payloadBytes = 0;
+      }
+      const size = Math.min(this.payload.length - this.payloadBytes, chunk.length - offset);
+      chunk.copy(this.payload, this.payloadBytes, offset, offset + size);
+      this.payloadBytes += size;
+      offset += size;
+      if (this.payloadBytes === this.payload.length) {
+        frames.push(this.payload);
+        this.payload = undefined;
+        this.payloadBytes = 0;
+      }
+    }
+    return frames;
+  }
+}
+
 const CURRENT_VERSIONS: Record<string, number> = {
   "thread-owner-discovery": 1,
   "thread-stream-state-changed": 11,
@@ -112,7 +155,7 @@ export class CodexDesktopIpc extends EventEmitter {
   versions: Record<string, number>;
   private socket?: net.Socket;
   private ready?: Promise<void>;
-  private buffer = Buffer.alloc(0);
+  private decoder = new DesktopIpcFrameDecoder();
   private readonly pending = new Map<string, { resolve: (message: DesktopIpcMessage) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private reconnectTimer?: NodeJS.Timeout;
   private reconnectWanted = false;
@@ -148,7 +191,7 @@ export class CodexDesktopIpc extends EventEmitter {
     }
     const socket = net.createConnection(this.options.pipe ?? codexDesktopPipe());
     this.socket = socket;
-    this.buffer = Buffer.alloc(0);
+    this.decoder = new DesktopIpcFrameDecoder();
     socket.on("data", (chunk) => this.onData(socket, typeof chunk === "string" ? Buffer.from(chunk) : chunk));
     socket.on("error", () => this.disconnect(new Error("Codex desktop IPC connection failed"), socket));
     socket.on("close", () => this.disconnect(new Error("Codex desktop IPC connection closed"), socket));
@@ -170,13 +213,11 @@ export class CodexDesktopIpc extends EventEmitter {
 
   private onData(socket: net.Socket, chunk: Buffer): void {
     if (socket !== this.socket) return;
-    this.buffer = Buffer.concat([this.buffer, chunk]);
-    while (this.buffer.length >= 4) {
-      const length = this.buffer.readUInt32LE(0);
-      if (length < 2 || length > MAX_FRAME_BYTES) { this.disconnect(new Error("Invalid Codex desktop IPC frame"), socket); return; }
-      if (this.buffer.length < length + 4) return;
-      const frame = this.buffer.subarray(4, length + 4);
-      this.buffer = this.buffer.subarray(length + 4);
+    let frames: Buffer[];
+    try { frames = this.decoder.push(chunk); }
+    catch { this.disconnect(new Error("Invalid Codex desktop IPC frame"), socket); return; }
+    for (const frame of frames) {
+      if (socket !== this.socket) return;
       let message: DesktopIpcMessage;
       try { message = JSON.parse(frame.toString("utf8")); }
       catch { this.disconnect(new Error("Invalid Codex desktop IPC message"), socket); return; }
@@ -249,7 +290,7 @@ export class CodexDesktopIpc extends EventEmitter {
     this.socket = undefined;
     this.ready = undefined;
     this.clientId = undefined;
-    this.buffer = Buffer.alloc(0);
+    this.decoder = new DesktopIpcFrameDecoder();
     socket?.destroy();
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); }
     this.pending.clear();

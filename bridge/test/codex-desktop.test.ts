@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexDesktopIpc, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
+import { CodexDesktopIpc, DesktopIpcFrameDecoder, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
@@ -592,6 +592,41 @@ describe("Codex desktop synchronization", () => {
 });
 
 describe("desktop IPC wire and state", () => {
+  it("decodes a large fragmented history followed by coalesced frames without losing Unicode or boundaries", () => {
+    const snapshot = { type: "broadcast", params: { history: "中文 🦉".repeat(512 * 1024) } };
+    const messages = [snapshot, { type: "response", requestId: "next", result: { ready: true } }];
+    const wire = Buffer.concat(messages.map(encodeDesktopIpc));
+    const decoder = new DesktopIpcFrameDecoder();
+    const frames: Buffer[] = [];
+    for (let offset = 0; offset < wire.length; offset += 1023) frames.push(...decoder.push(wire.subarray(offset, offset + 1023)));
+    expect(frames.map(frame => JSON.parse(frame.toString("utf8")))).toEqual(messages);
+    expect(new DesktopIpcFrameDecoder().push(wire).map(frame => JSON.parse(frame.toString("utf8")))).toEqual(messages);
+  });
+
+  it.each([0, 1, 64 * 1024 * 1024 + 1, 0xffffffff])("rejects invalid frame length %s before accepting a body", (length) => {
+    const header = Buffer.alloc(4); header.writeUInt32LE(length);
+    const decoder = new DesktopIpcFrameDecoder();
+    expect(decoder.push(header.subarray(0, 3))).toEqual([]);
+    expect(() => decoder.push(header.subarray(3))).toThrow(/Invalid.*frame/);
+  });
+
+  it("updates only the changed branch and preserves old history across multiple array patches", () => {
+    const archive = { turns: [{ text: "large unchanged history".repeat(100000) }] };
+    const state = { archive, turns: [{ items: [{ text: "before" }, { text: "removed" }] }] };
+    const value = { text: "appended" };
+    const changed = applyDesktopPatches(state, [
+      { op: "replace", path: ["turns", 0, "items", 0, "text"], value: "after" },
+      { op: "remove", path: ["turns", 0, "items", 1] },
+      { op: "add", path: ["turns", 0, "items", "-"], value },
+    ]);
+    expect(changed.archive).toBe(archive);
+    expect(changed.turns).not.toBe(state.turns);
+    expect(changed.turns[0].items).toEqual([{ text: "after" }, { text: "appended" }]);
+    expect(state.turns[0].items).toEqual([{ text: "before" }, { text: "removed" }]);
+    value.text = "external mutation";
+    expect(changed.turns[0].items[1].text).toBe("appended");
+  });
+
   it("retains steering client prompt ids directly from the native snapshot after reconnect", () => {
     const id = randomUUID();
     const conversation = { turns: [{ turnId: "t", status: "completed", items: [{
@@ -609,6 +644,24 @@ describe("desktop IPC wire and state", () => {
       const responses = await Promise.all([ipc.request("echo", { value: "中文 🦉" }), ipc.request("echo", { value: "second" })]);
       expect(responses.map((response) => response.result.value)).toEqual(["中文 🦉", "second"]);
       expect(desktop.requests.filter((message) => message.method === "initialize")).toHaveLength(1);
+    } finally { ipc.close(); }
+  });
+
+  it("discards a partial history frame when its socket closes before reconnecting", async () => {
+    desktop = new DesktopPeer(); await desktop.start();
+    const ipc = new CodexDesktopIpc({ pipe: desktop.pipe, archivePath: desktop.archivePath });
+    try {
+      await ipc.ensureReady();
+      const generation = ipc.generation;
+      const partial = encodeDesktopIpc({ type: "broadcast", params: { history: "old history".repeat(1000) } });
+      const socket = [...desktop.sockets][0];
+      const disconnected = new Promise<void>(resolve => ipc.once("disconnected", resolve));
+      await new Promise<void>((resolve, reject) => socket.write(partial.subarray(0, 128), error => error ? reject(error) : resolve()));
+      socket.end();
+      await disconnected;
+      const response = await ipc.request("echo", { value: "fresh connection" });
+      expect(response.result.value).toBe("fresh connection");
+      expect(ipc.generation).toBe(generation + 1);
     } finally { ipc.close(); }
   });
 

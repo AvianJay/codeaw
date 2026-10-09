@@ -23,7 +23,15 @@ export function desktopRequests(conversation: any): any[] {
 /** Desktop sends Immer patches with array paths, not JSON-RPC notifications. */
 export function applyDesktopPatches(state: any, patches: unknown): any {
   if (!Array.isArray(patches)) throw new Error("Invalid desktop state patches");
-  let next = structuredClone(state);
+  let next = state;
+  const owned = new WeakSet<object>();
+  const writable = (node: any): any => {
+    if (node === null || typeof node !== "object") throw new Error("Invalid desktop state patch parent");
+    if (owned.has(node)) return node;
+    const copy = Array.isArray(node) ? node.slice() : { ...node };
+    owned.add(copy);
+    return copy;
+  };
   for (const patch of patches) {
     if (!patch || !["add", "replace", "remove"].includes(patch.op) || !Array.isArray(patch.path) || patch.path.length > 64) throw new Error("Unsupported desktop state patch");
     if (patch.path.some((key: unknown) => (typeof key !== "string" && typeof key !== "number") || ["__proto__", "constructor", "prototype"].includes(String(key)))) throw new Error("Unsafe desktop state patch");
@@ -32,9 +40,13 @@ export function applyDesktopPatches(state: any, patches: unknown): any {
       next = structuredClone(patch.value);
       continue;
     }
+    // Copy only ancestors of the changed value. Completed history is shared
+    // across revisions rather than cloning tens of megabytes for every token.
+    next = writable(next);
     let parent = next;
     for (const key of patch.path.slice(0, -1)) {
       if (parent === null || typeof parent !== "object" || !Object.hasOwn(parent, key)) throw new Error("Desktop state patch path is missing");
+      parent[key] = writable(parent[key]);
       parent = parent[key];
     }
     if (parent === null || typeof parent !== "object") throw new Error("Invalid desktop state patch parent");
