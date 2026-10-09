@@ -28,7 +28,8 @@ function Invoke-Control([string]$Command, [hashtable]$Fields = @{}) {
             $writer.WriteLine(($Fields | ConvertTo-Json -Depth 8 -Compress))
             $writer.Flush()
             $read = $reader.ReadLineAsync()
-            if (-not $read.Wait(15000)) { throw 'Bridge 回應逾時' }
+            $timeout = if ($Command -eq 'installDesktopService' -or $Command -eq 'uninstallDesktopService') { 300000 } else { 15000 }
+            if (-not $read.Wait($timeout)) { throw 'Bridge 回應逾時' }
             $response = $read.Result | ConvertFrom-Json
             if (-not $response.ok) { throw $response.error }
             return $response.result
@@ -157,7 +158,10 @@ function Add-Number($Form, [string]$Text, [int]$Y, [int]$Maximum, [int]$Value, [
 
 function Show-Settings {
     try { $script:settings = Invoke-Control 'settings' } catch { Show-Error $_; return }
-    $form = New-Window '設定' 508 686
+    $settingsHeight = [Math]::Min(806, [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height - 80)
+    $form = New-Window '設定' 508 $settingsHeight
+    $form.AutoScroll = $true
+    $form.AutoScrollMinSize = [System.Drawing.Size]::new(490, 806)
     (Add-Label $form 'Bridge 設定' 24 18 460 30).Font = [System.Drawing.Font]::new('Microsoft JhengHei UI', 16, [System.Drawing.FontStyle]::Bold)
     $script:port = Add-Number $form '連接埠（0 = 自動分配）' 70 65535 $script:settings.port 0
     $script:sessionIdle = Add-Number $form '閒置對話釋放時間（分鐘）' 110 10080 $script:settings.idleSessionCloseMinutes
@@ -184,15 +188,32 @@ function Show-Settings {
     $script:agents.CheckOnClick = $true
     foreach ($agent in $script:settings.agents) { $script:agents.Items.Add($agent.name + ' (' + $agent.id + ')', [bool]$agent.enabled) | Out-Null }
     $form.Controls.Add($script:agents)
-    Add-Button $form '安裝 ACP agent…' 24 630 160 { Show-AgentInstaller } | Out-Null
+    $script:remoteDesktop = [System.Windows.Forms.CheckBox]::new()
+    $script:remoteDesktop.Text = '允許已配對裝置操作遠端桌面'
+    $script:remoteDesktop.Location = [System.Drawing.Point]::new(24, 626)
+    $script:remoteDesktop.Size = [System.Drawing.Size]::new(460, 28)
+    $script:remoteDesktop.Checked = [bool]$script:settings.remoteDesktopEnabled -or [bool]$script:settings.advancedDesktopInstalled
+    $script:remoteDesktop.Enabled = -not [bool]$script:settings.advancedDesktopInstalled
+    $form.Controls.Add($script:remoteDesktop)
+    $advancedLabel = if ($script:settings.advancedDesktopInstalled) { '解除進階桌面服務…' } else { '安裝進階桌面服務…' }
+    Add-Button $form $advancedLabel 24 666 220 {
+        try {
+            $command = if ($script:settings.advancedDesktopInstalled) { 'uninstallDesktopService' } else { 'installDesktopService' }
+            Invoke-Control $command | Out-Null
+            $script:window.Close()
+            Show-Settings
+        } catch { Show-Error $_ }
+    } | Out-Null
+    Add-Label $form '進階服務可在登入前連線，並操作解鎖與 UAC；需 Windows 管理員授權。' 24 706 460 32 | Out-Null
+    Add-Button $form '安裝 ACP agent…' 24 750 160 { Show-AgentInstaller } | Out-Null
     Add-Label $form '儲存會重新啟動 bridge，正在執行的回合將中止。' 24 592 460 28 | Out-Null
-    Add-Button $form '取消' 194 630 100 { $script:window.Close() } | Out-Null
-    Add-Button $form '儲存並重新啟動' 304 630 180 {
+    Add-Button $form '取消' 194 750 100 { $script:window.Close() } | Out-Null
+    Add-Button $form '儲存並重新啟動' 304 750 180 {
         if ([System.Windows.Forms.MessageBox]::Show('套用設定並重新啟動 bridge？正在執行的回合將中止。', '套用設定', 'OKCancel', 'Question') -ne 'OK') { return }
         $enabled = @{}
         for ($i = 0; $i -lt @($script:settings.agents).Count; $i++) { $enabled[$script:settings.agents[$i].id] = $script:agents.GetItemChecked($i) }
         $folders = @($script:folders.Lines | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $settings = @{ port = [int]$script:port.Value; workspaces = $folders; allowAllPaths = [bool]$script:allPaths.Checked; agents = $enabled;
+        $settings = @{ port = [int]$script:port.Value; workspaces = $folders; allowAllPaths = [bool]$script:allPaths.Checked; agents = $enabled; remoteDesktopEnabled = [bool]$script:remoteDesktop.Checked;
             idleSessionCloseMinutes = [int]$script:sessionIdle.Value; idleAgentStopMinutes = [int]$script:agentIdle.Value }
         try { Invoke-Control 'saveSettings' @{ settings = $settings } | Out-Null; $script:window.Close() }
         catch { Show-Error $_ }

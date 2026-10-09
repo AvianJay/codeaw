@@ -14,6 +14,53 @@ the extra screens (files, git, pairing).
 
 ## Transport and auth
 
+Remote desktop is a separate authenticated REST/WebSocket transport, available
+even when the user's ACP bridge is offline at Windows sign-in. See
+[remote desktop setup](remote-desktop.md).
+
+| Endpoint | Desktop operation |
+|---|---|
+| `GET /api/desktop/info` | Version, local opt-in, availability, monitors, modes and privilege capabilities |
+| `POST /api/desktop/sessions` | `{mode?, monitorId?, privilege?, fps?}` → `{sessionId, ticket, socketPath}` |
+| `WS /api/desktop/sessions/:id/socket` | First text message `{type:"auth", ticket}`; ticket expires after 30 seconds and is single-use |
+| `DELETE /api/desktop/sessions/:id` | End the authenticated device's own session |
+
+REST uses Bearer device authentication; desktop WebSocket URLs contain no tokens.
+An unverified socket closes after three seconds. Only one desktop control session
+can exist; reservation expires if its ticket is not used. Device revocation also
+ends active desktop sockets and their WebRTC peers.
+
+Modes are `balanced`, `smooth`, `low`, `onDemand`; privileges are `user`, `system`.
+`system` is available only after local installation of the advanced service.
+FPS selection is 30 or 60 for `smooth`. Configure messages update mode, FPS or
+monitor, while privilege changes require a new session.
+
+JPEG frame messages are binary: a four-byte little-endian JSON-header length,
+UTF-8 metadata, then tile bytes. Metadata contains `type:"frame"`, `epoch`, `seq`,
+`width`, `height`, `sourceWidth`, `sourceHeight`, `full`, and
+`tiles:[{x,y,width,height,offset,length}]`. Tile offsets are relative to the payload.
+The client applies the whole frame before replying `{type:"ack",epoch,seq}`.
+There is at most one unacknowledged frame. New screen generations start with a
+full frame; old frames and input generations are discarded.
+
+Text messages include `configure` with `options`, `refresh`, and
+`input` with `epoch` and `input:{kind,...}`. Kinds are pointer, button, wheel, key,
+text, release and sas. Pointer coordinates are normalized within the selected
+physical monitor. Text is committed Unicode; special keys use Windows virtual-key
+codes and explicit down/up. Release also works while input is paused.
+
+The server sends `status`, `info`, `notice`, `error`, and `cursor`; cursor shape
+changes include a bounded PNG and scaled hotspot. H.264 uses WebRTC media, with
+`offer`/`answer` and `candidate` signaling on the desktop socket. Signaling and
+video status carry `epoch`. Receiver stats adjust encoding bitrate; NACK and PLI
+feedback support recovery. Failure falls back to JPEG balanced mode.
+
+Desktop image data does not use ACP gzip framing or WebSocket deflate and is not
+written to session history. Leaving the screen/backgrounding ends capture and
+releases worker-owned input. The advanced gateway serves the same public origin
+and verifies the private backend pipe's owner SID before forwarding credentials;
+it imports no agent runtime.
+
 | Endpoint | Purpose | Auth |
 |---|---|---|
 | `GET /acp` (WebSocket upgrade) | ACP JSON-RPC, one text frame per message | `Authorization: Bearer <deviceToken>` (browsers may use `?token=`) |

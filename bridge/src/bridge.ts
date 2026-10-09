@@ -19,6 +19,12 @@ import { TerminalManager } from "./terminal/manager.js";
 import { CpaUsageService } from "./server/cpa.js";
 import { findWebRoot } from "./server/web.js";
 import { UPLOAD_TIMEOUT_MS } from "./server/uploads.js";
+import { DesktopManager } from "./remote-desktop/manager.js";
+import type { BackendFactory } from "./remote-desktop/protocol.js";
+import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
+import { desktopHelper } from "./remote-desktop/native.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 const log = logger("bridge");
 
@@ -31,6 +37,9 @@ export interface BridgeOptions {
   fetchImpl?: typeof fetch;
   /** Override the public Flutter web asset directory. */
   webRoot?: string;
+  desktopBackendFactory?: BackendFactory;
+  /** Private user bridge endpoint when the system gateway owns the public port. */
+  gatewayPipe?: string;
 }
 
 export interface Bridge {
@@ -47,6 +56,8 @@ export interface Bridge {
 
 export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}): Promise<Bridge> {
   const { config, home, dataDir } = loaded;
+  const gateway = gatewayRegistration(loaded.file);
+  opts = { ...opts, gatewayPipe: opts.gatewayPipe ?? gateway?.backendPipe };
   const webRoot = opts.webRoot ?? findWebRoot();
   const store = new SessionStore(dataDir);
   const devices = new DeviceStore(home);
@@ -86,7 +97,9 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths, () => [uploads.dir]);
   const terminals = new TerminalManager(guard);
   const cpa = new CpaUsageService(opts.fetchImpl);
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot });
+  const desktop = new DesktopManager({ devices, enabled: () => config.remoteDesktop.enabled,
+    backendFactory: opts.desktopBackendFactory, ...(opts.desktopBackendFactory ? { available: () => true } : {}) });
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop });
 
   const servers = new Map<string, http.Server>();
   const binding = new Set<string>();
@@ -124,6 +137,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     clearInterval(pruneUploads);
     notifier.dispose();
     liveActivity.dispose();
+    await desktop.dispose();
     await terminals.dispose();
     await handlers.close();
     await Promise.all([...servers.values()].map((server) => new Promise<void>((resolve) => {
@@ -135,7 +149,17 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   })();
 
   try {
-    for (const host of wanted()) {
+    if (opts.gatewayPipe) {
+      const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
+      server.on("upgrade", handlers.onUpgrade);
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(opts.gatewayPipe, resolve); });
+      servers.set(opts.gatewayPipe, server);
+      if (gateway) {
+        const helper = desktopHelper(); if (!helper) throw new Error("Desktop helper is required to protect the backend pipe");
+        await promisify(execFile)(helper, ["--protect-pipe", opts.gatewayPipe, gateway.ownerSid], { windowsHide: true, timeout: 10_000 });
+      }
+    }
+    for (const host of opts.gatewayPipe ? [] : wanted()) {
       try { await listen(host); }
       catch (err) {
         // A Tailscale adapter may be present before its address is ready at boot.
@@ -149,7 +173,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
 
   // Tailscale may come up after us (boot, VPN reconnect): keep trying to bind its address.
   retry =
-    !opts.hosts && config.listen.hosts === "auto"
+    !opts.gatewayPipe && !opts.hosts && config.listen.hosts === "auto"
       ? setInterval(() => {
           for (const host of wanted()) {
             if (!stopping && !servers.has(host) && !binding.has(host)) listen(host).catch((err) => log.warn(`cannot listen on ${host}: ${(err as Error).message}`));

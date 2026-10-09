@@ -65,6 +65,8 @@ export const ConfigSchema = z.object({
   workspaces: z.array(z.string()).default([]),
   /** Opt in on the PC: paired devices can access any path this account can access. */
   filesystem: z.object({ allowAllPaths: z.boolean().default(false) }).default({ allowAllPaths: false }),
+  /** Local opt-in. Desktop access uses the existing paired-device trust. */
+  remoteDesktop: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
   agents: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), AgentConfigSchema),
   notifications: z.object({ ntfy: NtfySchema.optional(), liveActivity: LiveActivitySchema.optional() }).default({}),
   /** Release an idle agent-side session (frees e.g. claude.exe) after this many minutes. */

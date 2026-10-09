@@ -19,6 +19,7 @@
 - **Windows Codex 桌面同步**：載入桌面 app 持有的 Codex 對話時，bridge 會附加到桌面 owner，雙向同步訊息、工具進度與回合狀態；手機也能插話、停止、批准操作及回覆一般問題。
 - **問題選項／自訂回答**：Codex 桌面的非同步問題會在手機顯示「回答」表單，可點選建議或填入自訂文字，多題一併送出。第一個建議可預選，仍需按「送出」才會回覆；模型工作繼續執行，回答會插入原回合，回合已結束時則接續同一聊天。重連後保留最新回合尚未回答的問題；開始新回合後舊題失效，已回答、取消或失敗回合的問題不再重開。
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；離開畫面仍保留 shell，十分鐘未查看後自動關閉。
+- **遠端桌面**：Android／iOS／Web 可查看及操作 Windows 桌面、輸入中文與切換螢幕，提供一般、高流暢、低流量與極省流量四種模式。電腦端啟用後沿用現有配對；可選安裝進階服務，支援登入前連線、解鎖與 UAC。詳見 [遠端桌面設定與模式](docs/remote-desktop.md)。
 
 ```
 Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP 或 NDJSON ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / dsh --profile acp / agy

@@ -79,6 +79,7 @@ export async function serveControl(file: string, handler: (request: ControlReque
         try {
           const request = JSON.parse(data.slice(0, data.indexOf("\n")));
           if (!request || typeof request.command !== "string") throw new Error("Invalid control command");
+          if (["installDesktopService", "uninstallDesktopService"].includes(request.command)) socket.setTimeout(300_000);
           const result = await handler(request);
           socket.end(JSON.stringify({ ok: true, result }) + "\n");
         } catch (err) {

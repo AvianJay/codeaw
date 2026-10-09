@@ -13,6 +13,7 @@ import 'data/live_activity.dart';
 import 'data/session_controller.dart';
 import 'data/sessions_model.dart';
 import 'data/terminal_controller.dart';
+import 'data/remote_desktop_controller.dart';
 
 /// App-wide state: saved computers and the objects bound to the selected bridge.
 class AppState extends ChangeNotifier {
@@ -44,6 +45,7 @@ class AppState extends ChangeNotifier {
   SessionHub? hub;
   SessionsModel? sessions;
   TerminalHub? terminals;
+  RemoteDesktopController? desktop;
   CpaController? cpa;
   StreamSubscription<void>? _cpaReconnect;
   bool loaded = false;
@@ -147,6 +149,7 @@ class AppState extends ChangeNotifier {
     liveActivity.bind(c);
     androidLiveActivity.bind(c, sessions!, hub!);
     terminals = TerminalHub(c);
+    desktop = RemoteDesktopController(h, store, dataSaver: () => dataSaver);
     final usage = CpaController(
       request: (method, params) async {
         if (!c.isOnline) throw StateError('請先連上電腦 bridge');
@@ -195,6 +198,8 @@ class AppState extends ChangeNotifier {
     hub?.dispose();
     sessions?.dispose();
     terminals?.dispose();
+    desktop?.dispose();
+    desktop = null;
     client?.dispose();
     hub = null;
     sessions = null;

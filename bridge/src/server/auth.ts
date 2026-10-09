@@ -45,7 +45,7 @@ export class DeviceStore {
   private lastSeenWrites = new Map<string, number>();
   private failures: number[] = [];
 
-  constructor(home: string) {
+  constructor(home: string, private readonly readOnly = false) {
     this.devicesFile = path.join(home, "devices.json");
     this.pairingFile = path.join(home, "pairing.json");
   }
@@ -81,6 +81,7 @@ export class DeviceStore {
   }
 
   private touch(device: Device): void {
+    if (this.readOnly) return;
     const now = Date.now();
     if (now - (this.lastSeenWrites.get(device.id) ?? 0) < 10 * 60_000) return;
     this.lastSeenWrites.set(device.id, now);

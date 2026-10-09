@@ -10,6 +10,7 @@ import { loginStartupEnabled, setLoginStartup } from "./autostart.js";
 import { AgentInstaller, registerInstalledAgent } from "../agents/install.js";
 import { BridgeUpdater, verifiedBridgeInstaller } from "../updater.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../version.js";
+import { manageDesktopService } from "../remote-desktop/service.js";
 export type DesktopPage = "pair" | "settings" | "devices" | "agents" | "updates";
 
 export class BridgeRuntime {
@@ -79,6 +80,9 @@ export class BridgeRuntime {
         return createAppLaunch(this.loaded.home, this.bridge.port(), this.bridge.addresses());
       }
       case "settings": return desktopSettings(loadConfig(this.loaded.file));
+      case "installDesktopService": await manageDesktopService(this.loaded.file, "install"); return this.status();
+      case "uninstallDesktopService": await manageDesktopService(this.loaded.file, "uninstall"); return this.status();
+      case "activateDesktopGateway": await this.restart(); return this.status();
       case "agentCatalog": return this.installer.list(request.refresh === true);
       case "installAgent": {
         if (typeof request.id !== "string") throw new Error("Missing agent id");

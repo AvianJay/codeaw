@@ -289,6 +289,11 @@ class _SessionsPageState extends State<SessionsPage> {
                       ),
                     ),
                     IconButton(
+                      tooltip: '遠端桌面',
+                      icon: const Icon(Icons.desktop_windows_outlined),
+                      onPressed: () => _navigate('/desktop'),
+                    ),
+                    IconButton(
                       tooltip: '用量與額度',
                       icon: const Icon(Icons.donut_large_rounded),
                       onPressed: () => _navigate('/usage'),
@@ -334,6 +339,11 @@ class _SessionsPageState extends State<SessionsPage> {
               ],
             ),
             actions: [
+              IconButton(
+                icon: const Icon(Icons.desktop_windows_outlined),
+                tooltip: '遠端桌面',
+                onPressed: () => context.push('/desktop'),
+              ),
               IconButton(
                 icon: const Icon(Icons.donut_large_rounded),
                 tooltip: '用量與額度',

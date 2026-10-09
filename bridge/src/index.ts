@@ -14,6 +14,11 @@ import { manageService } from "./desktop/service.js";
 import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
 import { AgentInstaller, type InstallStatus } from "./agents/install.js";
 import { BridgeUpdater, installBridgeUpdate, type BridgeUpdateStatus } from "./updater.js";
+import fs from "node:fs";
+import YAML from "yaml";
+import { writeFileAtomic } from "./util/paths.js";
+import { manageDesktopService } from "./remote-desktop/service.js";
+import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -36,6 +41,7 @@ Commands:
   revoke <id|name> Remove a paired device
   service <action> install / uninstall / start / stop / restart / status
                    Windows SCM, Linux systemd --user, macOS LaunchAgent
+  remote-desktop <action> enable / disable / install / uninstall / status
 
 Options:
   -c, --config <file>  Config file (default: ${defaultConfigFile()})
@@ -203,6 +209,22 @@ async function main(): Promise<void> {
     case "service": {
       if (positionals[1] === "install") ensureConfig(file);
       await manageService(file, positionals[1] ?? "status");
+      return;
+    }
+    case "remote-desktop": {
+      const action = positionals[1] ?? "status";
+      if (action === "enable" || action === "disable") {
+        ensureConfig(file);
+        const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
+        if (doc.errors.length) throw new Error("Invalid configuration");
+        doc.setIn(["remoteDesktop", "enabled"], action === "enable");
+        writeFileAtomic(file, doc.toString());
+        if (gatewayRegistration(file)) await manageDesktopService(file, action);
+        if (await runningStatus(file)) await requestControl(file, { command: "restart" });
+        process.stdout.write(action === "enable" ? "Remote desktop enabled for paired devices\n" : "Remote desktop disabled\n");
+      } else {
+        ensureConfig(file); await manageDesktopService(file, action);
+      }
       return;
     }
     case "pair": {

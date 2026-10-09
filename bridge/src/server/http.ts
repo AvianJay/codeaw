@@ -16,6 +16,7 @@ import { findWebRoot, serveWeb } from "./web.js";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { attachmentHeader, DownloadError, sendArchive } from "./downloads.js";
+import type { DesktopManager } from "../remote-desktop/manager.js";
 
 const log = logger("http");
 const HEARTBEAT_MS = 20_000;
@@ -27,6 +28,7 @@ export interface HttpDeps extends FrontendDeps {
   uploads: UploadStore;
   hostName: string;
   webRoot?: string;
+  desktop?: DesktopManager;
 }
 
 function bearer(req: http.IncomingMessage, url: URL): string | undefined {
@@ -93,6 +95,7 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
   const onRequest: http.RequestListener = async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     try {
+      if (await deps.desktop?.onRequest(req, res, url)) return;
       if (serveWeb(req, res, url.pathname, webRoot)) return;
       if (["GET", "HEAD"].includes(req.method ?? "") && !/^\/(api|acp)(\/|$)/.test(url.pathname)) {
         return sendJson(res, 404, { error: "Web app not found. Run npm run build:web in bridge, or install a release with its web folder." });
@@ -198,6 +201,7 @@ export function createHttpHandlers(deps: HttpDeps): HttpHandlers {
 
   const onUpgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? "/", "http://localhost");
+    if (deps.desktop?.onUpgrade(req, socket, head, url)) return;
     if (url.pathname !== "/acp") {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       return;

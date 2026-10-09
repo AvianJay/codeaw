@@ -89,6 +89,11 @@ class HostStore {
   Future<void> saveAppearance(String mode) => _storage.write(key: 'codeaw.appearance', value: mode);
   Future<bool> loadDataSaver() async => await _storage.read(key: 'codeaw.dataSaver') == 'true';
   Future<void> saveDataSaver(bool enabled) => _storage.write(key: 'codeaw.dataSaver', value: '$enabled');
+  String _desktopKey(HostConfig host) => 'codeaw.desktop.${host.deviceId}';
+  Future<Map<String, dynamic>?> loadDesktopPreferences(HostConfig host) async {
+    try { final raw = await _storage.read(key: _desktopKey(host)); return raw == null ? null : jsonDecode(raw) as Map<String, dynamic>; } catch (_) { return null; }
+  }
+  Future<void> saveDesktopPreferences(HostConfig host, Map<String, dynamic> value) => _storage.write(key: _desktopKey(host), value: jsonEncode(value));
   Future<bool> loadEditReplace() async => await _storage.read(key: 'codeaw.editReplace') == 'true';
   Future<void> saveEditReplace(bool replace) => _storage.write(key: 'codeaw.editReplace', value: '$replace');
   static const _key = 'codeaw.host';

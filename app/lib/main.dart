@@ -17,6 +17,7 @@ import 'ui/settings/settings_page.dart';
 import 'ui/settings/update_page.dart';
 import 'ui/settings/update_prompt.dart';
 import 'ui/terminal/terminal_page.dart';
+import 'ui/remote_desktop/remote_desktop_page.dart';
 import 'ui/usage/cpa_usage_page.dart';
 import 'ui/workspace/workspace_shell.dart';
 import 'util/browser_location.dart';
@@ -99,6 +100,7 @@ GoRouter createAppRouter(
         ),
         GoRoute(path: '/settings', builder: (_, _) => const SettingsPage()),
         GoRoute(path: '/usage', builder: (_, _) => const CpaUsagePage()),
+        GoRoute(path: '/desktop', builder: (_, _) => const RemoteDesktopPage()),
         GoRoute(
           path: '/terminal',
           builder: (_, s) => TerminalPage(

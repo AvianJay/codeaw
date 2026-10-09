@@ -81,6 +81,8 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                           ? 1
                           : widget.location.path == '/terminal'
                           ? 2
+                          : widget.location.path == '/desktop'
+                          ? 4
                           : 0,
                       leading: Column(
                         children: [
@@ -108,6 +110,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                         if (index == 1) context.go('/usage');
                         if (index == 2) context.go('/terminal');
                         if (index == 3) context.go('/settings');
+                        if (index == 4) context.go('/desktop');
                       },
                       destinations: const [
                         NavigationRailDestination(
@@ -127,6 +130,10 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                           icon: Icon(Icons.settings_outlined),
                           selectedIcon: Icon(Icons.settings_rounded),
                           label: Text('設定'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.desktop_windows_outlined),
+                          label: Text('桌面'),
                         ),
                       ],
                     ),

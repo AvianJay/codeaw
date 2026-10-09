@@ -280,10 +280,27 @@ jobs:
           UPDATE_CHANNEL: ${{ needs.prepare.outputs.channel }}
           BUILD_TARGET: ${{ matrix.platform }}
         run: node scripts/set-build-metadata.mjs "$APP_VERSION" "$APP_BUILD_NUMBER" "$UPDATE_CHANNEL" "$GITHUB_REPOSITORY" "$BUILD_TARGET"
+      - name: Ensure Windows ARM64 C++ tools
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $locator = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $ready = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          if (-not $ready) {
+            $studio = & $locator -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            $setup = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+            $arguments = "modify --installPath `"$studio`" --add Microsoft.VisualStudio.Component.VC.Tools.ARM64 --quiet --norestart --wait"
+            $result = Start-Process -FilePath $setup -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+            if ($result.ExitCode -notin @(0, 3010)) { throw 'Cannot install ARM64 C++ tools' }
+          }
       - name: Build every package bin
         run: |
           node --test ../scripts/macos-icon.test.mjs ../scripts/macos-dmg.test.mjs
           npm run build:bin -- --target=${{ matrix.target }}
+      - name: Verify native desktop image and H.264 pipeline
+        if: matrix.platform == 'windows-x64'
+        run: npm run smoke:remote-desktop -- --synthetic-only
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')
         shell: pwsh
