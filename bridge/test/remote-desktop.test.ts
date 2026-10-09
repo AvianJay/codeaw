@@ -9,7 +9,7 @@ import { DeviceStore } from "../src/server/auth.js";
 import { DesktopManager } from "../src/remote-desktop/manager.js";
 import { FrameBudget, type DesktopBackend, type NativeReply } from "../src/remote-desktop/protocol.js";
 import { startDesktopGateway } from "../src/remote-desktop/gateway.js";
-import { DESKTOP_INSTALL_SCRIPT } from "../src/remote-desktop/service.js";
+import { DESKTOP_INSTALL_SCRIPT, desktopServiceFailure } from "../src/remote-desktop/service.js";
 import { GatewayManifest } from "../src/remote-desktop/gateway-config.js";
 import { desktopHelper } from "../src/remote-desktop/native.js";
 import { execFile } from "node:child_process";
@@ -141,6 +141,23 @@ describe("remote desktop", () => {
 });
 
 describe("pre-login gateway", () => {
+  it.skipIf(process.platform !== "win32")("writes a sanitized receipt even when installer preflight fails", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-install-receipt-"));
+    cleanup.push(async () => { fs.rmSync(directory, { recursive: true, force: true }); });
+    const script = path.join(directory, "install.ps1"), result = path.join(directory, "result.json");
+    fs.writeFileSync(script, "\ufeff" + DESKTOP_INSTALL_SCRIPT);
+    await expect(promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", script,
+      "-RequestFile", path.join(directory, "synthetic-private-value.json"), "-ResultFile", result], { windowsHide: true })).rejects.toMatchObject({ code: 1 });
+    const receipt = JSON.parse(fs.readFileSync(result, "utf8"));
+    expect(receipt).toEqual({ ok: false, stage: "preflight", code: expect.any(Number) });
+    expect(JSON.stringify(receipt)).not.toContain("synthetic-private-value");
+  });
+
+  it("reports only recognized install stages and numeric error codes", () => {
+    expect(desktopServiceFailure({ stage: "registration", code: 1639, error: "secret" })).toContain("註冊 Windows 服務，錯誤碼 1639");
+    expect(desktopServiceFailure({ stage: "secret", code: "secret" })).not.toContain("secret");
+    expect(desktopServiceFailure(undefined)).toContain("原設定已保留");
+  });
   it.skipIf(process.platform !== "win32" || !desktopHelper())("attests the actual Windows pipe owner before forwarding credentials", async () => {
     const h = await harness();
     const sid = (await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { windowsHide: true })).stdout.trim();

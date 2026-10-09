@@ -12,6 +12,16 @@ import { desktopHelper } from "./native.js";
 import { gatewayName, gatewayManifestPath, gatewayRegistration, type GatewayManifest } from "./gateway-config.js";
 
 const execute = promisify(execFile);
+const INSTALL_STAGES = { elevation: "取得 Windows 權限", preflight: "檢查安裝環境", payload: "複製程式", configuration: "寫入服務設定",
+  registration: "註冊 Windows 服務", recovery: "設定服務復原", migration: "切換 Bridge 連線", startup: "啟動服務", cleanup: "完成安裝" };
+export function desktopServiceFailure(result: unknown): string {
+  const value = result as { stage?: unknown; code?: unknown } | undefined;
+  const stage = typeof value?.stage === "string" && Object.hasOwn(INSTALL_STAGES, value.stage)
+    ? INSTALL_STAGES[value.stage as keyof typeof INSTALL_STAGES] : undefined;
+  const code = Number.isSafeInteger(value?.code) ? `，錯誤碼 ${value!.code}` : "";
+  return `進階桌面服務安裝未完成${stage ? `（${stage}${code}）` : ""}，原設定已保留`;
+}
+
 export async function manageDesktopService(file: string, action: string): Promise<void> {
   if (process.platform !== "win32") throw new Error("進階桌面服務只支援 Windows");
   if (!["install", "uninstall", "enable", "disable", "status"].includes(action)) throw new Error("Usage: remote-desktop <install|uninstall|enable|disable|status>");
@@ -34,6 +44,7 @@ export async function manageDesktopService(file: string, action: string): Promis
   const runtime = path.join(loaded.home, "runtime"); fs.mkdirSync(runtime, { recursive: true });
   const nonce = crypto.randomBytes(8).toString("hex");
   const request = path.join(runtime, `desktop-install-${nonce}.json`), script = path.join(runtime, `desktop-install-${nonce}.ps1`);
+  const resultFile = path.join(runtime, `desktop-result-${nonce}.json`);
   const webSource = [path.join(path.dirname(gateway), "web"), fileURLToPath(new URL("../../dist/web", import.meta.url))].find((p) => fs.existsSync(path.join(p, "index.html")));
   if (action === "install" && !webSource) throw new Error("進階桌面服務需要 Web 資產，請使用完整 Windows release");
   fs.writeFileSync(request, JSON.stringify({ action, manifest, manifestFile: gatewayManifestPath(file), sourceHelper: helper, sourceGateway: gateway, webSource,
@@ -41,21 +52,44 @@ export async function manageDesktopService(file: string, action: string): Promis
     gatewayHash: crypto.createHash("sha256").update(fs.readFileSync(gateway)).digest("hex"), controlPipe: controlAddress(file) }));
   fs.writeFileSync(script, "\ufeff" + DESKTOP_INSTALL_SCRIPT);
   // Windows owns the elevation prompt; no Windows login password is handled here.
-  const argumentsText = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-RequestFile", request].map(quoteWindowsArgument).join(" ");
-  const bootstrap = `param([string]$Arguments)\n$ErrorActionPreference='Stop'\n$p=Start-Process -FilePath powershell.exe -ArgumentList $Arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru\nexit $p.ExitCode`;
+  const argumentsText = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-RequestFile", request, "-ResultFile", resultFile].map(quoteWindowsArgument).join(" ");
+  const bootstrap = `param([string]$Arguments,[string]$ResultFile)\n$ErrorActionPreference='Stop'\ntry {\n$p=Start-Process -FilePath powershell.exe -ArgumentList $Arguments -Verb RunAs -WindowStyle Hidden -Wait -PassThru\nexit $p.ExitCode\n} catch {\n$code=$_.Exception.HResult; if ($_.Exception.InnerException -is [ComponentModel.Win32Exception]) { $code=$_.Exception.InnerException.NativeErrorCode }\n[IO.File]::WriteAllText($ResultFile,(@{ok=$false;stage='elevation';code=$code} | ConvertTo-Json),[Text.UTF8Encoding]::new($false))\nexit 1\n}`;
   const launch = path.join(runtime, `desktop-elevate-${nonce}.ps1`); fs.writeFileSync(launch, bootstrap);
   try {
     await new Promise<void>((resolve, reject) => {
-      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", launch, "-Arguments", argumentsText], { windowsHide: true, stdio: "ignore" });
-      child.once("error", reject); child.once("exit", (code) => code === 0 ? resolve() : reject(new Error("進階桌面服務安裝未完成，原設定已保留")));
+      const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", launch, "-Arguments", argumentsText, "-ResultFile", resultFile], { windowsHide: true, stdio: "ignore" });
+      child.once("error", reject); child.once("exit", (code) => {
+        let result: unknown;
+        try { if (fs.statSync(resultFile).size < 4096) result = JSON.parse(fs.readFileSync(resultFile, "utf8")); } catch { /* Elevation may be cancelled before a receipt is written. */ }
+        const value = result as { stage?: unknown; code?: unknown } | undefined;
+        const stage = typeof value?.stage === "string" && Object.hasOwn(INSTALL_STAGES, value.stage) ? value.stage : "elevation";
+        // Keep a sanitized receipt for support after temporary elevation files are removed.
+        try { fs.writeFileSync(path.join(runtime, "desktop-service-result.json"), JSON.stringify({ action, ok: code === 0, stage,
+          code: Number.isSafeInteger(value?.code) ? value!.code : code, time: new Date().toISOString() })); } catch { /* A receipt must not change the operation's outcome. */ }
+        if (code === 0) return resolve();
+        reject(new Error(desktopServiceFailure(result)));
+      });
     });
     if (action === "install") await setLoginStartup(file, true);
-  } finally { for (const p of [request, script, launch]) fs.rmSync(p, { force: true }); }
+  } finally { for (const p of [request, script, launch, resultFile]) fs.rmSync(p, { force: true }); }
 }
 
 export const DESKTOP_INSTALL_SCRIPT = String.raw`
-param([string]$RequestFile)
+param([string]$RequestFile,[string]$ResultFile)
 $ErrorActionPreference = 'Stop'
+$operationStage = 'preflight'
+$operationCode = $null
+$resultWritten = $false
+$backendActivated = $false
+function Write-OperationResult([bool]$Success,[object]$Failure = $null) {
+    if (-not $ResultFile -or $script:resultWritten) { return }
+    $code = $script:operationCode
+    if ($null -eq $code -and $Failure) { $code = $Failure.Exception.HResult }
+    # Only fixed stage identifiers and numeric OS codes cross the elevation boundary.
+    [IO.File]::WriteAllText($ResultFile,(@{ok=$Success;stage=$script:operationStage;code=$code} | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+    $script:resultWritten = $true
+}
+trap { Write-OperationResult $false $_; exit 1 }
 $r = Get-Content -LiteralPath $RequestFile -Raw -Encoding UTF8 | ConvertFrom-Json
 $m = $r.manifest
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Administrator access required' }
@@ -111,20 +145,24 @@ function Secure-Directory([string]$Directory) {
 try {
     if ($r.action -eq 'enable' -or $r.action -eq 'disable') {
         if (-not $oldManifest) { throw 'Desktop service not installed' }
+        $operationStage = 'configuration'
         Stop-Desktop
         [IO.File]::WriteAllText($r.manifestFile,($m | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
         Start-Service -Name $m.name
+        Write-OperationResult $true
         exit 0
     }
     if ($r.action -eq 'uninstall') {
+        $operationStage = 'cleanup'
         Stop-Desktop
         if (Get-Service -Name $m.name -ErrorAction SilentlyContinue) { & sc.exe delete $m.name | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Service removal failed' } }
         if (Test-Path -LiteralPath $r.manifestFile) { Remove-Item -LiteralPath $r.manifestFile }
-        Activate-Backend
+        $backendActivated = $true; Activate-Backend
         if (Test-Path -LiteralPath $root) { Assert-Within $root $programRoot; Remove-Item -LiteralPath $root -Recurse -Force }
-        exit 0
+        Write-OperationResult $true; exit 0
     }
     if ($r.action -ne 'install') { throw 'Unknown desktop action' }
+    $operationStage = 'payload'
     if ((Get-FileHash -LiteralPath $r.sourceHelper -Algorithm SHA256).Hash.ToLower() -ne $r.helperHash -or (Get-FileHash -LiteralPath $r.sourceGateway -Algorithm SHA256).Hash.ToLower() -ne $r.gatewayHash) { throw 'Desktop payload changed' }
     New-Item -ItemType Directory -Force -Path $programRoot | Out-Null
     if (Test-Path -LiteralPath $stage) { Assert-Within $stage $programRoot; Remove-Item -LiteralPath $stage -Recurse -Force }
@@ -138,29 +176,43 @@ try {
     if (Test-Path -LiteralPath $backup) { Assert-Within $backup $programRoot; Remove-Item -LiteralPath $backup -Recurse -Force }
     if (Test-Path -LiteralPath $root) { Move-Item -LiteralPath $root -Destination $backup }
     Move-Item -LiteralPath $stage -Destination $root
+    $operationStage = 'configuration'
     $directory = Split-Path -Parent $r.manifestFile
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     Secure-Directory $directory
     [IO.File]::WriteAllText($r.manifestFile,($m | ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))
     $binary = '"' + $m.helper + '" --service "' + $r.manifestFile + '"'
-    if (Get-Service -Name $m.name -ErrorAction SilentlyContinue) { & sc.exe config $m.name binPath= $binary start= auto | Out-Null }
-    else { & sc.exe create $m.name binPath= $binary start= auto obj= LocalSystem DisplayName= 'codeaw remote desktop' | Out-Null }
-    if ($LASTEXITCODE -ne 0) { throw 'Service registration failed' }
+    $operationStage = 'registration'
+    # PowerShell 5.1 strips embedded quotes when passing binPath to sc.exe.
+    # Cmdlet/CIM parameters preserve the executable and manifest paths verbatim.
+    if (Get-Service -Name $m.name -ErrorAction SilentlyContinue) {
+        $existing = Get-CimInstance Win32_Service -Filter ("Name='" + $m.name + "'")
+        $changed = Invoke-CimMethod -InputObject $existing -MethodName Change -Arguments @{PathName=$binary;StartMode='Automatic';StartName='LocalSystem'}
+        if ($changed.ReturnValue -ne 0) { $operationCode = [int]$changed.ReturnValue; throw 'Service registration failed' }
+    } else { New-Service -Name $m.name -BinaryPathName $binary -StartupType Automatic -DisplayName 'codeaw remote desktop' | Out-Null }
+    $operationStage = 'recovery'
     & sc.exe failure $m.name reset= 86400 actions= restart/5000/restart/15000/restart/30000 | Out-Null
+    if ($LASTEXITCODE -ne 0) { $operationCode = $LASTEXITCODE; throw 'Service recovery configuration failed' }
     & sc.exe failureflag $m.name 1 | Out-Null
-    Activate-Backend
+    if ($LASTEXITCODE -ne 0) { $operationCode = $LASTEXITCODE; throw 'Service recovery configuration failed' }
+    $operationStage = 'migration'
+    $backendActivated = $true; Activate-Backend
+    $operationStage = 'startup'
     Start-Service -Name $m.name
     $service = Get-Service -Name $m.name; $service.WaitForStatus('Running',[TimeSpan]::FromSeconds(20))
     # Do not override a domain policy or enable software SAS globally.
+    $operationStage = 'cleanup'
     if (Test-Path -LiteralPath $backup) { Assert-Within $backup $programRoot; Remove-Item -LiteralPath $backup -Recurse -Force }
+    Write-OperationResult $true
 } catch {
+    Write-OperationResult $false $_
     try { Stop-Desktop } catch {}
     if (Test-Path -LiteralPath $backup) {
         if (Test-Path -LiteralPath $root) { Assert-Within $root $programRoot; Remove-Item -LiteralPath $root -Recurse -Force }
         Move-Item -LiteralPath $backup -Destination $root
     }
-    if ($oldManifest) { [IO.File]::WriteAllText($r.manifestFile,$oldManifest,[Text.UTF8Encoding]::new($false)); try { Activate-Backend; Start-Service -Name $m.name } catch {} }
-    else { if (Test-Path -LiteralPath $r.manifestFile) { Remove-Item -LiteralPath $r.manifestFile }; try { & sc.exe delete $m.name | Out-Null; Activate-Backend } catch {} }
+    if ($oldManifest) { [IO.File]::WriteAllText($r.manifestFile,$oldManifest,[Text.UTF8Encoding]::new($false)); try { if ($backendActivated) { Activate-Backend }; Start-Service -Name $m.name } catch {} }
+    else { if (Test-Path -LiteralPath $r.manifestFile) { Remove-Item -LiteralPath $r.manifestFile }; try { & sc.exe delete $m.name | Out-Null; if ($backendActivated) { Activate-Backend } } catch {} }
     exit 1
 }
 `;

@@ -21,7 +21,7 @@ import { findWebRoot } from "./server/web.js";
 import { UPLOAD_TIMEOUT_MS } from "./server/uploads.js";
 import { DesktopManager } from "./remote-desktop/manager.js";
 import type { BackendFactory } from "./remote-desktop/protocol.js";
-import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
+import { gatewayRegistration, type GatewayManifest } from "./remote-desktop/gateway-config.js";
 import { desktopHelper } from "./remote-desktop/native.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,12 +51,14 @@ export interface Bridge {
   /** Addresses actually listening, e.g. ["127.0.0.1:7860", "100.64.0.10:7860"]. */
   addresses(): string[];
   port(): number;
+  /** Move listeners without stopping agents, sessions, or existing client connections. */
+  activateDesktopGateway(): Promise<void>;
   stop(): Promise<void>;
 }
 
 export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}): Promise<Bridge> {
   const { config, home, dataDir } = loaded;
-  const gateway = gatewayRegistration(loaded.file);
+  let gateway = gatewayRegistration(loaded.file);
   opts = { ...opts, gatewayPipe: opts.gatewayPipe ?? gateway?.backendPipe };
   const webRoot = opts.webRoot ?? findWebRoot();
   const store = new SessionStore(dataDir);
@@ -102,12 +104,13 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop });
 
   const servers = new Map<string, http.Server>();
+  const draining = new Set<http.Server>();
   const binding = new Set<string>();
   let stopping: Promise<void> | undefined;
   let retry: NodeJS.Timeout | undefined;
   let port = opts.port ?? config.listen.port;
 
-  const listen = (host: string) =>
+  const listen = (host: string, target = servers) =>
     new Promise<void>((resolve, reject) => {
       binding.add(host);
       const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
@@ -119,7 +122,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
         binding.delete(host);
         if (stopping) { server.close(() => reject(new Error("Bridge is stopping"))); return; }
         port = (server.address() as AddressInfo).port;
-        servers.set(host, server);
+        target.set(host, server);
         log.info(`listening on ${host}:${port}`);
         resolve();
       });
@@ -140,7 +143,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     await desktop.dispose();
     await terminals.dispose();
     await handlers.close();
-    await Promise.all([...servers.values()].map((server) => new Promise<void>((resolve) => {
+    await Promise.all([...servers.values(), ...draining].map((server) => new Promise<void>((resolve) => {
       server.closeAllConnections?.();
       server.close(() => resolve());
     })));
@@ -148,16 +151,66 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     await registry.stopAll();
   })();
 
+  const listenPipe = async (pipe: string, registration?: GatewayManifest) => {
+    const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
+    server.on("upgrade", handlers.onUpgrade);
+    try {
+      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(pipe, resolve); });
+      if (registration) {
+        const helper = desktopHelper(); if (!helper) throw new Error("Desktop helper is required to protect the backend pipe");
+        await promisify(execFile)(helper, ["--protect-pipe", pipe, registration.ownerSid], { windowsHide: true, timeout: 10_000 });
+      }
+      return server;
+    } catch (error) { server.closeAllConnections?.(); server.close(); throw error; }
+  };
+
+  const startRetry = () => {
+    if (opts.gatewayPipe || opts.hosts || config.listen.hosts !== "auto") return;
+    retry = setInterval(() => {
+      for (const host of wanted()) {
+        if (!stopping && !servers.has(host) && !binding.has(host)) listen(host).catch((err) => log.warn(`cannot listen on ${host}: ${(err as Error).message}`));
+      }
+    }, 30_000);
+    retry.unref();
+  };
+
+  const activateDesktopGateway = async () => {
+    const next = gatewayRegistration(loaded.file);
+    const pipe = next?.backendPipe;
+    if (pipe === opts.gatewayPipe) return;
+    if (stopping) throw new Error("Bridge is stopping");
+    if (retry) { clearInterval(retry); retry = undefined; }
+    const prepared = new Map<string, http.Server>();
+    try {
+      if (pipe) prepared.set(pipe, await listenPipe(pipe, next));
+      else for (const host of wanted()) {
+        try { await listen(host, prepared); }
+        catch (error) {
+          if (!opts.hosts && config.listen.hosts === "auto" && host !== "127.0.0.1") log.warn(`cannot listen on ${host} yet: ${(error as Error).message}`);
+          else throw error;
+        }
+      }
+    } catch (error) {
+      for (const server of prepared.values()) { server.closeAllConnections?.(); server.close(); }
+      startRetry();
+      throw error;
+    }
+    // Stop accepting on old endpoints, but let live ACP connections and jobs continue.
+    for (const server of servers.values()) {
+      draining.add(server);
+      server.close(() => draining.delete(server));
+      server.closeIdleConnections?.();
+    }
+    servers.clear();
+    for (const [endpoint, server] of prepared) servers.set(endpoint, server);
+    gateway = next;
+    opts = { ...opts, gatewayPipe: pipe };
+    startRetry();
+  };
+
   try {
     if (opts.gatewayPipe) {
-      const server = http.createServer({ requestTimeout: UPLOAD_TIMEOUT_MS }, handlers.onRequest);
-      server.on("upgrade", handlers.onUpgrade);
-      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(opts.gatewayPipe, resolve); });
-      servers.set(opts.gatewayPipe, server);
-      if (gateway) {
-        const helper = desktopHelper(); if (!helper) throw new Error("Desktop helper is required to protect the backend pipe");
-        await promisify(execFile)(helper, ["--protect-pipe", opts.gatewayPipe, gateway.ownerSid], { windowsHide: true, timeout: 10_000 });
-      }
+      servers.set(opts.gatewayPipe, await listenPipe(opts.gatewayPipe, gateway));
     }
     for (const host of opts.gatewayPipe ? [] : wanted()) {
       try { await listen(host); }
@@ -172,15 +225,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   } catch (err) { await stop(); throw err; }
 
   // Tailscale may come up after us (boot, VPN reconnect): keep trying to bind its address.
-  retry =
-    !opts.gatewayPipe && !opts.hosts && config.listen.hosts === "auto"
-      ? setInterval(() => {
-          for (const host of wanted()) {
-            if (!stopping && !servers.has(host) && !binding.has(host)) listen(host).catch((err) => log.warn(`cannot listen on ${host}: ${(err as Error).message}`));
-          }
-        }, 30_000)
-      : undefined;
-  retry?.unref();
+  startRetry();
 
   return {
     webRoot,
@@ -188,8 +233,9 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     registry,
     devices,
     notifier,
-    addresses: () => [...servers.keys()].map((h) => `${h}:${port}`),
+    addresses: () => (gateway ? wanted() : [...servers.keys()]).map((h) => `${h}:${port}`),
     port: () => port,
     stop,
+    activateDesktopGateway,
   };
 }

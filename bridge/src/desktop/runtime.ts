@@ -82,7 +82,11 @@ export class BridgeRuntime {
       case "settings": return desktopSettings(loadConfig(this.loaded.file));
       case "installDesktopService": await manageDesktopService(this.loaded.file, "install"); return this.status();
       case "uninstallDesktopService": await manageDesktopService(this.loaded.file, "uninstall"); return this.status();
-      case "activateDesktopGateway": await this.restart(); return this.status();
+      case "activateDesktopGateway": return this.serialize(async () => {
+        if (!this.bridge || this.state !== "running") throw new Error("Bridge is not running");
+        await this.bridge.activateDesktopGateway();
+        return this.status();
+      });
       case "agentCatalog": return this.installer.list(request.refresh === true);
       case "installAgent": {
         if (typeof request.id !== "string") throw new Error("Missing agent id");

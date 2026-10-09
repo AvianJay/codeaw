@@ -2,7 +2,10 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
+import http from "node:http";
+import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import YAML from "yaml";
 import { loadConfig } from "../src/config.js";
@@ -17,7 +20,9 @@ import { startBridge, type BridgeOptions } from "../src/bridge.js";
 import { createAppLaunch } from "../src/desktop/pairing.js";
 import { ACP_REGISTRY_URL, platformTarget } from "../src/agents/registry.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../src/version.js";
-import { TestClient } from "./helpers.js";
+import { TestClient, FAKE_AGENT, BRIDGE_DIR, newFakeSession, promptText } from "./helpers.js";
+import * as gatewayConfig from "../src/remote-desktop/gateway-config.js";
+import { desktopHelper } from "../src/remote-desktop/native.js";
 
 setLogSilent(true);
 const homes: string[] = [];
@@ -57,6 +62,47 @@ afterEach(async () => {
 });
 
 describe("desktop runtime", () => {
+  it.skipIf(process.platform === "win32" && !desktopHelper())("migrates gateway listeners while an agent turn and its ACP connection remain live", async () => {
+    const file = configFile();
+    const parsed = YAML.parse(fs.readFileSync(file, "utf8"));
+    parsed.agents.fake = { name: "Fake", command: process.execPath, args: ["--import", "tsx", FAKE_AGENT], cwd: BRIDGE_DIR, enabled: true };
+    fs.writeFileSync(file, YAML.stringify(parsed));
+    const registration = vi.spyOn(gatewayConfig, "gatewayRegistration").mockReturnValue(undefined);
+    const runtime = await start(file);
+    const bridge = runtime.bridge!;
+    const port = bridge.port();
+    const token = "synthetic-migration-token";
+    bridge.devices.addDeviceWithToken("Migration test", token);
+    const client = await TestClient.connect(`ws://127.0.0.1:${port}/acp`, token);
+    const session = await newFakeSession(client, runtime.loaded.home);
+    const turn = client.request("session/prompt", promptText(session.sessionId, "slow 50"));
+    await client.waitFor(() => client.text(session.sessionId).length > 0);
+    const ownerSid = process.platform === "win32"
+      ? (await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value"], { windowsHide: true })).stdout.trim()
+      : "S-1-5-21-1-2-3-1001";
+    const pipe = process.platform === "win32" ? `\\\\.\\pipe\\codeaw-backend-${crypto.randomBytes(16).toString("hex")}` : path.join(runtime.loaded.home, "backend.sock");
+    registration.mockReturnValue({ name: "CodeawDesktop-0123456789abcdef", configFile: file, home: runtime.loaded.home, ownerSid,
+      backendPipe: pipe, port, hosts: ["127.0.0.1"], gateway: "unused", helper: desktopHelper() ?? "unused", webRoot: "unused", enabled: true });
+    await requestControl(file, { command: "activateDesktopGateway" });
+    expect(runtime.bridge).toBe(bridge);
+    expect(bridge.addresses()).toEqual([`127.0.0.1:${port}`]);
+    const pipeHealth = await new Promise<number>((resolve, reject) => {
+      const request = http.get({ socketPath: pipe, path: "/api/health" }, (response) => { response.resume(); resolve(response.statusCode!); });
+      request.on("error", reject);
+    });
+    expect(pipeHealth).toBe(200);
+    const probe = net.createServer(); servers.push(probe);
+    await new Promise<void>((resolve, reject) => { probe.once("error", reject); probe.listen(port, "127.0.0.1", resolve); });
+    await new Promise<void>((resolve) => probe.close(() => resolve())); servers.splice(servers.indexOf(probe), 1);
+    registration.mockReturnValue(undefined);
+    await requestControl(file, { command: "activateDesktopGateway" });
+    expect((await fetch(`http://127.0.0.1:${port}/api/health`)).status).toBe(200);
+    expect(await turn).toHaveProperty("stopReason", "end_turn");
+    expect(client.events(session.sessionId, "error")).toEqual([]);
+    expect(runtime.bridge).toBe(bridge);
+    client.close();
+  });
+
   it("exposes update state through local IPC without opening remote update administration", async () => {
     const runtime = await start();
     const file = runtime.loaded.file;
