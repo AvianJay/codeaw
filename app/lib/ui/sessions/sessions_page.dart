@@ -173,50 +173,79 @@ class _SessionsPageState extends State<SessionsPage> {
               ),
             ),
             if (client.agents.isNotEmpty)
-              SizedBox(
-                height: 48,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(right: 6),
-                      child: ChoiceChip(
-                        label: const Text('全部'),
-                        selected: _agentFilter == null,
-                        onSelected: (_) => setState(() => _agentFilter = null),
-                      ),
+              if (widget.sidebar)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 4,
+                      runSpacing: 4,
+                      children: [
+                        _AgentFilterButton(
+                          selected: _agentFilter == null,
+                          onPressed: () => setState(() => _agentFilter = null),
+                        ),
+                        for (final a in client.agents)
+                          _AgentFilterButton(
+                            agent: a,
+                            selected: _agentFilter == a.id,
+                            onPressed: () => setState(
+                              () => _agentFilter = _agentFilter == a.id
+                                  ? null
+                                  : a.id,
+                            ),
+                          ),
+                      ],
                     ),
-                    for (final a in client.agents)
+                  ),
+                )
+              else
+                SizedBox(
+                  height: 48,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    children: [
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: ChoiceChip(
-                          avatar: AgentAvatar(
-                            agentId: a.id,
-                            label: a.name,
-                            size: 20,
-                          ),
-                          showCheckmark: false,
-                          label: Text(
-                            a.name,
-                            style: a.status == 'error'
-                                ? TextStyle(color: scheme.error)
-                                : null,
-                          ),
-                          selected: _agentFilter == a.id,
-                          onSelected: (_) => setState(
-                            () => _agentFilter = _agentFilter == a.id
-                                ? null
-                                : a.id,
-                          ),
+                          label: const Text('全部'),
+                          selected: _agentFilter == null,
+                          onSelected: (_) =>
+                              setState(() => _agentFilter = null),
                         ),
                       ),
-                  ],
+                      for (final a in client.agents)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: ChoiceChip(
+                            avatar: AgentAvatar(
+                              agentId: a.id,
+                              label: a.name,
+                              size: 20,
+                            ),
+                            showCheckmark: false,
+                            label: Text(
+                              a.name,
+                              style: a.status == 'error'
+                                  ? TextStyle(color: scheme.error)
+                                  : null,
+                            ),
+                            selected: _agentFilter == a.id,
+                            onSelected: (_) => setState(
+                              () => _agentFilter = _agentFilter == a.id
+                                  ? null
+                                  : a.id,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
             for (final e in model.agentErrors)
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
@@ -387,7 +416,9 @@ class _SessionsPageState extends State<SessionsPage> {
     onDelete: _client?.isOnline == true && s.state == 'idle' && s.pending == 0 && s.queued == 0 && AppScope.read(context).sessions?.isDeleting(s.id) != true
         ? () async {
             final deleted = await confirmDeleteChat(context, sessionId: s.id, title: s.displayTitle, desktopSync: s.desktopSync);
-            if (deleted && mounted && widget.selectedSessionId == s.id) GoRouter.of(context).go('/');
+            if (deleted && mounted && widget.selectedSessionId == s.id) {
+              GoRouter.of(context).go('/');
+            }
           }
         : null,
     onTap: () {
@@ -403,6 +434,57 @@ class _SessionsPageState extends State<SessionsPage> {
       }
     },
   );
+}
+
+class _AgentFilterButton extends StatelessWidget {
+  const _AgentFilterButton({
+    this.agent,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  final AgentInfo? agent;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final a = agent;
+    final error = a?.status == 'error';
+    final label = a?.name ?? '全部';
+    return IconButton.outlined(
+      tooltip: error ? '$label（錯誤）' : label,
+      isSelected: selected,
+      onPressed: onPressed,
+      style: IconButton.styleFrom(
+        minimumSize: const Size.square(40),
+        padding: const EdgeInsets.all(6),
+        visualDensity: VisualDensity.standard,
+        tapTargetSize: MaterialTapTargetSize.padded,
+        backgroundColor: selected ? scheme.secondaryContainer : null,
+        foregroundColor: selected
+            ? scheme.onSecondaryContainer
+            : scheme.onSurfaceVariant,
+        side: BorderSide(
+          color: error
+              ? scheme.error
+              : selected
+              ? scheme.primary
+              : scheme.outlineVariant,
+        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+      icon: a == null
+          ? const Icon(Icons.apps_rounded, size: 20)
+          : Badge(
+              isLabelVisible: error,
+              backgroundColor: scheme.error,
+              smallSize: 6,
+              child: AgentAvatar(agentId: a.id, label: a.name, size: 26),
+            ),
+    );
+  }
 }
 
 class _Header extends StatelessWidget {

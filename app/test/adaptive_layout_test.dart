@@ -140,11 +140,13 @@ class _Harness {
     Size size, {
     String location = '/',
     Brightness brightness = Brightness.light,
+    List<AgentInfo>? agents,
   }) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     await state.setHost(_host('dev-pc'));
+    if (agents != null) client.agents = agents;
     state.loaded = true;
     await state.sessions!.refresh();
     final c = state.hub!.adopt(_first, _cwd, {});
@@ -597,6 +599,137 @@ void main() {
       await h.close(tester);
     },
   );
+
+  for (final size in [
+    const Size(1100, 700),
+    const Size(1440, 900),
+    const Size(834, 1112),
+  ]) {
+    testWidgets('sidebar agent icons wrap and remain clickable at $size', (
+      tester,
+    ) async {
+      final screenshots = Platform.environment['CODEAW_SCREENSHOTS'] == '1';
+      if (screenshots) {
+        for (final font in {
+          'Roboto':
+              'D:/flutter/bin/cache/artifacts/material_fonts/Roboto-Regular.ttf',
+          'MaterialIcons':
+              'D:/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
+          'NotoSansTC': 'C:/Windows/Fonts/NotoSansTC-VF.ttf',
+        }.entries) {
+          if (File(font.value).existsSync()) {
+            final loader = FontLoader(font.key)
+              ..addFont(
+                Future.value(
+                  ByteData.sublistView(File(font.value).readAsBytesSync()),
+                ),
+              );
+            await loader.load();
+          }
+        }
+      }
+      final agents = [
+        AgentInfo(id: 'codex', name: 'Codex', status: 'ready'),
+        AgentInfo(id: 'claude', name: 'Claude Code', status: 'ready'),
+        for (final id in [
+          'kimi',
+          'grok',
+          'hermes',
+          'gemini',
+          'deepseek',
+          'antigravity',
+          'omp',
+        ])
+          AgentInfo(id: id, name: '$id agent', status: 'ready'),
+        AgentInfo(id: 'custom', name: 'Custom Agent', status: 'error'),
+      ];
+      final h = _Harness();
+      await h.show(
+        tester,
+        size,
+        agents: agents,
+        brightness: screenshots ? Brightness.dark : Brightness.light,
+      );
+      if (size.width < 1100) {
+        await tester.tap(find.text('對話'));
+        await tester.pumpAndSettle();
+      }
+      Finder button(String tooltip) => find.descendant(
+        of: find.byType(SessionsPage),
+        matching: find.byWidgetPredicate(
+          (w) => w is IconButton && w.tooltip == tooltip,
+        ),
+      );
+      final panel = tester.getRect(find.byType(SessionsPage));
+      final labels = ['全部', ...agents.map((a) => a.name)];
+      for (final label in labels) {
+        final filter = button(label == 'Custom Agent' ? '$label（錯誤）' : label);
+        expect(filter.hitTestable(), findsOneWidget);
+        final rect = tester.getRect(filter);
+        expect(rect.left, greaterThanOrEqualTo(panel.left));
+        expect(rect.right, lessThanOrEqualTo(panel.right));
+        expect(rect.bottom, lessThanOrEqualTo(panel.bottom));
+      }
+      expect(
+        tester.getTopLeft(button('Custom Agent（錯誤）')).dy,
+        greaterThan(tester.getTopLeft(button('全部')).dy),
+      );
+      expect(
+        find.descendant(
+          of: find.byType(SessionsPage),
+          matching: find.byType(ChoiceChip),
+        ),
+        findsNothing,
+      );
+
+      await tester.tap(button('Claude Code'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, '桌面與平板版面調整'), findsNothing);
+      expect(find.widgetWithText(ListTile, 'Bridge 連線與重試'), findsOneWidget);
+      expect(
+        tester.widget<IconButton>(button('Claude Code')).isSelected,
+        isTrue,
+      );
+
+      await tester.tap(button('Custom Agent（錯誤）'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, 'Bridge 連線與重試'), findsNothing);
+      expect(
+        tester.widget<IconButton>(button('Custom Agent（錯誤）')).isSelected,
+        isTrue,
+      );
+      await tester.tap(button('Custom Agent（錯誤）'));
+      await tester.pumpAndSettle();
+      expect(tester.widget<IconButton>(button('全部')).isSelected, isTrue);
+      expect(find.widgetWithText(ListTile, '桌面與平板版面調整'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, 'Bridge 連線與重試'), findsOneWidget);
+
+      await tester.tap(button('Codex'));
+      await tester.pumpAndSettle();
+      await tester.tap(button('全部'));
+      await tester.pumpAndSettle();
+      expect(find.widgetWithText(ListTile, 'Bridge 連線與重試'), findsOneWidget);
+
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      await mouse.moveTo(tester.getCenter(button('gemini agent')));
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pumpAndSettle();
+      expect(find.text('gemini agent'), findsOneWidget);
+      await mouse.removePointer();
+      expect(tester.takeException(), isNull);
+      if (screenshots) {
+        await tester.pumpAndSettle();
+        await expectLater(
+          find.byType(MaterialApp),
+          matchesGoldenFile(
+            'screenshots/sidebar-agent-filters-${size.width.toInt()}.png',
+          ),
+        );
+      }
+      await h.close(tester);
+    });
+  }
 
   testWidgets(
     'file preview stays beside the directory and ignores a late response',
