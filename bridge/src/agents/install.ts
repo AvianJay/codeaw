@@ -8,7 +8,7 @@ import spawn from "cross-spawn";
 import * as tar from "tar";
 import yauzl from "yauzl";
 import YAML from "yaml";
-import { ConfigSchema, loadConfig, type AgentConfig } from "../config.js";
+import { ConfigSchema, detectAgents, loadConfig, type AgentConfig } from "../config.js";
 import { isInside, realPath, writeFileAtomic } from "../util/paths.js";
 import { configAgentId, distributionFor, fetchRegistry, platformTarget, type RegistryAgent } from "./registry.js";
 import { desktopEnvironment } from "../util/environment.js";
@@ -212,6 +212,37 @@ export function registerInstalledAgent(file: string, installed: InstalledAgent):
   } else doc.setIn(["agents", installed.id], installed.config);
   if (!ConfigSchema.safeParse(doc.toJSON()).success) throw new Error("Installation would create an invalid config");
   writeFileAtomic(file, doc.toString());
+}
+
+export interface DetectedAgentsResult {
+  detected: Array<{ id: string; name: string }>;
+  added: Array<{ id: string; name: string }>;
+  existing: Array<{ id: string; name: string }>;
+  restartRequired: boolean;
+}
+
+/** Register local installations in one atomic write, retaining every existing agent setting. */
+export function registerDetectedAgents(file: string): DetectedAgentsResult {
+  const current = loadConfig(file);
+  const doc = YAML.parseDocument(fs.readFileSync(file, "utf8"));
+  if (doc.errors.length) throw new Error("Config contains invalid YAML");
+  const result: DetectedAgentsResult = { detected: [], added: [], existing: [], restartRequired: false };
+  for (const [id, agent] of Object.entries(detectAgents())) {
+    const existing = Object.hasOwn(current.config.agents, id) ? current.config.agents[id] : undefined;
+    const info = { id, name: existing?.name ?? agent.name };
+    result.detected.push(info);
+    if (existing) result.existing.push(info);
+    else {
+      doc.setIn(["agents", id], agent);
+      result.added.push(info);
+    }
+  }
+  if (result.added.length) {
+    if (!ConfigSchema.safeParse(doc.toJSON()).success) throw new Error("Detection would create an invalid config");
+    writeFileAtomic(file, doc.toString());
+    result.restartRequired = true;
+  }
+  return result;
 }
 
 export interface InstallStatus {

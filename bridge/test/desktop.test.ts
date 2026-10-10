@@ -22,6 +22,7 @@ import { ACP_REGISTRY_URL, platformTarget } from "../src/agents/registry.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../src/version.js";
 import { TestClient, FAKE_AGENT, BRIDGE_DIR, newFakeSession, promptText } from "./helpers.js";
 import * as gatewayConfig from "../src/remote-desktop/gateway-config.js";
+import * as environment from "../src/util/environment.js";
 import { desktopHelper } from "../src/remote-desktop/native.js";
 
 setLogSilent(true);
@@ -62,6 +63,34 @@ afterEach(async () => {
 });
 
 describe("desktop runtime", () => {
+  it("detects local agents over IPC without registry access, preserves running clients and applies after restart", async () => {
+    const runtime = await start();
+    const file = runtime.loaded.file;
+    const firstBridge = runtime.bridge!;
+    firstBridge.devices.addDeviceWithToken("Detection fixture", "synthetic-detection-token");
+    const client = await TestClient.connect(`ws://127.0.0.1:${firstBridge.port()}/acp`, "synthetic-detection-token");
+    vi.spyOn(environment, "resolveCommand").mockImplementation((name) => name === "omp" ? "/installed/omp" : undefined);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Offline fixture"));
+    try {
+      expect(await requestControl(file, { command: "detectAgents" })).toEqual({
+        detected: [{ id: "omp", name: "Oh My Pi" }], added: [{ id: "omp", name: "Oh My Pi" }], existing: [], restartRequired: true,
+      });
+      expect(runtime.bridge).toBe(firstBridge);
+      expect(firstBridge.registry.has("omp")).toBe(false);
+      expect((await client.request("_codeaw/agents/list", {})).agents.map((agent: any) => agent.id)).toEqual(["fake"]);
+      const configured = loadConfig(file).config;
+      expect(configured.agents.omp.args).toEqual(["acp"]);
+      expect(configured.agents.fake.env).toEqual({ SYNTHETIC_TEST_SECRET: "fixture-value" });
+      expect(fs.readFileSync(file, "utf8")).toContain("# keep my comments");
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(await requestControl(file, { command: "detectAgents" })).toMatchObject({ added: [], existing: [{ id: "omp", name: "Oh My Pi" }], restartRequired: false });
+      client.close();
+      await requestControl(file, { command: "restart" });
+      expect(runtime.bridge!.registry.has("omp")).toBe(true);
+      expect(runtime.status().agents).toContainEqual({ id: "omp", name: "Oh My Pi", status: "stopped" });
+    } finally { client.close(); }
+  });
+
   it.skipIf(process.platform === "win32" && !desktopHelper())("migrates gateway listeners while an agent turn and its ACP connection remain live", async () => {
     const file = configFile();
     const parsed = YAML.parse(fs.readFileSync(file, "utf8"));

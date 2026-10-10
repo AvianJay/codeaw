@@ -245,23 +245,44 @@ function Refresh-AgentCatalog([bool]$Refresh = $false) {
 }
 
 function Show-AgentInstaller {
-    $form = New-Window '安裝 ACP agents' 640 564
+    $form = New-Window '安裝 ACP agents' 640 652
     (Add-Label $form '安裝 ACP agents' 24 18 592 30).Font = [System.Drawing.Font]::new('Microsoft JhengHei UI', 16, [System.Drawing.FontStyle]::Bold)
     Add-Label $form '從 ACP registry 選擇 agent，安裝後重新啟動 bridge 即可使用。' 24 58 592 28 | Out-Null
+    $script:detectButton = Add-Button $form '自動檢測支援的 ACP' 24 94 250 {
+        try {
+            $result = Invoke-Control 'detectAgents'
+            $added = @($result.added | ForEach-Object { $_.name })
+            $existing = @($result.existing | ForEach-Object { $_.name })
+            $messages = @()
+            if ($added.Count) {
+                $messages += '已新增：' + ($added -join '、') + '。按「重新啟動 bridge」即可使用。'
+                $script:agentConfigChanged = $true
+                $script:installRestart.Enabled = $true
+            }
+            if ($existing.Count) { $messages += '已在設定中：' + ($existing -join '、') }
+            if (-not @($result.detected).Count) { $messages += '未找到支援的本機 agent，請先安裝 agent 再重新檢測。' }
+            if ($script:catalogList.Items.Count) { try { Refresh-AgentCatalog } catch {} }
+            $script:detectionMessage = $messages -join [Environment]::NewLine
+            $script:installMessage.Text = $script:detectionMessage
+        } catch { $script:detectionMessage = [string]$_; $script:installMessage.Text = $script:detectionMessage }
+    }
+    Add-Label $form '找到後自動加入設定，已有設定會保留。' 288 98 328 32 | Out-Null
     $script:catalogList = [System.Windows.Forms.ListBox]::new()
-    $script:catalogList.Location = [System.Drawing.Point]::new(24, 94)
+    $script:catalogList.Location = [System.Drawing.Point]::new(24, 142)
     $script:catalogList.Size = [System.Drawing.Size]::new(592, 220)
     $script:catalogList.DisplayMember = 'name'
     $script:catalogList.Add_SelectedIndexChanged({ Update-AgentSelection })
     $form.Controls.Add($script:catalogList)
-    $script:agentDescription = Add-Label $form '' 24 328 592 104
-    $script:installMessage = Add-Label $form '正在載入 ACP registry…' 24 444 592 44
+    $script:agentDescription = Add-Label $form '' 24 376 592 104
+    $script:installMessage = Add-Label $form '正在載入 ACP registry…' 24 492 592 88
+    $script:detectionMessage = $null
     $script:installBusy = $false
     $script:lastInstallState = 'idle'
-    $script:installButton = Add-Button $form '安裝' 466 506 150 {
+    $script:installButton = Add-Button $form '安裝' 466 594 150 {
         $agent = $script:catalogList.SelectedItem
         if (-not $agent) { return }
         try {
+            $script:detectionMessage = $null
             $result = Invoke-Control 'installAgent' @{ id = $agent.id }
             $script:installBusy = $result.state -eq 'installing'
             $script:installMessage.Text = $result.message
@@ -269,15 +290,15 @@ function Show-AgentInstaller {
         } catch { $script:installMessage.Text = [string]$_ }
     }
     $script:installButton.Enabled = $false
-    Add-Button $form '重新整理' 24 506 120 {
+    Add-Button $form '重新整理' 24 594 120 {
         try { Refresh-AgentCatalog $true; $script:installMessage.Text = '' } catch { $script:installMessage.Text = [string]$_ }
     } | Out-Null
-    Add-Button $form '返回設定' 158 506 120 { Show-Settings } | Out-Null
-    $script:installRestart = Add-Button $form '重新啟動 bridge' 292 506 160 {
+    Add-Button $form '返回設定' 158 594 120 { Show-Settings } | Out-Null
+    $script:installRestart = Add-Button $form '重新啟動 bridge' 292 594 160 {
         if ([System.Windows.Forms.MessageBox]::Show('重新啟動 bridge 以套用 agent？正在執行的回合將中止。', '套用 agent', 'OKCancel', 'Question') -ne 'OK') { return }
-        try { Invoke-Control 'restart' | Out-Null; Show-Settings } catch { Show-Error $_ }
+        try { Invoke-Control 'restart' | Out-Null; $script:agentConfigChanged = $false; Show-Settings } catch { Show-Error $_ }
     }
-    $script:installRestart.Enabled = $false
+    $script:installRestart.Enabled = [bool]$script:agentConfigChanged
     $form.Show()
     $form.Activate()
     try { Refresh-AgentCatalog; $script:installMessage.Text = '' } catch { $script:installMessage.Text = [string]$_ }
@@ -446,10 +467,12 @@ $script:timer.Add_Tick({
         if ($script:page -eq '安裝 ACP agents' -and $script:window -and -not $script:window.IsDisposed) {
             $install = Invoke-Control 'installerStatus'
             $script:installBusy = $install.state -eq 'installing'
-            if ($install.state -eq 'succeeded' -and $script:lastInstallState -ne 'succeeded') { Refresh-AgentCatalog }
+            if ($install.state -eq 'succeeded' -and $script:lastInstallState -ne 'succeeded') { Refresh-AgentCatalog; $script:agentConfigChanged = $true }
             $script:lastInstallState = $install.state
-            if ($install.state -ne 'idle') { $script:installMessage.Text = $install.message }
-            $script:installRestart.Enabled = $install.state -eq 'succeeded'
+            if ($script:detectionMessage) { $script:installMessage.Text = $script:detectionMessage }
+            elseif ($install.state -ne 'idle') { $script:installMessage.Text = $install.message }
+            $script:detectButton.Enabled = -not $script:installBusy
+            $script:installRestart.Enabled = [bool]$script:agentConfigChanged -or $install.state -eq 'succeeded'
             Update-AgentSelection
         }
         if ($script:page -eq '配對手機' -and $script:window -and -not $script:window.IsDisposed -and $script:pair) {

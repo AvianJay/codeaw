@@ -124,6 +124,8 @@ Windows 背景 bridge 與系統匣透過本機 WMI broker 隱藏啟動，獨立�
 
 Windows 系統匣與 macOS 選單列都可開啟「安裝 ACP agent…」，也能執行 `codeaw-bridge agents --window`。安裝器從 [ACP registry](https://github.com/agentclientprotocol/registry) 載入可用 agent，顯示版本、平台支援與安裝進度。
 
+已經在電腦上安裝 agent 時，可按「自動檢測支援的 ACP」：bridge 偵測 Claude Code、Codex、Kimi、Hermes、Oh My Pi、DeepSeek Harness 與 Antigravity 的啟動器，自動將新找到的項目加入設定，顯示新增與已存在的清單。偵測不需要連線 ACP registry，既有的自訂路徑、環境變數與停用狀態都會保留。新增後在同一視窗按「重新啟動 bridge」套用，無須手動編輯 config；重啟會中止執行中的回合。
+
 所有平台都可使用 CLI：
 
 ```powershell

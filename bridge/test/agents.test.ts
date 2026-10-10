@@ -6,7 +6,8 @@ import * as tar from "tar";
 import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { AgentInstaller, archivePath, extractArchive, prepareAgent, registerInstalledAgent, runInstaller, type InstalledAgent } from "../src/agents/install.js";
+import { AgentInstaller, archivePath, extractArchive, prepareAgent, registerDetectedAgents, registerInstalledAgent, runInstaller, type InstalledAgent } from "../src/agents/install.js";
+import * as environment from "../src/util/environment.js";
 import { configAgentId, distributionFor, parseRegistry, platformTarget, type RegistryAgent } from "../src/agents/registry.js";
 
 const homes: string[] = [];
@@ -28,6 +29,7 @@ const validZip = Buffer.from("UEsDBBQAAAAAABq1Ql14ocaiDQAAAA0AAAAJAAAAYWdlbnQuZX
 const traversalZip = Buffer.from("UEsDBBQAAAAAABq1Ql2OsOglBgAAAAYAAAANAAAALi4vZXNjYXBlLnR4dGVzY2FwZVBLAQIUABQAAAAAABq1Ql2OsOglBgAAAAYAAAANAAAAAAAAAAAAAACAAQAAAAAuLi9lc2NhcGUudHh0UEsFBgAAAAABAAEAOwAAADEAAAAAAA==", "base64");
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const root of homes.splice(0)) {
     if (!path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(root).startsWith("codeaw-agents-")) throw new Error("Unsafe test cleanup path");
@@ -221,6 +223,43 @@ describe("agent installation", () => {
     expect(YAML.parse(text).custom).toEqual({ keep: true });
     registerInstalledAgent(file, { ...entry, id: "new-agent" });
     expect(loadConfig(file).config.agents["new-agent"].enabled).toBe(true);
+  });
+});
+
+describe("local agent detection", () => {
+  it("adds installed agents atomically while retaining custom credentials, comments and disabled agents", () => {
+    const file = config();
+    vi.spyOn(environment, "resolveCommand").mockImplementation((name) => ["codex-acp", "omp", "agy"].includes(name) ? "/installed/" + name : undefined);
+    const result = registerDetectedAgents(file);
+    expect(result).toEqual({
+      detected: [{ id: "codex", name: "My Codex" }, { id: "omp", name: "Oh My Pi" }, { id: "antigravity", name: "Antigravity CLI" }],
+      added: [{ id: "omp", name: "Oh My Pi" }, { id: "antigravity", name: "Antigravity CLI" }],
+      existing: [{ id: "codex", name: "My Codex" }], restartRequired: true,
+    });
+    const loaded = loadConfig(file).config;
+    expect(loaded.agents.codex).toMatchObject({ name: "My Codex", command: "original", args: [], env: { TEST_VALUE: "synthetic-value" }, enabled: false, cwd: path.dirname(file) });
+    expect(loaded.agents.omp).toEqual({ name: "Oh My Pi", command: "/installed/omp", args: ["acp"], env: {}, enabled: true });
+    expect(loaded.agents.antigravity.transport).toBe("agy");
+    expect(fs.readFileSync(file, "utf8")).toContain("# preserve this comment");
+    expect(YAML.parse(fs.readFileSync(file, "utf8")).custom).toEqual({ keep: true });
+    expect(JSON.stringify(result)).not.toContain("synthetic-value");
+    const saved = fs.readFileSync(file, "utf8");
+    expect(registerDetectedAgents(file)).toMatchObject({ added: [], existing: result.detected, restartRequired: false });
+    expect(fs.readFileSync(file, "utf8")).toBe(saved);
+  });
+
+  it("leaves the config untouched when nothing is installed or detection fails", () => {
+    const file = config();
+    const original = fs.readFileSync(file, "utf8");
+    const probe = vi.spyOn(environment, "resolveCommand").mockReturnValue(undefined);
+    expect(registerDetectedAgents(file)).toEqual({ detected: [], added: [], existing: [], restartRequired: false });
+    expect(fs.readFileSync(file, "utf8")).toBe(original);
+    probe.mockImplementation((name) => {
+      if (name === "omp") throw new Error("Fixture detection failure");
+      return name === "kimi" ? "/installed/kimi" : undefined;
+    });
+    expect(() => registerDetectedAgents(file)).toThrow("Fixture detection failure");
+    expect(fs.readFileSync(file, "utf8")).toBe(original);
   });
 });
 

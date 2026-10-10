@@ -15,6 +15,11 @@ import { setLogSilent } from "../src/util/log.js";
 if (process.platform !== "win32") throw new Error("Desktop smoke requires Windows");
 setLogSilent(true);
 const home = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-ui-smoke-"));
+const originalPath = process.env.PATH;
+const detectionBin = path.join(home, "detection-bin");
+fs.mkdirSync(detectionBin);
+fs.writeFileSync(path.join(detectionBin, "kimi.exe"), "Synthetic detection fixture; never executed");
+process.env.PATH = detectionBin + path.delimiter + (originalPath ?? "");
 const output = path.resolve("dist", "desktop-smoke");
 fs.mkdirSync(output, { recursive: true });
 const file = path.join(home, "config.yaml");
@@ -102,10 +107,17 @@ try {
                     Capture-Window 'agents'
                     $script:catalogList.SelectedIndex = 1
                     if ($script:installButton.Enabled) { throw 'Unsupported agent can be installed' }
+                    if ($script:detectButton.Text -ne '自動檢測支援的 ACP' -or -not $script:detectButton.Enabled) { throw 'Local detection action is missing' }
+                    $script:detectButton.PerformClick()
+                    if (-not $script:installRestart.Enabled -or $script:installMessage.Text -notmatch 'Kimi Code') { throw 'Local detection did not register the installed fixture' }
+                    Capture-Window 'agents-detected'
+                }
+                4 {
+                    if (-not $script:installRestart.Enabled -or $script:installMessage.Text -notmatch 'Kimi Code') { throw 'Installer polling overwrote detection results' }
                     Show-Devices
                 }
-                4 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; Show-Updater }
-                5 {
+                5 { if ($script:devices.Items.Count -ne 1) { throw 'Devices window did not load' }; Capture-Window 'devices'; Show-Updater }
+                6 {
                     if (-not $script:updateCheck.Enabled -or -not $script:updateInstall.Enabled -or -not $script:updateDownload.Enabled) { throw 'Bridge updater actions did not load' }
                     if ($script:updateInstalled.Text -notmatch '0\.1\.0\+41' -or $script:updateMessage.Text -notmatch '0\.1\.0\+42') { throw 'Bridge updater versions did not load' }
                     $script:updateCheck.PerformClick()
@@ -140,11 +152,15 @@ try {
   await run("powershell.exe", ["-NoProfile", "-STA", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", scriptFile,
     "-PipeName", controlAddress(file).replace(/^\\\\\.\\pipe\\/, ""), "-OutputDirectory", output,
     "-IconPath", fileURLToPath(new URL("../src/assets/codeaw.ico", import.meta.url))]);
-  for (const name of ["tray-menu", "pair", "settings", "agents", "devices", "updates"]) {
+  const detected = loadConfig(file).config.agents.kimi;
+  if (detected?.command.toLowerCase() !== path.join(detectionBin, "kimi.exe").toLowerCase() || detected.args.join(" ") !== "acp") throw new Error("Tray detection did not persist the fixture ACP launch command");
+  for (const name of ["tray-menu", "pair", "settings", "agents", "agents-detected", "devices", "updates"]) {
     if (!fs.existsSync(path.join(output, `${name}.png`))) throw new Error(`Missing ${name} screenshot`);
   }
   process.stdout.write(`Desktop windows rendered; service host compiled. Screenshots: ${output}\n`);
 } finally {
+  if (originalPath === undefined) delete process.env.PATH;
+  else process.env.PATH = originalPath;
   await runtime.stop();
   if (!path.resolve(home).startsWith(path.resolve(os.tmpdir()) + path.sep) || !path.basename(home).startsWith("codeaw-ui-smoke-")) throw new Error("Unsafe desktop smoke cleanup path");
   fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

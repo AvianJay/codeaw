@@ -67,6 +67,8 @@ class MenuDelegate: NSObject, NSApplicationDelegate {
     var catalog: [[String: Any]] = []
     var agentPicker: NSPopUpButton?
     var installButton: NSButton?
+    var detectButton: NSButton?
+    var detectionMessage: String?
     var progressLabel: NSTextField?
     var portField: NSTextField?
     var foldersField: NSTextView?
@@ -232,17 +234,24 @@ class MenuDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showAgents() {
-        let view = newWindow("安裝 ACP agent", "agents", height: 340)
-        label(view, "從官方 ACP 目錄安裝；macOS 會在必要時準備獨立 Node.js，不更動系統環境。", 268)
-        let picker = NSPopUpButton(frame: NSRect(x: 24, y: 215, width: 512, height: 32))
+        let view = newWindow("安裝 ACP agent", "agents", height: 390)
+        detectionMessage = nil
+        label(view, "從官方 ACP 目錄安裝；macOS 會在必要時準備獨立 Node.js，不更動系統環境。", 318)
+        let picker = NSPopUpButton(frame: NSRect(x: 24, y: 265, width: 512, height: 32))
         picker.target = self
         picker.action = #selector(agentChanged)
         view.addSubview(picker)
         agentPicker = picker
-        progressLabel = label(view, "載入 ACP 目錄…", 98, height: 105)
+        progressLabel = label(view, "載入 ACP 目錄…", 148, height: 105)
+        detectButton = button(view, "自動檢測支援的 ACP", #selector(detectLocalAgents), 24, 88, width: 260)
+        label(view, "找到後自動加入設定，已有設定會保留。", 58, height: 26)
         installButton = button(view, "安裝所選 agent", #selector(installAgent), 24, 28)
         installButton?.isEnabled = false
         button(view, "套用：重新啟動 Bridge", #selector(restartBridge), 242, 28, width: 280)
+        refreshAgentCatalog()
+    }
+
+    func refreshAgentCatalog() {
         request("agentCatalog") { result in
             guard self.page == "agents" else { return }
             self.catalog = result as? [[String: Any]] ?? []
@@ -256,19 +265,37 @@ class MenuDelegate: NSObject, NSApplicationDelegate {
         guard let index = agentPicker?.indexOfSelectedItem, catalog.indices.contains(index) else { return }
         let agent = catalog[index]
         installButton?.isEnabled = agent["supported"] as? Bool == true
-        progressLabel?.stringValue = "\(agent["description"] ?? "")\n\(agent["supported"] as? Bool == true ? "可安裝" : "不支援此 Mac") · \(agent["kind"] ?? "")"
+        progressLabel?.stringValue = detectionMessage ?? "\(agent["description"] ?? "")\n\(agent["supported"] as? Bool == true ? "可安裝" : "不支援此 Mac") · \(agent["kind"] ?? "")"
+    }
+
+    @objc func detectLocalAgents() {
+        request("detectAgents") { result in
+            guard self.page == "agents", let result = result as? [String: Any] else { return }
+            let added = (result["added"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+            let existing = (result["existing"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+            var messages: [String] = []
+            if !added.isEmpty { messages.append("已新增：" + added.joined(separator: "、") + "。按「套用：重新啟動 Bridge」即可使用。") }
+            if !existing.isEmpty { messages.append("已在設定中：" + existing.joined(separator: "、")) }
+            if messages.isEmpty { messages.append("未找到支援的本機 agent，請先安裝 agent 再重新檢測。") }
+            self.detectionMessage = messages.joined(separator: "\n")
+            self.progressLabel?.stringValue = self.detectionMessage ?? ""
+            if !self.catalog.isEmpty { self.refreshAgentCatalog() }
+        }
     }
 
     @objc func installAgent() {
         guard let index = agentPicker?.indexOfSelectedItem, catalog.indices.contains(index), let id = catalog[index]["id"] as? String else { return }
         installButton?.isEnabled = false
+        detectionMessage = nil
         request("installAgent", ["id": id]) { _ in self.refreshInstaller() }
     }
 
     func refreshInstaller() {
         request("installerStatus", quiet: true) { result in
-            guard self.page == "agents", let status = result as? [String: Any], let state = status["state"] as? String, state != "idle" else { return }
-            self.progressLabel?.stringValue = status["message"] as? String ?? state
+            guard self.page == "agents", let status = result as? [String: Any], let state = status["state"] as? String else { return }
+            self.detectButton?.isEnabled = state != "installing"
+            if state == "idle" { return }
+            self.progressLabel?.stringValue = self.detectionMessage ?? (status["message"] as? String ?? state)
             self.installButton?.isEnabled = state != "installing"
             self.agentPicker?.isEnabled = state != "installing"
         }
