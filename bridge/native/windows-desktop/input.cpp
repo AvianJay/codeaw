@@ -30,8 +30,17 @@ void InputController::apply(const Json& input, RECT monitor) {
       INPUT click{}; click.type = INPUT_MOUSE; click.mi.dwFlags = buttonFlag(button, down); send(click);
       buttons.erase(std::remove(buttons.begin(), buttons.end(), button), buttons.end()); if (down) buttons.push_back(button);
     } else if (kind == "wheel") {
-      INPUT wheel{}; wheel.type = INPUT_MOUSE; wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
-      wheel.mi.mouseData = static_cast<DWORD>(std::clamp(input.at("delta").get<int>(), -1200, 1200)); send(wheel);
+      const int vertical = std::clamp(input.at("delta").get<int>(), -1200, 1200);
+      const int horizontal = std::clamp(input.value("deltaX", 0), -1200, 1200);
+      // Each axis uses mouseData, so diagonal scrolling requires separate events.
+      if (vertical) {
+        INPUT wheel{}; wheel.type = INPUT_MOUSE; wheel.mi.dwFlags = MOUSEEVENTF_WHEEL;
+        wheel.mi.mouseData = static_cast<DWORD>(vertical); send(wheel);
+      }
+      if (horizontal) {
+        INPUT wheel{}; wheel.type = INPUT_MOUSE; wheel.mi.dwFlags = MOUSEEVENTF_HWHEEL;
+        wheel.mi.mouseData = static_cast<DWORD>(horizontal); send(wheel);
+      }
     }
   } else if (kind == "key") {
     int code = input.at("code"); bool down = input.at("down"); if (code < 1 || code > 254) throw std::runtime_error("Invalid key");

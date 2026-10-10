@@ -18,7 +18,8 @@ const coordinate = z.number().finite().min(0).max(1);
 export const Input = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pointer"), x: coordinate, y: coordinate }),
   z.object({ kind: z.literal("button"), button: z.enum(["left", "right", "middle"]), down: z.boolean(), x: coordinate, y: coordinate }),
-  z.object({ kind: z.literal("wheel"), delta: z.number().int().min(-1200).max(1200), x: coordinate, y: coordinate }),
+  z.object({ kind: z.literal("wheel"), delta: z.number().int().min(-1200).max(1200),
+    deltaX: z.number().int().min(-1200).max(1200).default(0), x: coordinate, y: coordinate }),
   z.object({ kind: z.literal("key"), code: z.number().int().min(1).max(254), down: z.boolean() }),
   z.object({ kind: z.literal("text"), text: z.string().max(4096) }),
   z.object({ kind: z.literal("release") }), z.object({ kind: z.literal("sas") }),

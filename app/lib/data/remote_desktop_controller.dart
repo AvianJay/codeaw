@@ -44,6 +44,9 @@ class RemoteDesktopController extends ChangeNotifier {
   ui.Image? image;
   RTCVideoRenderer? video;
   double width = 0, height = 0, cursorX = .5, cursorY = .5;
+
+  /// Changes only for a newly accepted cursor message, not other UI updates.
+  int cursorRevision = 0;
   bool cursorVisible = false;
   Uint8List? cursorPng;
   double cursorWidth = 20, cursorHeight = 20, cursorHotX = 0, cursorHotY = 0;
@@ -96,12 +99,17 @@ class RemoteDesktopController extends ChangeNotifier {
     if (_preferencesLoaded) return;
     _preferencesLoaded = true;
     final prefs = await store.loadDesktopPreferences(host);
-    mode =
-        DesktopMode.values.where((m) => m.name == prefs?['mode']).firstOrNull ??
-        (dataSaver() ? DesktopMode.low : DesktopMode.balanced);
-    privilege = prefs?['privilege'] == 'system' ? 'system' : 'user';
-    requestedFps = prefs?['fps'] == 60 ? 60 : 30;
     monitorId = prefs?['monitorId'] as String?;
+  }
+
+  void _selectAutomaticOptions() {
+    privilege = systemAvailable ? 'system' : 'user';
+    mode = dataSaver()
+        ? DesktopMode.low
+        : smoothAvailable
+        ? DesktopMode.smooth
+        : DesktopMode.balanced;
+    requestedFps = mode == DesktopMode.smooth && hardware ? 60 : 30;
   }
 
   Map<String, dynamic> get options => {
@@ -122,6 +130,7 @@ class RemoteDesktopController extends ChangeNotifier {
     _notify();
     try {
       await _preferences();
+      _selectAutomaticOptions();
       Map<String, dynamic>? info;
       for (final url in [_url, ...host.urls].whereType<String>().toSet()) {
         _url = url;
@@ -143,7 +152,7 @@ class RemoteDesktopController extends ChangeNotifier {
       );
       hardware = info['hardware'] == true;
       smoothAvailable = info['smooth'] == true;
-      if (!systemAvailable) privilege = 'user';
+      _selectAutomaticOptions();
       monitors = (info['monitors'] as List? ?? [])
           .whereType<Map<String, dynamic>>()
           .toList();
@@ -240,20 +249,23 @@ class RemoteDesktopController extends ChangeNotifier {
 
   void release() => input({'kind': 'release'});
   void refresh() => _send({'type': 'refresh'});
+
+  /// Updates the monitor and reevaluates automatic connection settings.
+  /// Legacy mode, fps and privilege arguments are accepted but no longer override
+  /// host capabilities or the app's data saver setting.
   Future<void> configure({
     DesktopMode? mode,
     String? monitorId,
     int? fps,
     String? privilege,
   }) async {
-    final changedPrivilege = privilege != null && privilege != this.privilege;
-    this.mode = mode ?? this.mode;
+    final previousPrivilege = this.privilege;
     this.monitorId = monitorId ?? this.monitorId;
-    requestedFps = fps ?? requestedFps;
-    this.privilege = privilege ?? this.privilege;
+    _selectAutomaticOptions();
+    final changedPrivilege = previousPrivilege != this.privilege;
     active = false;
     notice = null;
-    await store.saveDesktopPreferences(host, options);
+    await store.saveDesktopPreferences(host, {'monitorId': ?this.monitorId});
     if (changedPrivilege || _socket == null) {
       await disconnect();
       await connect();
@@ -325,6 +337,7 @@ class RemoteDesktopController extends ChangeNotifier {
           cursorHotX = (shape['hotX'] as num?)?.toDouble() ?? 0;
           cursorHotY = (shape['hotY'] as num?)?.toDouble() ?? 0;
         }
+        cursorRevision++;
       case 'video-format':
         width = (msg['width'] as num).toDouble();
         height = (msg['height'] as num).toDouble();

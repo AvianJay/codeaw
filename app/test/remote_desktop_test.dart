@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 final host = HostConfig(
   name: 'Test PC',
@@ -126,33 +127,45 @@ class FakeDesktop extends RemoteDesktopController {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  test('defaults to low data and preserves the computer preference', () async {
-    final store = MemoryStore();
-    final c = RemoteDesktopController(
-      host,
-      store,
-      dataSaver: () => true,
-      httpClient: MockClient(
-        (_) async => http.Response('{"enabled":false}', 200),
-      ),
-    );
-    await c.connect();
-    expect(c.mode, DesktopMode.low);
-    c.dispose();
-    store.preferences = {'mode': 'onDemand', 'privilege': 'system', 'fps': 60};
-    final next = RemoteDesktopController(
-      host,
-      store,
-      dataSaver: () => false,
-      httpClient: MockClient(
-        (_) async => http.Response('{"enabled":false}', 200),
-      ),
-    );
-    await next.connect();
-    expect(next.mode, DesktopMode.onDemand);
-    expect(next.requestedFps, 60);
-    next.dispose();
-  });
+  setUp(
+    () => SharedPreferences.setMockInitialValues({
+      'desktop.gestureGuideSeen.v1': true,
+    }),
+  );
+  test(
+    'defaults to low data and replaces old manual quality preferences',
+    () async {
+      final store = MemoryStore();
+      final c = RemoteDesktopController(
+        host,
+        store,
+        dataSaver: () => true,
+        httpClient: MockClient(
+          (_) async => http.Response('{"enabled":false}', 200),
+        ),
+      );
+      await c.connect();
+      expect(c.mode, DesktopMode.low);
+      c.dispose();
+      store.preferences = {
+        'mode': 'onDemand',
+        'privilege': 'system',
+        'fps': 60,
+      };
+      final next = RemoteDesktopController(
+        host,
+        store,
+        dataSaver: () => false,
+        httpClient: MockClient(
+          (_) async => http.Response('{"enabled":false}', 200),
+        ),
+      );
+      await next.connect();
+      expect(next.mode, DesktopMode.balanced);
+      expect(next.requestedFps, 30);
+      next.dispose();
+    },
+  );
   test('composes delta tiles and ignores old screen epochs', () async {
     final c = RemoteDesktopController(
       host,
@@ -249,8 +262,12 @@ void main() {
         c.inputs.any((input) => input['kind'] == 'key' && input['code'] == 9),
         isTrue,
       );
-      await tester.tap(find.byTooltip('鍵盤'));
-      await tester.pump();
+      expect(find.byType(DropdownButton<DesktopMode>), findsNothing);
+      expect(find.byTooltip('觸控板／直接觸控'), findsNothing);
+      await tester.tap(find.byTooltip('桌面選項'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('顯示鍵盤'));
+      await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '中文😀');
       await tester.pump();
       expect(
