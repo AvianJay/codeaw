@@ -422,13 +422,23 @@ child text/thoughts. The app groups `_meta.claudeCode.parentToolUseId` (or
 delegation. Missing parents remain visible in the main timeline. Child text is
 excluded from the main turn's response copy and estimated TPS.
 
-Codex `spawnAgent` and subagent-activity tool reports get delegation cards too.
-`rawInput.agentsStates` reports supply child status and results; spawn completion
-alone is shown as started, not task completion. During compaction, tool updates
-retain `_meta.codeaw.agentStatesSeq`, the seq of their last child-state snapshot,
-so later cosmetic updates cannot reorder child status. Tool metadata and parent
-attribution survive full/delta replay. Details depend on the adapter's reports;
-draft native `subagent_spawned` sessions are not negotiated by this bridge.
+The bridge also advertises `clientCapabilities.subagents: {}`. Native ACP
+`subagent_update` reports and Codex's earlier `subagent_spawned` /
+`subagent_state_update` reports are translated before stable SDK validation into
+one delegation tool per child thread. Child messages and scoped tool IDs are
+attributed to that tool in the root conversation, including nested delegation.
+Child permission and input requests reach the root conversation with their
+original RPC IDs; child settings and quota snapshots do not replace the root's.
+Resumed Codex generations reuse the card and ignore late previous-generation
+events. Native associations are cleared when loading or closing a root session.
+
+Legacy Codex activity reports are grouped by `rawInput.agentThreadId`, so an
+interaction does not create another agent or imply task completion. Actual
+start/completion/interruption reports and `rawInput.agentsStates` supply status;
+completion of a launch or interaction RPC alone does not finish its child.
+Compaction retains `_meta.codeaw.agentStatesSeq`, the revision of the actual
+child-state report, so later cosmetic updates cannot reorder lifecycle state.
+Tool metadata and parent attribution survive full/delta replay.
 
 The chat's subagent browser lists every delegation, including nested agents. On
 phones it opens from the right edge, a leftward swipe across the conversation,

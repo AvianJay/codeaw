@@ -6,11 +6,11 @@ import { newFakeSession, promptText, rawLog, startTestBridge, TestClient } from 
 import { reduce } from "./reduce.js";
 
 describe("subagent transcripts", () => {
-  it("opts into attributed transcripts without negotiating unsupported native child sessions", () => {
+  it("opts into native child sessions and attributed transcripts", () => {
     const capabilities = bridgeClientCapabilities();
     expect(capabilities._meta?.["subagent-transcript"]).toBe(true);
     expect(capabilities._meta?.terminal_output).toBe(true);
-    expect(capabilities).not.toHaveProperty("subagents");
+    expect(capabilities.subagents).toEqual({});
   });
 
   it("keeps parallel message owners and child tool metadata intact through reconnect", async () => {
@@ -50,6 +50,53 @@ describe("subagent transcripts", () => {
     const result = compactLog(entries);
     expect(result.map((e: any) => e.update.content.text)).toEqual(["0", "13", "2"]);
     expect(result.map((e: any) => parentToolCallId(e.update))).toEqual([undefined, "a", "b"]);
+  });
+
+  it("routes native parallel and nested child sessions through the stable SDK and reconnect replay", async () => {
+    const tb = await startTestBridge();
+    let a: TestClient | undefined, b: TestClient | undefined;
+    try {
+      a = await TestClient.connect(tb.url, tb.tokenFor("A"));
+      a.permissionAnswer = (params) => {
+        expect(parentToolCallId(params.toolCall)).toMatch(/^subagent:/);
+        return { outcome: { outcome: "selected", optionId: "allow" } };
+      };
+      a.elicitationAnswer = () => ({ action: "accept", content: { answer: "yes" } });
+      const s = await newFakeSession(a, tb.home);
+      await a.request("session/prompt", promptText(s.sessionId, "native-subagents"));
+      const raw = rawLog(tb, s.sessionId);
+      const updates = raw.map((e) => e.params.update).filter(Boolean);
+      expect(updates.some((u) => u.sessionUpdate.startsWith("subagent_"))).toBe(false);
+      const spawns = updates.filter((u) => u.sessionUpdate === "tool_call" && u.title === "spawnAgent");
+      expect(spawns).toHaveLength(3);
+      expect(spawns.filter(parentToolCallId)).toHaveLength(1);
+      const reads = updates.filter((u) => u.title === "Read file");
+      expect(new Set(reads.map((u) => u.toolCallId)).size).toBe(3);
+      expect(reads.every(parentToolCallId)).toBe(true);
+      const messages = updates.filter((u) => u.sessionUpdate === "agent_message_chunk");
+      expect(messages.filter(parentToolCallId)).toHaveLength(3);
+      expect(new Set(messages.map((u) => u._meta.codeaw.mid)).size).toBe(4);
+      expect(updates.some((u) => u.used === 999 || u.configOptions?.length === 0)).toBe(false);
+      expect(updates.filter((u) => u.rawInput?.agentsStates).map((u) => Object.values(u.rawInput.agentsStates)[0]).slice(-3))
+        .toEqual([{ status: "cancelled" }, { status: "completed" }, { status: "failed" }]);
+      b = await TestClient.connect(tb.url, tb.tokenFor("B"));
+      await b.request("session/load", { sessionId: s.sessionId, cwd: tb.home, mcpServers: [] });
+      expect(reduce(b.log(s.sessionId))).toEqual(reduce(raw));
+    } finally {
+      a?.close(); b?.close(); await tb.stop();
+    }
+  });
+
+  it("preserves a legacy activity's lifecycle revision across cosmetic updates", () => {
+    const entries = [
+      { seq: 1, update: { sessionUpdate: "tool_call", toolCallId: "start", title: "Start child", rawInput: { agentThreadId: "child", agentPath: "/root/child", activityKind: "started" } } },
+      { seq: 2, update: { sessionUpdate: "tool_call", toolCallId: "end", title: "End child", rawInput: { agentThreadId: "child", agentPath: "/root/child", activityKind: "completed" } } },
+      { seq: 3, update: { sessionUpdate: "tool_call_update", toolCallId: "start", status: "completed" } },
+    ].map((e) => ({ ...e, kind: "update" as const, t: e.seq, update: e.update as any }));
+    const compacted = compactLog(entries) as any[];
+    expect(compacted[0].update._meta.codeaw.agentStatesSeq).toBe(1);
+    expect(compacted[1].update._meta.codeaw.agentStatesSeq).toBe(2);
+    expect((compactLog(compacted)[0] as any).update._meta.codeaw.agentStatesSeq).toBe(1);
   });
 
   it("retains the actual revision of a child-state snapshot after folding later tool updates", () => {

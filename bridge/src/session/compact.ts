@@ -95,7 +95,10 @@ export function compactGroups(entries: LogEntry[]): CompactGroup[] {
         slots.push(slot);
       }
       slot.seq = Math.max(slot.seq, e.seq);
-      if (u.rawInput?.agentsStates && typeof u.rawInput.agentsStates === "object") slot.agentStatesSeq = e.seq;
+      if ((u.rawInput?.agentsStates && typeof u.rawInput.agentsStates === "object") ||
+        (u.rawInput?.agentThreadId && u.rawInput?.agentPath && ["started", "completed", "interrupted"].includes(u.rawInput.activityKind))) {
+        slot.agentStatesSeq = codeawMeta(u).agentStatesSeq ?? e.seq;
+      }
       if (typeof u.status === "string") slot.statusSeq = codeawMeta(u).toolStatusSeq ?? e.seq;
       const response = u._meta?.claudeCode?.toolResponse;
       if (typeof response?.status === "string" || response?.isAsync === true || typeof u.rawOutput?.status === "string") {

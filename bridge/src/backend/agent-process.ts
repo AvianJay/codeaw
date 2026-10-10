@@ -11,6 +11,7 @@ import { VERSION } from "../version.js";
 import type { AgentBackend } from "./backend.js";
 import type { DesktopState } from "./codex-desktop-state.js";
 import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/environment.js";
+import { AcpSubagents } from "./acp-subagents.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -66,6 +67,8 @@ export function bridgeClientCapabilities(): acp.ClientCapabilities {
     terminal: false,
     elicitation: { form: {} },
     session: { configOptions: { boolean: {} }, notices: {} },
+    // Native children are translated to ordinary attributed tool calls/chunks.
+    subagents: {},
     // Claude only reports structured shell output (terminal_info/output/exit) when this is set.
     _meta: { terminal_output: true, "subagent-transcript": true },
   };
@@ -91,6 +94,7 @@ export class AgentProcess implements AgentBackend {
   private stderrTail = "";
   private readonly log: Logger;
   private readonly logFile: string;
+  private readonly subagents = new AcpSubagents();
   /** Requests currently in flight; used to decide whether the process is idle. */
   inflight = 0;
   lastUsed = Date.now();
@@ -154,6 +158,7 @@ export class AgentProcess implements AgentBackend {
     this.status = "starting";
     this.lastError = undefined;
     this.stderrTail = "";
+    this.subagents.clear();
     const generation = ++this.generation;
     const { command, args, env } = this.config;
     const inherited = desktopEnvironment({ ...process.env, ...env });
@@ -193,7 +198,14 @@ export class AgentProcess implements AgentBackend {
       })
       .onRequest("session/request_permission", (ctx) => this.handlers.onPermission(this.id, ctx.params, ctx.signal))
       .onRequest("elicitation/create", (ctx) => this.handlers.onElicitation(this.id, ctx.params, ctx.signal));
-    this.conn = app.connect(stream);
+    this.conn = app.connect({
+      writable: stream.writable,
+      readable: stream.readable.pipeThrough(new TransformStream<acp.AnyMessage, acp.AnyMessage>({
+        transform: (message, controller) => {
+          for (const routed of this.subagents.transform(message)) controller.enqueue(routed);
+        },
+      })),
+    });
     // stdout closing is the earliest sign of death; the process 'exit' event can lag behind.
     void this.conn.closed.then(() => this.onGone(generation, "closed its connection"));
 
@@ -268,6 +280,7 @@ export class AgentProcess implements AgentBackend {
     }
     this.conn = undefined;
     this.child = undefined;
+    this.subagents.clear();
     if (wasReady) this.log.warn(detail);
     this.handlers.onExit(this.id, generation, detail);
   }
@@ -279,7 +292,12 @@ export class AgentProcess implements AgentBackend {
     this.inflight++;
     this.lastUsed = Date.now();
     try {
-      return (await conn.agent.request(method, params as never, options)) as T;
+      if (method === "session/load") this.subagents.clear((params as { sessionId: string }).sessionId);
+      const result = (await conn.agent.request(method, params as never, options)) as T;
+      if (method === "session/close" || method === "session/delete") {
+        this.subagents.clear((params as { sessionId: string }).sessionId);
+      }
+      return result;
     } finally {
       this.inflight--;
       this.lastUsed = Date.now();
@@ -311,6 +329,7 @@ export class AgentProcess implements AgentBackend {
     if ((await Promise.race([exited, timer])) === "timeout") this.killTree();
     this.conn = undefined;
     this.child = undefined;
+    this.subagents.clear();
   }
 
   private killTree(): void {

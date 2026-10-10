@@ -60,6 +60,17 @@ Map<String, dynamic> message(
   },
 };
 
+// Shape emitted by codex-acp for the observed start/interaction notifications.
+Map<String, dynamic> codexActivity(String id, String thread, String name, String kind, {int? stateSeq}) => {
+  'sessionUpdate': 'tool_call',
+  'toolCallId': id,
+  'title': 'Subagent $name $kind',
+  'kind': 'other',
+  'status': 'completed',
+  'rawInput': {'agentThreadId': thread, 'agentPath': '/root/$name', 'activityKind': kind},
+  if (stateSeq != null) '_meta': {'codeaw': {'agentStatesSeq': stateSeq}},
+};
+
 ToolItem tool(Timeline t, String id) =>
     t.items.whereType<ToolItem>().firstWhere((item) => item.toolCallId == id);
 
@@ -557,6 +568,77 @@ void main() {
       expect(t.statusOfSubagent(tool(t, 'multi')), SubagentStatus.unknown);
     },
   );
+
+  test('five Codex activity reports represent three running child threads', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, codexActivity('start-p', 'p', 'providers', 'started'), seq: 1);
+    update(t, codexActivity('start-s', 's', 'storage_prompt', 'started'), seq: 2);
+    update(t, codexActivity('start-r', 'r', 'renderer', 'started'), seq: 3);
+    update(t, codexActivity('interact-p-1', 'p', 'providers', 'interacted'), seq: 4);
+    update(t, codexActivity('interact-p-2', 'p', 'providers', 'interacted'), seq: 5);
+    expect(t.items.whereType<ToolItem>(), hasLength(5));
+    expect(t.subagents.map((a) => a.subagent!.name), ['providers', 'storage_prompt', 'renderer']);
+    expect(t.rootItems.whereType<ToolItem>(), hasLength(3));
+    expect(t.subagents.map(t.statusOfSubagent), everyElement(SubagentStatus.running));
+    expect(t.isSubagent(tool(t, 'interact-p-1')), isFalse);
+    final restored = Timeline.fromSnapshot(t.toSnapshot());
+    addTearDown(restored.dispose);
+    expect(restored.subagents, hasLength(3));
+    expect(restored.subagents.map(restored.statusOfSubagent), everyElement(SubagentStatus.running));
+  });
+
+  test('child activity follows aliases and actual completion settles unfinished tools', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, codexActivity('start', 'p', 'providers', 'started'), seq: 1);
+    update(t, codexActivity('interact', 'p', 'providers', 'interacted'), seq: 2);
+    update(t, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'read', 'title': 'Read providers', 'status': 'in_progress',
+      '_meta': {'parentToolCallId': 'interact'},
+    }, seq: 3);
+    final agent = tool(t, 'start');
+    expect(t.childrenOf(agent), [tool(t, 'read')]);
+    expect(t.parentOf(tool(t, 'read')), agent);
+    expect(t.statusOfSubagent(agent), SubagentStatus.running);
+    update(t, codexActivity('finished', 'p', 'providers', 'completed'), seq: 4);
+    expect(t.subagents, [agent]);
+    expect(t.statusOfSubagent(agent), SubagentStatus.completed);
+    update(t, codexActivity('cosmetic', 'p', 'providers', 'started', stateSeq: 1), seq: 10);
+    expect(t.statusOfSubagent(agent), SubagentStatus.completed);
+  });
+
+  test('older start records cannot undo a child lifecycle loaded in a later page', () {
+    final t = Timeline(), older = Timeline();
+    addTearDown(t.dispose); addTearDown(older.dispose);
+    update(t, codexActivity('interact', 'p', 'providers', 'interacted'), seq: 3);
+    update(t, codexActivity('finished', 'p', 'providers', 'completed'), seq: 4);
+    update(older, codexActivity('start', 'p', 'providers', 'started'), seq: 1);
+    t.prependHistory(older); t.flush();
+    expect(t.subagents, hasLength(1));
+    expect(t.subagents.single.toolCallId, 'start');
+    expect(t.statusOfSubagent(t.subagents.single), SubagentStatus.completed);
+  });
+
+  test('same-name agents remain distinct when their thread IDs differ', () {
+    final t = Timeline();
+    addTearDown(t.dispose);
+    update(t, codexActivity('first', 'a', 'providers', 'started'));
+    update(t, codexActivity('second', 'b', 'providers', 'started'));
+    expect(t.subagents, hasLength(2));
+  });
+
+  testWidgets('legacy interaction cards do not show phantom completed agents', (tester) async {
+    final c = controller();
+    addTearDown(c.dispose);
+    c.timeline.setTurnState('running');
+    update(c.timeline, codexActivity('start', 'p', 'providers', 'started'));
+    update(c.timeline, codexActivity('interact', 'p', 'providers', 'interacted'));
+    await tester.pumpWidget(conversation(c));
+    expect(find.text('providers'), findsOneWidget);
+    expect(find.text('執行中'), findsOneWidget);
+    expect(find.text('已完成'), findsNothing);
+  });
 
   testWidgets(
     'expands child activity, updates folded progress and retains completion',

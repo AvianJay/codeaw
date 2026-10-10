@@ -280,6 +280,7 @@ class Timeline extends ChangeNotifier {
   List<TimelineItem> _rootItems = [];
   final _children = <String, List<TimelineItem>>{};
   final _parents = <String, ToolItem>{};
+  final _subagentOwners = <String, ToolItem>{};
   final _agentStates = <String, ({int revision, Map state})>{};
   int _revision = 0;
   bool _hierarchyDirty = false;
@@ -318,7 +319,12 @@ class Timeline extends ChangeNotifier {
     return _children[tool.toolCallId] ?? const [];
   }
 
-  bool isSubagent(ToolItem tool) => tool.subagent != null || childrenOf(tool).isNotEmpty;
+  bool isSubagent(ToolItem tool) {
+    if (_hierarchyDirty) _rebuildHierarchy();
+    final owner = _subagentOwners[tool.toolCallId];
+    if (owner != null && owner != tool) return false;
+    return tool.subagent != null || childrenOf(tool).isNotEmpty;
+  }
 
   List<ToolItem> get subagents => items.whereType<ToolItem>().where(isSubagent).toList();
 
@@ -362,16 +368,19 @@ class Timeline extends ChangeNotifier {
       return reported;
     }
     if (tool.status == 'failed' && tool.statusRevision >= lastActivity) return SubagentStatus.failed;
+    final ids = info?.threadIds ?? <String>[];
+    final states = [for (final id in ids) subagentStatusOf(_agentStates[id]?.state['status'])];
+    final reportedState = states.isEmpty ? SubagentStatus.unknown : [
+      SubagentStatus.running, SubagentStatus.pending, SubagentStatus.failed,
+      SubagentStatus.cancelled, SubagentStatus.disconnected, SubagentStatus.unknown,
+    ].firstWhere(states.contains, orElse: () => SubagentStatus.completed);
+    // A real lifecycle report settles tools whose final updates were omitted.
+    if (ids.isNotEmpty && ids.every((id) => (_agentStates[id]?.revision ?? -1) >= lastActivity)) return reportedState;
     final active = descendants.whereType<ToolItem>().map((t) => subagentStatusOf(t.status));
     if (active.contains(SubagentStatus.running)) return SubagentStatus.running;
     if (active.contains(SubagentStatus.pending)) return SubagentStatus.running;
-    final ids = info?.threadIds ?? <String>[];
     if (ids.any(_agentStates.containsKey)) {
-      final states = [for (final id in ids) subagentStatusOf(_agentStates[id]?.state['status'])];
-      for (final status in [SubagentStatus.running, SubagentStatus.pending, SubagentStatus.failed, SubagentStatus.cancelled, SubagentStatus.disconnected, SubagentStatus.unknown]) {
-        if (states.contains(status)) return status;
-      }
-      return SubagentStatus.completed;
+      return reportedState;
     }
     if (reported == SubagentStatus.running || reported == SubagentStatus.pending) return reported!;
     // A child can continue (or be resumed) after the launch RPC has returned.
@@ -391,15 +400,30 @@ class Timeline extends ChangeNotifier {
     _hierarchyDirty = false;
     _parents.clear();
     _children.clear();
+    _subagentOwners.clear();
     _rootItems = [];
+    // Legacy Codex activity notifications have a fresh tool ID for every
+    // interaction. Preserve the log while showing one card per child thread.
+    final ownersByThread = <String, ToolItem>{};
+    for (final tool in items.whereType<ToolItem>()) {
+      final thread = nonEmptyString(objectMap(tool.rawInput)['agentThreadId']);
+      if (thread == null || tool.subagent == null) continue;
+      final owner = ownersByThread.putIfAbsent(thread, () => tool);
+      _subagentOwners[tool.toolCallId] = owner;
+    }
     for (final item in items) {
+      if (item is ToolItem) {
+        final owner = _subagentOwners[item.toolCallId];
+        if (owner != null && owner != item) continue;
+      }
       final candidate = item.parentToolCallId == null ? null : _byKey['tool:${item.parentToolCallId}'];
-      ToolItem? parent = candidate is ToolItem ? candidate : null;
+      ToolItem? parent = candidate is ToolItem ? _subagentOwners[candidate.toolCallId] ?? candidate : null;
       TimelineItem? ancestor = parent;
       final seen = {item.key};
       while (ancestor != null) {
         if (!seen.add(ancestor.key)) { parent = null; break; }
-        ancestor = ancestor.parentToolCallId == null ? null : _byKey['tool:${ancestor.parentToolCallId}'];
+        final next = ancestor.parentToolCallId == null ? null : _byKey['tool:${ancestor.parentToolCallId}'];
+        ancestor = next is ToolItem ? _subagentOwners[next.toolCallId] ?? next : next;
       }
       if (parent == null) {
         _rootItems.add(item);
@@ -411,7 +435,19 @@ class Timeline extends ChangeNotifier {
   }
 
   void _recordAgentStates(Map<String, dynamic> update, int revision) {
-    final states = objectMap(objectMap(update['rawInput'])['agentsStates']);
+    final input = objectMap(update['rawInput']);
+    final states = Map<dynamic, dynamic>.of(objectMap(input['agentsStates']));
+    final thread = nonEmptyString(input['agentThreadId']);
+    final activity = input['activityKind'];
+    if (thread != null && nonEmptyString(input['agentPath']) != null && !states.containsKey(thread)) {
+      final status = switch (activity) {
+        'started' => 'running',
+        'completed' => 'completed',
+        'interrupted' => 'cancelled',
+        _ => null,
+      };
+      if (status != null) states[thread] = {'status': status};
+    }
     if (states.isEmpty) return;
     var changed = false;
     for (final entry in states.entries) {
@@ -484,6 +520,7 @@ class Timeline extends ChangeNotifier {
     _rootItems = [];
     _children.clear();
     _parents.clear();
+    _subagentOwners.clear();
     _agentStates.clear();
     _detachedPromptEvents.clear();
     _revision = 0;
@@ -1028,6 +1065,7 @@ class Timeline extends ChangeNotifier {
         // Hydration may arrive ahead of pending WebSocket notifications.
         if (revision <= item.hydratedThroughSeq) return;
         final oldParent = item.parentToolCallId;
+        final oldThread = objectMap(item.rawInput)['agentThreadId'];
         final wasSubagent = item.subagent != null;
         item.merge(u);
         if (wasSubagent != (item.subagent != null)) _snapshotChanged = true;
@@ -1038,6 +1076,7 @@ class Timeline extends ChangeNotifier {
           item.lifecycleRevision = (codeaw['toolLifecycleSeq'] as num?)?.toInt() ?? revision;
         }
         if (oldParent != item.parentToolCallId) _hierarchyDirty = _structureChanged = true;
+        if (oldThread != objectMap(item.rawInput)['agentThreadId']) _hierarchyDirty = _structureChanged = true;
         _dirty.add(item);
         final statesRevision = objectMap(objectMap(u['_meta'])['codeaw'])['agentStatesSeq'];
         _recordAgentStates(u, statesRevision is num ? statesRevision.toInt() : revision);

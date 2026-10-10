@@ -24,6 +24,7 @@ interface StoredSession {
   updatedAt: string;
   mode: string;
   history: acp.SessionUpdate[];
+  nativeHistory?: acp.SessionNotification[];
 }
 
 const stateFile = process.env.FAKE_AGENT_STATE;
@@ -88,7 +89,11 @@ const app = acp
     const s = sessions[ctx.params.sessionId];
     if (!s) throw acp.RequestError.invalidParams(undefined, "unknown session");
     live.set(ctx.params.sessionId, live.get(ctx.params.sessionId) ?? { cancelled: false, steer: [], running: false });
-    for (const update of s.history) await ctx.client.notify("session/update", { sessionId: ctx.params.sessionId, update });
+    if (s.nativeHistory) {
+      for (const notification of s.nativeHistory) await ctx.client.notify("session/update", notification);
+    } else {
+      for (const update of s.history) await ctx.client.notify("session/update", { sessionId: ctx.params.sessionId, update });
+    }
     return { configOptions: configOptions(s.mode) };
   })
   .onRequest("session/resume", (ctx) => {
@@ -162,6 +167,47 @@ const app = acp
     const arg = rest.join(" ");
     try {
       switch (cmd) {
+        case "native-subagents": {
+          s.nativeHistory = [{ sessionId, update: s.history.at(-1)! }];
+          const native = async (owner: string, update: any) => {
+            const notification = { sessionId: owner, update };
+            s.nativeHistory!.push(notification);
+            await ctx.client.notify("session/update", notification);
+          };
+          const spawnChild = (parent: string, child: string) => native(parent, {
+            sessionUpdate: "subagent_spawned", subagentSessionId: child,
+            name: child, task: `Work on ${child}`, capabilities: {},
+          });
+          const child = `${sessionId}-child`, sibling = `${sessionId}-sibling`, nested = `${sessionId}-nested`;
+          await spawnChild(sessionId, child);
+          await spawnChild(sessionId, sibling);
+          await spawnChild(child, nested);
+          await native(sessionId, { sessionUpdate: "agent_message_chunk", messageId: "shared", content: { type: "text", text: "Main answer" } });
+          for (const id of [child, sibling, nested]) {
+            await native(id, { sessionUpdate: "agent_message_chunk", messageId: "shared", content: { type: "text", text: `Work by ${id}` } });
+            await native(id, { sessionUpdate: "tool_call", toolCallId: "shared-tool", title: "Read file", kind: "read", status: "in_progress" });
+          }
+          // Child snapshots must not replace the root's settings or quota.
+          await native(child, { sessionUpdate: "config_option_update", configOptions: [] });
+          await native(child, { sessionUpdate: "usage_update", used: 999, size: 1000 });
+          const permission = await ctx.client.request("session/request_permission", {
+            sessionId: child, toolCall: { toolCallId: "shared-tool", title: "Read file" },
+            options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+          });
+          if (permission.outcome.outcome !== "selected") throw new Error("Child permission did not reach root");
+          const answer = await ctx.client.request("elicitation/create", {
+            sessionId: sibling, mode: "form", message: "Child question",
+            requestedSchema: { type: "object", properties: { answer: { type: "string" } } },
+          });
+          if (answer.action !== "accept") throw new Error("Child question did not reach root");
+          for (const id of [child, sibling, nested]) {
+            await native(id, { sessionUpdate: "tool_call_update", toolCallId: "shared-tool", status: "completed" });
+          }
+          await native(child, { sessionUpdate: "subagent_state_update", subagentSessionId: nested, state: "cancelled" });
+          await native(sessionId, { sessionUpdate: "subagent_state_update", subagentSessionId: child, state: "completed" });
+          await native(sessionId, { sessionUpdate: "subagent_state_update", subagentSessionId: sibling, state: "failed" });
+          break;
+        }
         case "echo": {
           const id = "m" + crypto.randomBytes(3).toString("hex");
           const third = Math.ceil(arg.length / 3);

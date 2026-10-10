@@ -86,7 +86,8 @@ class SubagentInfo {
       role: role,
       model: nonEmptyString(raw['model']),
       threadIds: ids.toList(),
-      launchOnly: spawn || background || (activity && raw['activityKind'] == 'started'),
+      // Activity RPCs (including interactions) do not report task completion.
+      launchOnly: spawn || background || activity,
       background: background,
     );
   }
