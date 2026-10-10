@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
@@ -107,6 +108,7 @@ export const KNOWN_AGENTS: Array<{ id: string; probe: string; agent: AgentConfig
   { id: "codex", probe: "codex-acp", agent: { name: "Codex", command: "codex-acp", args: [], env: {}, enabled: true } },
   { id: "kimi", probe: "kimi", agent: { name: "Kimi Code", command: "kimi", args: ["acp"], env: {}, enabled: true } },
   { id: "hermes", probe: "hermes", agent: { name: "Hermes Agent", command: "hermes", args: ["acp"], env: {}, enabled: true } },
+  { id: "omp", probe: "omp", agent: { name: "Oh My Pi", command: "omp", args: ["acp"], env: {}, enabled: true } },
   { id: "antigravity", probe: "agy", agent: { name: "Antigravity CLI", command: "agy", args: [], env: {}, enabled: true, transport: "agy" } },
   { id: "deepseek", probe: "dsh", agent: { name: "DeepSeek Harness", command: "dsh", args: ["--profile", "acp"], env: {}, enabled: true } },
   {
@@ -127,7 +129,12 @@ export function detectAgents(): Record<string, AgentConfig> {
   for (const entry of KNOWN_AGENTS) {
     // Prefer the CLI when both Antigravity transports are installed.
     if (found[entry.id]) continue;
-    const command = resolveCommand(entry.probe);
+    let command = resolveCommand(entry.probe);
+    // The standalone Windows installer need not add its directory to PATH.
+    if (!command && entry.id === "omp" && process.platform === "win32") {
+      const local = process.env.LOCALAPPDATA ?? process.env.LocalAppData ?? path.join(os.homedir(), "AppData", "Local");
+      command = resolveCommand(path.join(local, "omp", "omp.exe"));
+    }
     if (command) found[entry.id] = { ...entry.agent, command };
   }
   return found;

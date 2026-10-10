@@ -173,6 +173,8 @@ Color agentColor(String agentId) {
       return const Color(0xFF3B82F6);
     case 'hermes':
       return const Color(0xFFC58C32);
+    case 'omp':
+      return const Color(0xFFB35CDB);
     case 'gemini':
       return const Color(0xFF8E75B2);
     case 'deepseek':
@@ -224,7 +226,11 @@ class AgentAvatar extends StatelessWidget {
       ),
       child: asset == null
           ? Text(
-              text.isEmpty ? '?' : text.characters.first.toUpperCase(),
+              id == 'omp'
+                  ? 'π'
+                  : text.isEmpty
+                  ? '?'
+                  : text.characters.first.toUpperCase(),
               style: TextStyle(
                 color: c,
                 fontWeight: FontWeight.w700,

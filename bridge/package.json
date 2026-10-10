@@ -1,7 +1,7 @@
 {
   "name": "codeaw-bridge",
   "version": "0.1.0",
-  "description": "Run Claude Code / Codex / Kimi / Hermes Agent / DeepSeek Harness / Google Antigravity (via ACP) on this PC and drive them from anywhere over Tailscale.",
+  "description": "Run Claude Code / Codex / Kimi / Hermes Agent / Oh My Pi / DeepSeek Harness / Google Antigravity on this PC and drive them from anywhere over Tailscale.",
   "type": "module",
   "license": "GPL-3.0-or-later",
   "bin": {
@@ -26,6 +26,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke.ts",
+    "smoke:omp": "tsx scripts/omp-smoke.ts",
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
     "smoke:desktop": "tsx scripts/desktop-smoke.ts",
     "smoke:remote-desktop": "tsx scripts/remote-desktop-smoke.ts",

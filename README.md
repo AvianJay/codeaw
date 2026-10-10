@@ -1,6 +1,6 @@
 # codeaw
 
-在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / Hermes Agent / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
+在手機上透過 Tailscale 使用電腦上的 **Claude Code / Codex / Kimi / Hermes Agent / Oh My Pi / DeepSeek Harness / Google Antigravity**（或任何 ACP agent）。
 
 - 電腦上跑 **bridge**（Node/TypeScript）：用 [ACP](https://agentclientprotocol.com) 或 AGY 官方 NDJSON 串流驅動本機 agent，**直接沿用你本機的設定**。用 `~/.claude/settings.json` 或 `~/.codex/config.toml` 設定的自訂 API 照樣能用，不需要 claude.ai／ChatGPT 帳號登入。
 - 手機上用 **App**（Flutter，Android／iOS），或在手機、電腦上開啟 **Web**：串流顯示對話、工具呼叫、diff 與終端輸出，可以批准或拒絕權限、切換模式、模型與推理強度，也能附加圖片、用 `@` 提及專案檔案、瀏覽專案檔案、看 git diff。
@@ -8,7 +8,7 @@
 - **取消待送訊息**：訊息旁的「取消待送訊息」可移除排隊中或送達待確認的單則訊息，不會停止正在執行的 AI 回合或其他排隊訊息。需連上已更新的 bridge；若訊息已開始處理，會保留它並告知無法取消待送。重開 bridge 後遺留的排隊訊息會標記已取消，不會偷偷重新傳送。
 - **編輯已送出的訊息**：已開始處理的訊息下方有「編輯」按鈕。修改後，agent 會從那則訊息重新回答，之後的內容不會帶入。編輯時可以選擇「另開分支」（建立新聊天，原聊天保留）或「取代原對話」（原聊天從 Codeaw 移除，但 agent 自己的歷史檔仍留在電腦上），App 會記住上次的選擇。原訊息的圖片與檔案提及會一起帶入，也可以移除或另外附加。限制：
   - 從中間的訊息編輯：只支援 Claude Code（`claude-agent-acp` 0.71 以上）和 Codex（`codex-acp` 1.8 以上）。
-  - 其他 agent（Kimi、Hermes、DeepSeek Harness、Antigravity 等）只能編輯第一則訊息。
+  - 其他 agent（Kimi、Hermes、Oh My Pi、DeepSeek Harness、Antigravity 等）只能編輯第一則訊息。
   - 不支援：Codex 桌面同步的聊天、插入回合中的訊息、尚未開始處理的訊息；執行中的聊天要先停止。
   - **只會分岔對話，電腦上的檔案變更不會還原。**
   - Claude 分岔出的聊天標題會加上「(fork)」。
@@ -22,7 +22,7 @@
 - **遠端桌面**：Android／iOS／Web 可查看及操作 Windows 桌面、輸入中文與切換螢幕，提供一般、高流暢、低流量與極省流量四種模式。電腦端啟用後沿用現有配對；可選安裝進階服務，支援登入前連線、解鎖與 UAC。詳見 [遠端桌面設定與模式](docs/remote-desktop.md)。
 
 ```
-Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP 或 NDJSON ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / dsh --profile acp / agy
+Android App ══ WebSocket（ACP + codeaw 擴充）══▶ bridge（電腦）══ stdio / ACP 或 NDJSON ══▶ claude-agent-acp / codex-acp / kimi acp / hermes acp / omp acp / dsh --profile acp / agy
       ▲              經 Tailscale                     │
       └──────── ntfy 推播（沒有任何裝置連著時）◀──────┘
 ```
@@ -39,6 +39,7 @@ npm i -g @agentclientprotocol/codex-acp           # Codex
 npm i -g @deepseek-ai/dsh                        # DeepSeek Harness（原生 ACP）
 # Kimi Code 自帶 `kimi acp`
 # Hermes Agent 使用 `hermes acp`，安裝方式見下方
+# Oh My Pi 自帶 `omp acp`，安裝方式見下方
 # Antigravity 使用官方 agy CLI，安裝方式見下方；亦保留獨立 ACP server 相容性
 ```
 
@@ -157,6 +158,24 @@ agents:
 ```
 
 若 `hermes` 不在 bridge 的 PATH 上，將 `command` 改為啟動器的完整路徑；也可改用 `command: hermes-acp` 搭配 `args: []`。
+
+### Oh My Pi
+
+先依照 [Oh My Pi 官方說明](https://github.com/can1357/oh-my-pi) 安裝並完成本機 provider／模型設定。Oh My Pi 自帶 `omp acp`，bridge 沿用 `~/.omp` 的設定與認證。建立設定時會偵測 PATH 上的 `omp`；Windows 也會偵測 `%LOCALAPPDATA%/omp/omp.exe`，因此預設安裝位置不在 PATH 時仍可使用。
+
+如果已經有 `~/.codeaw/config.yaml`，在既有的 `agents` 區塊加入以下項目，再執行 `codeaw-bridge restart`：
+
+```yaml
+agents:
+  omp:
+    name: Oh My Pi
+    command: C:/Users/lolha/AppData/Local/omp/omp.exe
+    args: [acp]
+    env: {}
+    enabled: true
+```
+
+將 `command` 改成自己的安裝路徑；已在 PATH 時可使用 `command: omp`。使用原生 ACP，支援串流對話、工具呼叫、圖片、權限批准、問題表單，以及模型／推理強度／模式切換。已保存的 Oh My Pi 對話可透過 ACP 列出與接續，bridge 也保留經 Codeaw 進行的聊天歷史。回合中的新訊息由 bridge 排到下一回合。
 
 ### DeepSeek Harness
 
