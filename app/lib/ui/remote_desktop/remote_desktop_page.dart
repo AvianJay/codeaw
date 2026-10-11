@@ -13,6 +13,8 @@ import '../common/adaptive.dart';
 import 'desktop_trackpad_gestures.dart';
 import 'remote_desktop_gesture_guide.dart';
 
+const _maxDesktopZoom = 8.0;
+
 class RemoteDesktopPage extends StatefulWidget {
   const RemoteDesktopPage({super.key});
   @override
@@ -261,7 +263,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
               ),
-              for (final value in [1.0, 1.5, 2.0])
+              for (final value in [1.0, 1.5, 2.0, 4.0, _maxDesktopZoom])
                 ListTile(
                   leading: Icon(
                     value == 1
@@ -626,14 +628,12 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   final _surface = GlobalKey();
   Rect _imageRect = Rect.zero;
   Offset _cursor = const Offset(.5, .5);
-  Offset _panAnchor = const Offset(.5, .5);
   Size _viewport = Size.zero, _fitted = Size.zero;
   late double _viewZoom;
   double _pinchStartZoom = 1;
-  Offset _pinchImagePoint = const Offset(.5, .5);
   bool _pinching = false;
   int _cursorRevision = -1;
-  bool _mouseActive = false;
+  Offset? _mouseGlobal;
   final _mouseButtons = <String>{};
   Timer? _mouseMoveTimer;
   Offset? _mouseMove;
@@ -644,12 +644,11 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   @override
   void initState() {
     super.initState();
-    _viewZoom = widget.zoom;
+    _viewZoom = widget.zoom.clamp(1.0, _maxDesktopZoom);
     _gestures = DesktopTrackpadGestures(
       send: (input) => c.input(input),
       onCursorChanged: (cursor) {
         _cursor = cursor;
-        if (!_mouseActive && !_pinching) _revealCursor();
         if (mounted && !_syncing) setState(() {});
       },
       onPinchStart: _startPinch,
@@ -672,12 +671,11 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   void didUpdateWidget(covariant _DesktopCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!c.canInput) cancelInput();
-    // Pinch updates already changed the camera synchronously. Only a menu
-    // selection should recenter it when the parent echoes a new zoom value.
+    // Pinch updates already changed zoom synchronously; a menu selection
+    // cancels old input before applying its new scale.
     if (widget.zoom != _viewZoom) {
       cancelInput();
-      _viewZoom = widget.zoom.clamp(1, 4);
-      _panAnchor = _cursor;
+      _viewZoom = widget.zoom.clamp(1.0, _maxDesktopZoom);
     }
     _syncRemoteCursor();
   }
@@ -691,61 +689,37 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
     );
   }
 
-  Offset _localPoint(Offset global) =>
-      (_surface.currentContext?.findRenderObject() as RenderBox?)
-          ?.globalToLocal(global) ??
-      Offset.zero;
-
-  double _anchorForOrigin(double origin, double image, double viewport) =>
-      image > viewport
-      ? origin.clamp(viewport - image, 0) / (viewport - image)
-      : .5;
-
-  void _startPinch(Offset focal) {
+  void _startPinch(Offset _) {
     if (_imageRect.isEmpty) return;
     _pinching = true;
     _pinchStartZoom = _viewZoom;
-    _pinchImagePoint = _point(focal);
+    _mouseGlobal = null;
   }
 
-  void _updatePinch(double scale, Offset focal) {
+  void _updatePinch(double scale, Offset _) {
     if (!_pinching || !scale.isFinite || scale <= 0 || _fitted.isEmpty) return;
-    final zoom = (_pinchStartZoom * scale).clamp(1.0, 4.0);
-    final size = _fitted * zoom;
-    final local = _localPoint(focal);
-    setState(() {
-      _viewZoom = zoom;
-      _panAnchor = Offset(
-        _anchorForOrigin(
-          local.dx - _pinchImagePoint.dx * size.width,
-          size.width,
-          _viewport.width,
-        ),
-        _anchorForOrigin(
-          local.dy - _pinchImagePoint.dy * size.height,
-          size.height,
-          _viewport.height,
-        ),
-      );
-    });
+    final zoom = (_pinchStartZoom * scale).clamp(1.0, _maxDesktopZoom);
+    setState(() => _viewZoom = zoom);
     if (widget.zoom != zoom) widget.onZoomChanged(zoom);
   }
 
-  void _revealCursor() {
-    if (_imageRect.isEmpty) return;
-    double reveal(double cursor, double origin, double image, double viewport) {
-      if (image <= viewport) return .5;
-      final margin = (viewport / 4).clamp(0.0, 24.0);
-      final screen = origin + cursor * image;
-      if (screen < margin) origin += margin - screen;
-      if (screen > viewport - margin) origin -= screen - (viewport - margin);
-      return _anchorForOrigin(origin, image, viewport);
-    }
-
-    _panAnchor = Offset(
-      reveal(_cursor.dx, _imageRect.left, _imageRect.width, _viewport.width),
-      reveal(_cursor.dy, _imageRect.top, _imageRect.height, _viewport.height),
-    );
+  Offset _mousePoint(Offset global) {
+    final previous = _mouseGlobal;
+    _mouseGlobal = global;
+    // A magnified camera moves with the remote cursor. Re-mapping absolute
+    // positions against that moving image would make the cursor run away.
+    final point = _viewZoom <= 1
+        ? _point(global)
+        : previous == null || _imageRect.isEmpty
+        ? _cursor
+        : _cursor +
+              Offset(
+                (global.dx - previous.dx) / _imageRect.width,
+                (global.dy - previous.dy) / _imageRect.height,
+              );
+    _gestures.adoptLocalCursor(point);
+    _cursor = _gestures.cursor;
+    return _cursor;
   }
 
   void _flushMouseMove() {
@@ -760,9 +734,7 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
 
   void _moveMouse(Offset global) {
     if (!c.canInput || _gestures.hasContacts) return;
-    _mouseActive = true;
-    _cursor = _point(global);
-    _mouseMove = _cursor;
+    _mouseMove = _mousePoint(global);
     _mouseMoveTimer ??= Timer(
       const Duration(milliseconds: 16),
       _flushMouseMove,
@@ -781,16 +753,18 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
           c.release();
         }
         _gestures.adoptLocalCursor(_cursor);
+        _mouseGlobal = null;
       }
-      _mouseActive = false;
       _gestures.pointerDown(event.pointer, event.position);
       return;
     }
-    if (_gestures.hasContacts) _gestures.cancel();
+    if (_gestures.hasContacts) {
+      _gestures.cancel();
+      _mouseGlobal = null;
+    }
+    final point = _mousePoint(event.position);
+    _mouseMove = point;
     _flushMouseMove();
-    _mouseActive = true;
-    final point = _point(event.position);
-    _cursor = point;
     final button = event.buttons & kSecondaryMouseButton != 0
         ? 'right'
         : event.buttons & kMiddleMouseButton != 0
@@ -824,8 +798,9 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
       _gestures.pointerUp(event.pointer);
       return;
     }
+    final point = _mousePoint(event.position);
+    _mouseMove = point;
     _flushMouseMove();
-    final point = _point(event.position);
     for (final button in _mouseButtons) {
       c.input({
         'kind': 'button',
@@ -842,6 +817,7 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
     _mouseMoveTimer?.cancel();
     _mouseMoveTimer = null;
     _mouseMove = null;
+    _mouseGlobal = null;
     _mouseButtons.clear();
     _gestures.cancel();
   }
@@ -862,100 +838,113 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
         Size(c.width, c.height),
         viewport,
       ).destination;
-      if ((_viewport != viewport || _fitted != fitted) &&
-          _gestures.hasContacts) {
-        cancelInput();
+      if (_viewport != viewport || _fitted != fitted) {
+        _mouseGlobal = null;
+        if (_gestures.hasContacts) cancelInput();
       }
       _viewport = viewport;
       _fitted = fitted;
       final size = fitted * _viewZoom;
-      // Inside the viewport, one logical pixel of finger motion moves the
-      // cursor one displayed pixel. The camera follows only at the edges.
+      // One logical pixel of motion advances one displayed pixel of desktop,
+      // while the camera keeps the cursor centered until a desktop edge.
       _gestures.setViewport(size);
       double origin(double viewport, double image, double cursor) =>
           image <= viewport
           ? (viewport - image) / 2
-          : (viewport - image) * cursor.clamp(0, 1);
+          : (viewport / 2 - cursor * image).clamp(viewport - image, 0);
       _imageRect = Rect.fromLTWH(
-        origin(viewport.width, size.width, _panAnchor.dx),
-        origin(viewport.height, size.height, _panAnchor.dy),
+        origin(viewport.width, size.width, _cursor.dx),
+        origin(viewport.height, size.height, _cursor.dy),
         size.width,
         size.height,
       );
       final cursorScale = (size.width / c.width).clamp(.75, 2.0);
       final cursorWidth = c.cursorWidth * cursorScale;
       final cursorHeight = c.cursorHeight * cursorScale;
-      return Listener(
-        key: _surface,
-        behavior: HitTestBehavior.opaque,
-        onPointerDown: _down,
-        onPointerMove: _move,
-        onPointerUp: _up,
-        onPointerCancel: (event) => event.kind == ui.PointerDeviceKind.mouse
-            ? cancelInput()
-            : _gestures.pointerCancel(event.pointer),
-        onPointerHover: (event) => _moveMouse(event.position),
-        onPointerSignal: (event) {
-          if (event is PointerScrollEvent && c.canInput) {
-            final point = _point(event.position);
-            c.input({
-              'kind': 'wheel',
-              'delta': (-event.scrollDelta.dy * 3).round().clamp(-1200, 1200),
-              'deltaX': (event.scrollDelta.dx * 3).round().clamp(-1200, 1200),
-              'x': point.dx,
-              'y': point.dy,
-            });
-          }
+      return MouseRegion(
+        cursor: _viewZoom > 1 ? SystemMouseCursors.none : MouseCursor.defer,
+        onEnter: (event) {
+          if (!_gestures.hasContacts) _mouseGlobal = event.position;
         },
-        child: ClipRect(
-          child: ColoredBox(
-            color: const Color(0xff12161c),
-            child: Stack(
-              clipBehavior: Clip.hardEdge,
-              children: [
-                Positioned.fromRect(
-                  rect: _imageRect,
-                  child: c.video != null && c.actualMode == DesktopMode.smooth
-                      ? RTCVideoView(
-                          c.video!,
-                          objectFit: RTCVideoViewObjectFit
-                              .RTCVideoViewObjectFitContain,
-                        )
-                      : RawImage(
-                          image: c.image,
-                          fit: BoxFit.fill,
-                          filterQuality: FilterQuality.low,
-                        ),
-                ),
-                if (c.cursorVisible)
-                  Positioned(
-                    left:
-                        _imageRect.left +
-                        _cursor.dx * size.width -
-                        c.cursorHotX * cursorScale,
-                    top:
-                        _imageRect.top +
-                        _cursor.dy * size.height -
-                        c.cursorHotY * cursorScale,
-                    child: IgnorePointer(
-                      child: c.cursorPng != null
-                          ? Image.memory(
-                              c.cursorPng!,
-                              width: cursorWidth,
-                              height: cursorHeight,
-                              gaplessPlayback: true,
-                            )
-                          : const Icon(
-                              Icons.navigation_rounded,
-                              size: 22,
-                              color: Colors.white,
-                              shadows: [
-                                Shadow(color: Colors.black, blurRadius: 4),
-                              ],
-                            ),
-                    ),
+        onExit: (_) {
+          if (_mouseButtons.isEmpty) _mouseGlobal = null;
+        },
+        child: Listener(
+          key: _surface,
+          behavior: HitTestBehavior.opaque,
+          onPointerDown: _down,
+          onPointerMove: _move,
+          onPointerUp: _up,
+          onPointerCancel: (event) => event.kind == ui.PointerDeviceKind.mouse
+              ? cancelInput()
+              : _gestures.pointerCancel(event.pointer),
+          onPointerHover: (event) => _moveMouse(event.position),
+          onPointerSignal: (event) {
+            if (event is PointerScrollEvent &&
+                c.canInput &&
+                !_gestures.hasContacts) {
+              final point = _mousePoint(event.position);
+              _mouseMove = point;
+              _flushMouseMove();
+              c.input({
+                'kind': 'wheel',
+                'delta': (-event.scrollDelta.dy * 3).round().clamp(-1200, 1200),
+                'deltaX': (event.scrollDelta.dx * 3).round().clamp(-1200, 1200),
+                'x': point.dx,
+                'y': point.dy,
+              });
+            }
+          },
+          child: ClipRect(
+            child: ColoredBox(
+              color: const Color(0xff12161c),
+              child: Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  Positioned.fromRect(
+                    rect: _imageRect,
+                    child: c.video != null && c.actualMode == DesktopMode.smooth
+                        ? RTCVideoView(
+                            c.video!,
+                            objectFit: RTCVideoViewObjectFit
+                                .RTCVideoViewObjectFitContain,
+                          )
+                        : RawImage(
+                            image: c.image,
+                            fit: BoxFit.fill,
+                            filterQuality: FilterQuality.low,
+                          ),
                   ),
-              ],
+                  if (c.cursorVisible)
+                    Positioned(
+                      left:
+                          _imageRect.left +
+                          _cursor.dx * size.width -
+                          c.cursorHotX * cursorScale,
+                      top:
+                          _imageRect.top +
+                          _cursor.dy * size.height -
+                          c.cursorHotY * cursorScale,
+                      child: IgnorePointer(
+                        child: c.cursorPng != null
+                            ? Image.memory(
+                                c.cursorPng!,
+                                width: cursorWidth,
+                                height: cursorHeight,
+                                gaplessPlayback: true,
+                              )
+                            : const Icon(
+                                Icons.navigation_rounded,
+                                size: 22,
+                                color: Colors.white,
+                                shadows: [
+                                  Shadow(color: Colors.black, blurRadius: 4),
+                                ],
+                              ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ),

@@ -80,7 +80,7 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
                     _GestureRow(
                       icon: Icons.zoom_in_rounded,
                       title: '兩指捏合',
-                      description: '張開放大螢幕，合攏縮小',
+                      description: '張開放大、合攏縮小，最高 800%；放大時視角跟著游標',
                     ),
                     _GestureRow(
                       icon: Icons.pan_tool_alt_outlined,

@@ -147,6 +147,22 @@ Future<void> pinch(
   await tester.pump();
 }
 
+Rect desktopViewport(WidgetTester tester) => tester.getRect(
+  find
+      .ancestor(of: find.byType(RawImage), matching: find.byType(ClipRect))
+      .first,
+);
+
+Future<void> chooseZoom(WidgetTester tester, String label) async {
+  await tester.tap(find.byTooltip('桌面選項'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('畫面大小'));
+  await tester.pumpAndSettle();
+  await tester.ensureVisible(find.text(label));
+  await tester.tap(find.text(label));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   if (preview) _PreviewBinding();
   setUp(
@@ -192,32 +208,34 @@ void main() {
   );
 
   testWidgets(
-    'pinch zoom anchors at the fingers without sending desktop input',
+    'pinch centers the remote cursor and touch motion immediately follows it',
     (tester) async {
       final controller = await mountDesktop(tester);
       controller.inputs.clear();
       final before = tester.getRect(find.byType(RawImage));
-      final focal = before.center + const Offset(20, 0);
-      final imagePoint = Offset((focal.dx - before.left) / before.width, .5);
+      final viewport = desktopViewport(tester);
+      final focal = before.center + const Offset(45, 30);
       await pinch(tester, focal, 100, 200);
       final after = tester.getRect(find.byType(RawImage));
       expect(after.width, closeTo(before.width * 2, .01));
-      expect(after.left + imagePoint.dx * after.width, closeTo(focal.dx, .01));
-      expect(after.center.dy, closeTo(focal.dy, .01));
+      expect(after.center.dx, closeTo(viewport.center.dx, .01));
+      expect(after.center.dy, closeTo(viewport.center.dy, .01));
       expect(controller.inputs, isEmpty);
 
-      // The first touchpad move after zoom must not recenter the view abruptly.
+      // The camera tracks the cursor immediately, even far from viewport edges.
       final touch = await tester.startGesture(const Offset(80, 700));
       await touch.moveBy(const Offset(10, 0));
       await tester.pump(const Duration(milliseconds: 17));
-      expect(
-        tester.getRect(find.byType(RawImage)).left,
-        closeTo(after.left, .01),
-      );
+      final movedImage = tester.getRect(find.byType(RawImage));
+      expect(movedImage.left, closeTo(after.left - 10, .01));
       final move = controller.inputs.lastWhere(
         (input) => input['kind'] == 'pointer',
       );
       expect(move['x'], closeTo(.5 + 10 / after.width, .001));
+      expect(
+        movedImage.left + (move['x'] as double) * movedImage.width,
+        closeTo(viewport.center.dx, .01),
+      );
       await touch.up();
 
       controller.inputs.clear();
@@ -231,7 +249,7 @@ void main() {
   );
 
   testWidgets(
-    'pinch limits, sequential lift, and the fit command stay consistent',
+    'pinch reaches eight times fit cumulatively and respects both zoom limits',
     (tester) async {
       final controller = await mountDesktop(tester);
       controller.inputs.clear();
@@ -239,8 +257,20 @@ void main() {
       await pinch(tester, before.center, 30, 300);
       expect(
         tester.getSize(find.byType(RawImage)).width,
-        closeTo(before.width * 4, .01),
+        closeTo(before.width * 8, .01),
       );
+      await pinch(tester, before.center, 300, 20);
+      expect(
+        tester.getSize(find.byType(RawImage)).width,
+        closeTo(before.width, .01),
+      );
+      for (final zoom in [2, 4, 8, 8]) {
+        await pinch(tester, before.center, 100, 200);
+        expect(
+          tester.getSize(find.byType(RawImage)).width,
+          closeTo(before.width * zoom, .01),
+        );
+      }
       await pinch(tester, before.center, 300, 20);
       expect(
         tester.getSize(find.byType(RawImage)).width,
@@ -268,13 +298,127 @@ void main() {
       );
       expect(controller.inputs, isEmpty);
 
-      await tester.tap(find.byTooltip('桌面選項'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('畫面大小'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('符合視窗'));
-      await tester.pumpAndSettle();
+      await chooseZoom(tester, '符合視窗');
       expect(tester.getRect(find.byType(RawImage)), before);
+    },
+  );
+
+  testWidgets('zoom menu offers four and eight times fit and resets to fit', (
+    tester,
+  ) async {
+    await mountDesktop(tester);
+    final before = tester.getRect(find.byType(RawImage));
+    final viewport = desktopViewport(tester);
+    await chooseZoom(tester, '400%');
+    var image = tester.getRect(find.byType(RawImage));
+    expect(image.width, closeTo(before.width * 4, .01));
+    expect(image.center, viewport.center);
+    await chooseZoom(tester, '800%');
+    image = tester.getRect(find.byType(RawImage));
+    expect(image.width, closeTo(before.width * 8, .01));
+    expect(image.center, viewport.center);
+    await chooseZoom(tester, '符合視窗');
+    expect(tester.getRect(find.byType(RawImage)), before);
+  });
+
+  testWidgets(
+    'remote cursor stays centered until camera reaches desktop edges',
+    (tester) async {
+      final controller = await mountDesktop(tester);
+      await chooseZoom(tester, '800%');
+      await tester.pump(const Duration(seconds: 1));
+      final viewport = desktopViewport(tester);
+      controller.inputs.clear();
+      for (final cursor in [const Offset(.35, .6), const Offset(.6, .4)]) {
+        controller.cursorX = cursor.dx;
+        controller.cursorY = cursor.dy;
+        controller.cursorRevision++;
+        controller.notifyListeners();
+        await tester.pump();
+        final image = tester.getRect(find.byType(RawImage));
+        final projectedCursor =
+            image.topLeft +
+            Offset(cursor.dx * image.width, cursor.dy * image.height);
+        expect(projectedCursor.dx, closeTo(viewport.center.dx, .01));
+        expect(projectedCursor.dy, closeTo(viewport.center.dy, .01));
+      }
+      for (final cursor in [
+        const Offset(.001, .001),
+        const Offset(.999, .999),
+      ]) {
+        controller.cursorX = cursor.dx;
+        controller.cursorY = cursor.dy;
+        controller.cursorRevision++;
+        controller.notifyListeners();
+        await tester.pump();
+        final image = tester.getRect(find.byType(RawImage));
+        if (cursor.dx < .5) {
+          expect(image.left, closeTo(viewport.left, .01));
+          expect(image.top, closeTo(viewport.top, .01));
+        } else {
+          expect(image.right, closeTo(viewport.right, .01));
+          expect(image.bottom, closeTo(viewport.bottom, .01));
+        }
+        expect(image.left, lessThanOrEqualTo(viewport.left));
+        expect(image.top, lessThanOrEqualTo(viewport.top));
+        expect(image.right, greaterThanOrEqualTo(viewport.right));
+        expect(image.bottom, greaterThanOrEqualTo(viewport.bottom));
+      }
+      expect(controller.inputs, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'zoomed mouse moves relatively and stationary events cannot move the camera',
+    (tester) async {
+      final controller = await mountDesktop(tester);
+      await chooseZoom(tester, '800%');
+      final viewport = desktopViewport(tester);
+      final imageSize = tester.getSize(find.byType(RawImage));
+      controller.inputs.clear();
+      final mouse = TestPointer(90, ui.PointerDeviceKind.mouse);
+      final entered = viewport.center + const Offset(90, 100);
+      await tester.sendEventToBinding(mouse.addPointer(location: entered));
+      await tester.sendEventToBinding(mouse.hover(entered));
+      await tester.pump(const Duration(milliseconds: 17));
+      expect(controller.inputs.last['x'], .5);
+      expect(controller.inputs.last['y'], .5);
+
+      final moved = entered + const Offset(10, 0);
+      await tester.sendEventToBinding(mouse.hover(moved));
+      await tester.pump(const Duration(milliseconds: 17));
+      final expectedX = .5 + 10 / imageSize.width;
+      expect(controller.inputs.last['x'], closeTo(expectedX, .000001));
+      final followed = tester.getRect(find.byType(RawImage));
+      expect(
+        followed.left + expectedX * followed.width,
+        closeTo(viewport.center.dx, .01),
+      );
+      controller.inputs.clear();
+
+      for (var i = 0; i < 3; i++) {
+        await tester.sendEventToBinding(mouse.hover(moved));
+        await tester.pump(const Duration(milliseconds: 17));
+      }
+      await tester.sendEventToBinding(mouse.down(moved));
+      await tester.pump();
+      await tester.sendEventToBinding(mouse.up());
+      await tester.sendEventToBinding(mouse.scroll(const Offset(0, 10)));
+      await tester.pump(const Duration(milliseconds: 17));
+      expect(
+        controller.inputs.where((input) => input['kind'] == 'button'),
+        hasLength(2),
+      );
+      expect(
+        controller.inputs.where((input) => input['kind'] == 'wheel'),
+        hasLength(1),
+      );
+      for (final input in controller.inputs) {
+        expect(input['x'], closeTo(expectedX, .000001));
+        expect(input['y'], .5);
+      }
+      expect(tester.getRect(find.byType(RawImage)), followed);
+      await tester.sendEventToBinding(mouse.removePointer());
     },
   );
 
