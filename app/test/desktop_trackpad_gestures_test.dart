@@ -6,14 +6,23 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   late List<Map<String, dynamic>> inputs;
   late List<Offset> cursors;
+  late List<Offset> pinchStarts;
+  late List<(double, Offset)> pinchUpdates;
+  late int pinchEnds;
   late DesktopTrackpadGestures gestures;
 
   setUp(() {
     inputs = [];
     cursors = [];
+    pinchStarts = [];
+    pinchUpdates = [];
+    pinchEnds = 0;
     gestures = DesktopTrackpadGestures(
       send: inputs.add,
       onCursorChanged: cursors.add,
+      onPinchStart: pinchStarts.add,
+      onPinchUpdate: (scale, focal) => pinchUpdates.add((scale, focal)),
+      onPinchEnd: () => pinchEnds++,
     )..setViewport(const Size(400, 800));
   });
 
@@ -203,6 +212,187 @@ void main() {
     expect(inputs.map((input) => input['delta']), [24, 24]);
     gestures.dispose();
   });
+
+  testWidgets(
+    'pinch out preserves original scale and focal without remote input',
+    (tester) async {
+      gestures.pointerDown(1, const Offset(100, 100));
+      gestures.pointerDown(2, const Offset(200, 100));
+      gestures.pointerMove(1, const Offset(80, 100));
+      gestures.pointerMove(2, const Offset(220, 100));
+      expect(pinchStarts, isEmpty);
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(pinchStarts, [const Offset(150, 100)]);
+      expect(pinchUpdates, [(1.4, const Offset(150, 100))]);
+      expect(inputs, isEmpty);
+      expect(cursors, isEmpty);
+      // After recognition, parallel translation remains part of this pinch.
+      gestures.pointerMove(1, const Offset(100, 130));
+      gestures.pointerMove(2, const Offset(240, 130));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(pinchStarts, hasLength(1));
+      expect(pinchUpdates.last, (1.4, const Offset(170, 130)));
+      expect(inputs, isEmpty);
+      gestures.pointerUp(1);
+      expect(pinchEnds, 1);
+      gestures.pointerMove(2, const Offset(300, 200));
+      gestures.pointerUp(2);
+      await tester.pump(const Duration(seconds: 1));
+      expect(pinchEnds, 1);
+      expect(inputs, isEmpty);
+      expect(cursors, isEmpty);
+      gestures.dispose();
+    },
+  );
+
+  testWidgets('pinch in reports a finite scale below one', (tester) async {
+    gestures.pointerDown(1, const Offset(100, 100));
+    gestures.pointerDown(2, const Offset(300, 100));
+    gestures.pointerMove(1, const Offset(140, 100));
+    gestures.pointerMove(2, const Offset(260, 100));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(pinchUpdates, [(.6, const Offset(200, 100))]);
+    expect(inputs, isEmpty);
+    gestures.pointerUp(2);
+    gestures.pointerUp(1);
+    expect(pinchEnds, 1);
+    gestures.dispose();
+  });
+
+  testWidgets('widely spaced contacts require proportional pinch movement', (
+    tester,
+  ) async {
+    gestures.pointerDown(1, const Offset(100, 100));
+    gestures.pointerDown(2, const Offset(500, 100));
+    gestures.pointerMove(1, const Offset(90, 100));
+    gestures.pointerMove(2, const Offset(510, 100));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(pinchStarts, isEmpty);
+    expect(inputs, isEmpty);
+    gestures.pointerMove(1, const Offset(80, 100));
+    gestures.pointerMove(2, const Offset(520, 100));
+    await tester.pump(const Duration(milliseconds: 16));
+    // The full 40 px separation change is retained while waiting for 8% slop.
+    expect(pinchUpdates, [(1.1, const Offset(300, 100))]);
+    expect(inputs, isEmpty);
+    gestures.dispose();
+  });
+
+  testWidgets('staggered symmetric pointer events are classified together', (
+    tester,
+  ) async {
+    gestures.pointerDown(1, const Offset(100, 100));
+    gestures.pointerDown(2, const Offset(200, 100));
+    gestures.pointerMove(1, const Offset(80, 100));
+    await tester.pump(const Duration(milliseconds: 8));
+    expect(inputs, isEmpty);
+    expect(pinchStarts, isEmpty);
+    gestures.pointerMove(2, const Offset(220, 100));
+    await tester.pump(const Duration(milliseconds: 8));
+    expect(pinchUpdates, [(1.4, const Offset(150, 100))]);
+    expect(inputs, isEmpty);
+    gestures.dispose();
+  });
+
+  testWidgets(
+    'parallel scrolling never zooms after sequential event delivery',
+    (tester) async {
+      gestures.pointerDown(1, const Offset(100, 100));
+      gestures.pointerDown(2, const Offset(140, 100));
+      // This first event alone changes separation by 50%. Its companion event
+      // restores the original span before the coalesced recognition frame.
+      gestures.pointerMove(1, const Offset(120, 100));
+      await tester.pump(const Duration(milliseconds: 8));
+      gestures.pointerMove(2, const Offset(160, 100));
+      await tester.pump(const Duration(milliseconds: 8));
+      expect(inputs.single['deltaX'], -60);
+      expect(pinchStarts, isEmpty);
+      // A later grip change must not convert an established scroll into zoom.
+      gestures.pointerMove(1, const Offset(100, 100));
+      gestures.pointerMove(2, const Offset(180, 100));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(pinchStarts, isEmpty);
+      expect(pinchUpdates, isEmpty);
+      gestures.pointerUp(1);
+      gestures.pointerUp(2);
+      expect(pinchEnds, 0);
+      expect(inputs, hasLength(1));
+      gestures.dispose();
+    },
+  );
+
+  testWidgets('quick pinch flushes before the first finger lifts', (
+    tester,
+  ) async {
+    gestures.pointerDown(1, const Offset(100, 100));
+    gestures.pointerDown(2, const Offset(200, 100));
+    gestures.pointerMove(1, const Offset(80, 100));
+    gestures.pointerMove(2, const Offset(220, 100));
+    gestures.pointerUp(2);
+    expect(pinchUpdates, [(1.4, const Offset(150, 100))]);
+    expect(pinchEnds, 1);
+    gestures.pointerUp(1);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(inputs, isEmpty);
+    expect(pinchUpdates, hasLength(1));
+    expect(pinchEnds, 1);
+    gestures.dispose();
+  });
+
+  testWidgets('coincident contacts establish a safe baseline before zooming', (
+    tester,
+  ) async {
+    gestures.pointerDown(1, const Offset(100, 100));
+    gestures.pointerDown(2, const Offset(100, 100));
+    gestures.pointerMove(1, const Offset(80, 100));
+    gestures.pointerMove(2, const Offset(120, 100));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(pinchUpdates, isEmpty);
+    gestures.pointerMove(1, const Offset(60, 100));
+    gestures.pointerMove(2, const Offset(140, 100));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(pinchStarts, [const Offset(100, 100)]);
+    expect(pinchUpdates, [(2.0, const Offset(100, 100))]);
+    expect(inputs, isEmpty);
+    gestures.dispose();
+  });
+
+  for (final cancellation in ['pointer', 'focus', 'third finger', 'dispose']) {
+    testWidgets('$cancellation ends pinch once and suppresses pending input', (
+      tester,
+    ) async {
+      gestures.pointerDown(1, const Offset(100, 100));
+      gestures.pointerDown(2, const Offset(200, 100));
+      gestures.pointerMove(1, const Offset(80, 100));
+      gestures.pointerMove(2, const Offset(220, 100));
+      await tester.pump(const Duration(milliseconds: 16));
+      expect(pinchUpdates, hasLength(1));
+      gestures.pointerMove(1, const Offset(60, 100));
+      gestures.pointerMove(2, const Offset(240, 100));
+      switch (cancellation) {
+        case 'pointer':
+          gestures.pointerCancel(1);
+        case 'focus':
+          gestures.cancel();
+        case 'third finger':
+          gestures.pointerDown(3, const Offset(150, 160));
+        case 'dispose':
+          gestures.dispose();
+      }
+      expect(pinchEnds, 1);
+      gestures.pointerMove(2, const Offset(300, 200));
+      gestures.pointerUp(1);
+      gestures.pointerUp(2);
+      gestures.pointerUp(3);
+      await tester.pump(const Duration(seconds: 1));
+      expect(pinchUpdates, hasLength(1));
+      expect(pinchEnds, 1);
+      expect(inputs.every((input) => input['kind'] == 'release'), isTrue);
+      expect(cursors, isEmpty);
+      gestures.dispose();
+      expect(pinchEnds, 1);
+    });
+  }
 
   testWidgets('long press holds left down through drag until release', (
     tester,

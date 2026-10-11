@@ -1,15 +1,28 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui';
 
 enum _Gesture { idle, single, pair, pairEnding, suppressed }
 
+enum _PairAction { pending, scroll, pinch }
+
 /// Touchpad input from global logical pixels, independent of pointer-event
 /// transforms. Cursor prediction stays local until remote echoes settle.
 class DesktopTrackpadGestures {
-  DesktopTrackpadGestures({required this.send, required this.onCursorChanged});
+  DesktopTrackpadGestures({
+    required this.send,
+    required this.onCursorChanged,
+    this.onPinchStart,
+    this.onPinchUpdate,
+    this.onPinchEnd,
+  });
 
   final void Function(Map<String, dynamic>) send;
   final void Function(Offset) onCursorChanged;
+  final void Function(Offset initialGlobalFocal)? onPinchStart;
+  final void Function(double scaleFromInitialSpan, Offset currentGlobalFocal)?
+  onPinchUpdate;
+  final void Function()? onPinchEnd;
 
   static const _slop = 8.0;
   static const _holdDelay = Duration(milliseconds: 450);
@@ -21,11 +34,13 @@ class DesktopTrackpadGestures {
   Offset _cursor = const Offset(.5, .5);
   Offset? _pendingPointer;
   Offset _pendingWheel = Offset.zero;
-  Offset _pairTravel = Offset.zero;
+  Offset _pairInitialFocal = Offset.zero, _pairLastFocal = Offset.zero;
+  double _pairInitialSpan = 0;
+  bool _pairDirty = false, _pinchActive = false;
   _Gesture _gesture = _Gesture.idle;
+  _PairAction _pairAction = _PairAction.pending;
   Timer? _hold, _frame, _remoteGrace;
   bool _tapEligible = false;
-  bool _scrolling = false;
   bool _leftHeld = false;
   bool _disposed = false;
 
@@ -96,8 +111,10 @@ class DesktopTrackpadGestures {
     _flush();
     _gesture = _Gesture.pair;
     _tapEligible = true;
-    _scrolling = false;
-    _pairTravel = Offset.zero;
+    _pairAction = _PairAction.pending;
+    _pairDirty = false;
+    _pairInitialFocal = _pairLastFocal = _focal;
+    _pairInitialSpan = _span;
     // Start the two-finger slop at the moment the second contact joins.
     _origins.addAll(_points);
     _hold = Timer(_holdDelay, () {
@@ -129,22 +146,15 @@ class DesktopTrackpadGestures {
       _pendingPointer = _cursor;
       _queueFrame();
     } else if (_gesture == _Gesture.pair) {
-      // Each finger contributes half the centroid displacement. Event delivery
-      // order therefore does not double scroll speed or change its direction.
-      _pairTravel += (global - previous) / 2;
-      if (!_scrolling && (global - _origins[id]!).distance > _slop) {
-        _scrolling = true;
+      if ((global - _origins[id]!).distance > _slop) {
         _tapEligible = false;
         _hold?.cancel();
         _hold = null;
       }
-      if (_scrolling) {
-        // Natural scrolling: dragging content down scrolls up; dragging it
-        // right scrolls left. Windows vertical and horizontal signs differ.
-        _pendingWheel += Offset(-_pairTravel.dx * 3, _pairTravel.dy * 3);
-        _pairTravel = Offset.zero;
-        _queueFrame();
-      }
+      // Decide from the complete pair at the next frame, not the intermediate
+      // separation after just the first of two sequential pointer events.
+      _pairDirty = true;
+      _queueFrame();
     } else if (_gesture == _Gesture.pairEnding &&
         (global - _origins[id]!).distance > _slop) {
       // A remaining finger can finish lifting, but cannot begin a new gesture
@@ -155,6 +165,10 @@ class DesktopTrackpadGestures {
 
   void pointerUp(int id) {
     if (_disposed || !_points.containsKey(id)) return;
+    if (_gesture == _Gesture.pair) {
+      _flush();
+      _endPinch();
+    }
     _points.remove(id);
     _origins.remove(id);
     _deferRemoteCursor();
@@ -225,9 +239,65 @@ class DesktopTrackpadGestures {
 
   void _queueFrame() => _frame ??= Timer(_frameDelay, _flush);
 
+  Offset get _focal => (_points.values.first + _points.values.last) / 2;
+  double get _span => (_points.values.first - _points.values.last).distance;
+
+  void _processPair() {
+    if (!_pairDirty || _gesture != _Gesture.pair || _points.length != 2) return;
+    _pairDirty = false;
+    final focal = _focal, span = _span;
+    if (!_finite(focal) || !span.isFinite) return;
+    if (_pairAction == _PairAction.pending &&
+        _pairInitialSpan < _slop &&
+        span >= _slop) {
+      // Coincident contacts have no meaningful scale. Establish a usable span
+      // first, then measure subsequent pinch movement from that baseline.
+      _pairInitialSpan = span;
+      _pairInitialFocal = _pairLastFocal = focal;
+      return;
+    }
+    if (_pairAction == _PairAction.pending) {
+      final spanChange = (span - _pairInitialSpan).abs();
+      final translation = (focal - _pairInitialFocal).distance;
+      final pinchSlop = math.max(12.0, _pairInitialSpan * .08);
+      if (_pairInitialSpan >= _slop &&
+          spanChange >= pinchSlop &&
+          spanChange > translation * 1.25) {
+        _pairAction = _PairAction.pinch;
+        _pinchActive = true;
+        _pendingWheel = Offset.zero;
+        onPinchStart?.call(_pairInitialFocal);
+      } else if (translation > _slop && translation > spanChange * .8) {
+        _pairAction = _PairAction.scroll;
+      }
+      if (_pairAction != _PairAction.pending) {
+        _tapEligible = false;
+        _hold?.cancel();
+        _hold = null;
+      }
+    }
+    // Recognition is locked until the pair ends: changing grip mid-scroll
+    // cannot accidentally zoom, and translating a pinch cannot scroll remotely.
+    if (_pairAction == _PairAction.scroll) {
+      final delta = focal - _pairLastFocal;
+      _pendingWheel += Offset(-delta.dx * 3, delta.dy * 3);
+      _pairLastFocal = focal;
+    } else if (_pairAction == _PairAction.pinch) {
+      final scale = span / _pairInitialSpan;
+      if (scale.isFinite) onPinchUpdate?.call(scale, focal);
+    }
+  }
+
+  void _endPinch() {
+    if (!_pinchActive) return;
+    _pinchActive = false;
+    onPinchEnd?.call();
+  }
+
   void _flush() {
     _frame?.cancel();
     _frame = null;
+    _processPair();
     final pointer = _pendingPointer;
     _pendingPointer = null;
     if (pointer != null) {
@@ -273,6 +343,8 @@ class DesktopTrackpadGestures {
     _frame = null;
     _pendingPointer = null;
     _pendingWheel = Offset.zero;
+    _pairDirty = false;
+    _endPinch();
     if (_leftHeld) {
       _leftHeld = false;
       _button('left', false);
@@ -286,8 +358,8 @@ class DesktopTrackpadGestures {
   void _resetGesture() {
     _gesture = _Gesture.idle;
     _tapEligible = false;
-    _scrolling = false;
-    _pairTravel = Offset.zero;
+    _pairAction = _PairAction.pending;
+    _pairDirty = false;
     _pendingWheel = Offset.zero;
   }
 }

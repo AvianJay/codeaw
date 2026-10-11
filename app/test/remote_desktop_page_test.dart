@@ -125,6 +125,28 @@ Future<void> capture(WidgetTester tester, String name) async {
   });
 }
 
+Future<void> pinch(
+  WidgetTester tester,
+  Offset focal,
+  double from,
+  double to,
+) async {
+  final left = await tester.startGesture(
+    focal - Offset(from / 2, 0),
+    pointer: 10,
+  );
+  final right = await tester.startGesture(
+    focal + Offset(from / 2, 0),
+    pointer: 11,
+  );
+  await left.moveTo(focal - Offset(to / 2, 0));
+  await right.moveTo(focal + Offset(to / 2, 0));
+  await tester.pump(const Duration(milliseconds: 17));
+  await left.up();
+  await right.up();
+  await tester.pump();
+}
+
 void main() {
   if (preview) _PreviewBinding();
   setUp(
@@ -141,6 +163,7 @@ void main() {
       expect(find.text('把手機當作觸控板'), findsOneWidget);
       expect(find.text('兩指點一下'), findsOneWidget);
       expect(find.text('兩指上下左右滑'), findsOneWidget);
+      expect(find.text('兩指捏合'), findsOneWidget);
       await capture(tester, 'gesture-guide');
       await tester.ensureVisible(find.text('開始操控'));
       await tester.tap(find.text('開始操控'));
@@ -165,6 +188,93 @@ void main() {
         ),
         isTrue,
       );
+    },
+  );
+
+  testWidgets(
+    'pinch zoom anchors at the fingers without sending desktop input',
+    (tester) async {
+      final controller = await mountDesktop(tester);
+      controller.inputs.clear();
+      final before = tester.getRect(find.byType(RawImage));
+      final focal = before.center + const Offset(20, 0);
+      final imagePoint = Offset((focal.dx - before.left) / before.width, .5);
+      await pinch(tester, focal, 100, 200);
+      final after = tester.getRect(find.byType(RawImage));
+      expect(after.width, closeTo(before.width * 2, .01));
+      expect(after.left + imagePoint.dx * after.width, closeTo(focal.dx, .01));
+      expect(after.center.dy, closeTo(focal.dy, .01));
+      expect(controller.inputs, isEmpty);
+
+      // The first touchpad move after zoom must not recenter the view abruptly.
+      final touch = await tester.startGesture(const Offset(80, 700));
+      await touch.moveBy(const Offset(10, 0));
+      await tester.pump(const Duration(milliseconds: 17));
+      expect(
+        tester.getRect(find.byType(RawImage)).left,
+        closeTo(after.left, .01),
+      );
+      final move = controller.inputs.lastWhere(
+        (input) => input['kind'] == 'pointer',
+      );
+      expect(move['x'], closeTo(.5 + 10 / after.width, .001));
+      await touch.up();
+
+      controller.inputs.clear();
+      await pinch(tester, focal, 200, 100);
+      expect(
+        tester.getSize(find.byType(RawImage)).width,
+        closeTo(before.width, .01),
+      );
+      expect(controller.inputs, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'pinch limits, sequential lift, and the fit command stay consistent',
+    (tester) async {
+      final controller = await mountDesktop(tester);
+      controller.inputs.clear();
+      final before = tester.getRect(find.byType(RawImage));
+      await pinch(tester, before.center, 30, 300);
+      expect(
+        tester.getSize(find.byType(RawImage)).width,
+        closeTo(before.width * 4, .01),
+      );
+      await pinch(tester, before.center, 300, 20);
+      expect(
+        tester.getSize(find.byType(RawImage)).width,
+        closeTo(before.width, .01),
+      );
+
+      final left = await tester.startGesture(
+        before.center - const Offset(50, 0),
+        pointer: 10,
+      );
+      final right = await tester.startGesture(
+        before.center + const Offset(50, 0),
+        pointer: 11,
+      );
+      await left.moveBy(const Offset(-50, 0));
+      await right.moveBy(const Offset(50, 0));
+      await tester.pump(const Duration(milliseconds: 17));
+      await left.up();
+      await right.moveBy(const Offset(30, 30));
+      await right.up();
+      await tester.pump();
+      expect(
+        tester.getSize(find.byType(RawImage)).width,
+        closeTo(before.width * 2, .01),
+      );
+      expect(controller.inputs, isEmpty);
+
+      await tester.tap(find.byTooltip('桌面選項'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('畫面大小'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('符合視窗'));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(RawImage)), before);
     },
   );
 

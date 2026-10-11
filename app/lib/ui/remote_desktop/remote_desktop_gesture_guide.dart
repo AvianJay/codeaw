@@ -78,6 +78,11 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
                       description: '垂直或水平捲動',
                     ),
                     _GestureRow(
+                      icon: Icons.zoom_in_rounded,
+                      title: '兩指捏合',
+                      description: '張開放大螢幕，合攏縮小',
+                    ),
+                    _GestureRow(
                       icon: Icons.pan_tool_alt_outlined,
                       title: '長按',
                       description: '持續按住左鍵，放開才鬆開',

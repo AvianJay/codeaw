@@ -522,6 +522,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                               controller: c,
                               focus: _focus,
                               zoom: _zoom,
+                              onZoomChanged: (zoom) =>
+                                  setState(() => _zoom = zoom),
                             )
                           else
                             Center(
@@ -609,10 +611,12 @@ class _DesktopCanvas extends StatefulWidget {
     required this.controller,
     required this.focus,
     required this.zoom,
+    required this.onZoomChanged,
   });
   final RemoteDesktopController controller;
   final FocusNode focus;
   final double zoom;
+  final ValueChanged<double> onZoomChanged;
   @override
   State<_DesktopCanvas> createState() => _DesktopCanvasState();
 }
@@ -623,6 +627,11 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   Rect _imageRect = Rect.zero;
   Offset _cursor = const Offset(.5, .5);
   Offset _panAnchor = const Offset(.5, .5);
+  Size _viewport = Size.zero, _fitted = Size.zero;
+  late double _viewZoom;
+  double _pinchStartZoom = 1;
+  Offset _pinchImagePoint = const Offset(.5, .5);
+  bool _pinching = false;
   int _cursorRevision = -1;
   bool _mouseActive = false;
   final _mouseButtons = <String>{};
@@ -635,13 +644,17 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   @override
   void initState() {
     super.initState();
+    _viewZoom = widget.zoom;
     _gestures = DesktopTrackpadGestures(
       send: (input) => c.input(input),
       onCursorChanged: (cursor) {
         _cursor = cursor;
-        if (!_mouseActive) _panAnchor = cursor;
+        if (!_mouseActive && !_pinching) _revealCursor();
         if (mounted && !_syncing) setState(() {});
       },
+      onPinchStart: _startPinch,
+      onPinchUpdate: _updatePinch,
+      onPinchEnd: () => _pinching = false,
     );
     _syncRemoteCursor();
   }
@@ -659,7 +672,13 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
   void didUpdateWidget(covariant _DesktopCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!c.canInput) cancelInput();
-    if (oldWidget.zoom != widget.zoom) _panAnchor = _cursor;
+    // Pinch updates already changed the camera synchronously. Only a menu
+    // selection should recenter it when the parent echoes a new zoom value.
+    if (widget.zoom != _viewZoom) {
+      cancelInput();
+      _viewZoom = widget.zoom.clamp(1, 4);
+      _panAnchor = _cursor;
+    }
     _syncRemoteCursor();
   }
 
@@ -669,6 +688,63 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
     return Offset(
       ((local.dx - _imageRect.left) / _imageRect.width).clamp(0, 1),
       ((local.dy - _imageRect.top) / _imageRect.height).clamp(0, 1),
+    );
+  }
+
+  Offset _localPoint(Offset global) =>
+      (_surface.currentContext?.findRenderObject() as RenderBox?)
+          ?.globalToLocal(global) ??
+      Offset.zero;
+
+  double _anchorForOrigin(double origin, double image, double viewport) =>
+      image > viewport
+      ? origin.clamp(viewport - image, 0) / (viewport - image)
+      : .5;
+
+  void _startPinch(Offset focal) {
+    if (_imageRect.isEmpty) return;
+    _pinching = true;
+    _pinchStartZoom = _viewZoom;
+    _pinchImagePoint = _point(focal);
+  }
+
+  void _updatePinch(double scale, Offset focal) {
+    if (!_pinching || !scale.isFinite || scale <= 0 || _fitted.isEmpty) return;
+    final zoom = (_pinchStartZoom * scale).clamp(1.0, 4.0);
+    final size = _fitted * zoom;
+    final local = _localPoint(focal);
+    setState(() {
+      _viewZoom = zoom;
+      _panAnchor = Offset(
+        _anchorForOrigin(
+          local.dx - _pinchImagePoint.dx * size.width,
+          size.width,
+          _viewport.width,
+        ),
+        _anchorForOrigin(
+          local.dy - _pinchImagePoint.dy * size.height,
+          size.height,
+          _viewport.height,
+        ),
+      );
+    });
+    if (widget.zoom != zoom) widget.onZoomChanged(zoom);
+  }
+
+  void _revealCursor() {
+    if (_imageRect.isEmpty) return;
+    double reveal(double cursor, double origin, double image, double viewport) {
+      if (image <= viewport) return .5;
+      final margin = (viewport / 4).clamp(0.0, 24.0);
+      final screen = origin + cursor * image;
+      if (screen < margin) origin += margin - screen;
+      if (screen > viewport - margin) origin -= screen - (viewport - margin);
+      return _anchorForOrigin(origin, image, viewport);
+    }
+
+    _panAnchor = Offset(
+      reveal(_cursor.dx, _imageRect.left, _imageRect.width, _viewport.width),
+      reveal(_cursor.dy, _imageRect.top, _imageRect.height, _viewport.height),
     );
   }
 
@@ -786,13 +862,16 @@ class _DesktopCanvasState extends State<_DesktopCanvas> {
         Size(c.width, c.height),
         viewport,
       ).destination;
-      final size = fitted * widget.zoom;
-      _gestures.setViewport(
-        Size(
-          size.width.clamp(0, viewport.width),
-          size.height.clamp(0, viewport.height),
-        ),
-      );
+      if ((_viewport != viewport || _fitted != fitted) &&
+          _gestures.hasContacts) {
+        cancelInput();
+      }
+      _viewport = viewport;
+      _fitted = fitted;
+      final size = fitted * _viewZoom;
+      // Inside the viewport, one logical pixel of finger motion moves the
+      // cursor one displayed pixel. The camera follows only at the edges.
+      _gestures.setViewport(size);
       double origin(double viewport, double image, double cursor) =>
           image <= viewport
           ? (viewport - image) / 2
