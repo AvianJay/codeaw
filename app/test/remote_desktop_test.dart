@@ -89,6 +89,7 @@ Uint8List packet({
 class FakeDesktop extends RemoteDesktopController {
   FakeDesktop() : super(host, MemoryStore(), dataSaver: () => false);
   final inputs = <Map<String, dynamic>>[];
+  final preferenceChanges = <Map<String, dynamic>>[];
   @override
   bool get canInput => active;
   @override
@@ -109,6 +110,17 @@ class FakeDesktop extends RemoteDesktopController {
   @override
   void input(Map<String, dynamic> value) {
     inputs.add(value);
+  }
+
+  @override
+  Future<void> setStreamPreferences({
+    required DesktopMode? mode,
+    required int? fps,
+  }) async {
+    preferenceChanges.add({'mode': mode, 'fps': fps});
+    await super.setStreamPreferences(mode: mode, fps: fps);
+    actualMode = this.mode;
+    notifyListeners();
   }
 
   @override

@@ -32,6 +32,8 @@ class RemoteDesktopController extends ChangeNotifier {
   final bool Function() dataSaver;
   DesktopMode mode = DesktopMode.balanced;
   DesktopMode actualMode = DesktopMode.balanced;
+  DesktopMode? preferredMode;
+  int? preferredFps;
   String privilege = 'user';
   int requestedFps = 30;
   int epoch = 0;
@@ -59,7 +61,10 @@ class RemoteDesktopController extends ChangeNotifier {
   StreamSubscription<dynamic>? _subscription;
   Timer? _retry, _statsTimer;
   int _generation = 0, _lastSeq = 0, _attempt = 0, _videoBytes = 0, _frames = 0;
-  bool _preferencesLoaded = false;
+  Future<void>? _preferencesLoad;
+  Future<void> _preferenceChanges = Future.value();
+  Map<String, dynamic>? _sessionOptions;
+  bool _socketAuthenticated = false;
   Future<void> _incoming = Future.value();
   final _candidates = <RTCIceCandidate>[];
   final http.Client _http;
@@ -68,6 +73,16 @@ class RemoteDesktopController extends ChangeNotifier {
     'Content-Type': 'application/json',
   };
   bool get canInput => active && !loading && _socket != null;
+  bool get modeAutomatic => preferredMode == null;
+  bool get fpsAutomatic => preferredFps == null;
+
+  /// Includes the server's smooth-stream fallback while a session is active.
+  int get targetFps => switch (active ? actualMode : mode) {
+    DesktopMode.smooth => requestedFps,
+    DesktopMode.balanced => 15,
+    DesktopMode.low => 2,
+    DesktopMode.onDemand => 1,
+  };
 
   Future<Map<String, dynamic>> _request(
     String method,
@@ -95,21 +110,33 @@ class RemoteDesktopController extends ChangeNotifier {
     return result;
   }
 
-  Future<void> _preferences() async {
-    if (_preferencesLoaded) return;
-    _preferencesLoaded = true;
+  Future<void> _preferences() => _preferencesLoad ??= _loadPreferences();
+
+  Future<void> _loadPreferences() async {
     final prefs = await store.loadDesktopPreferences(host);
     monitorId = prefs?['monitorId'] as String?;
+    preferredMode = DesktopMode.values
+        .where((mode) => mode.name == prefs?['preferredMode'])
+        .firstOrNull;
+    final fps = prefs?['preferredFps'];
+    preferredFps = fps is int && (fps == 30 || fps == 60) ? fps : null;
   }
 
-  void _selectAutomaticOptions() {
+  void _selectOptions() {
     privilege = systemAvailable ? 'system' : 'user';
-    mode = dataSaver()
-        ? DesktopMode.low
-        : smoothAvailable
-        ? DesktopMode.smooth
-        : DesktopMode.balanced;
-    requestedFps = mode == DesktopMode.smooth && hardware ? 60 : 30;
+    final selectedMode =
+        preferredMode ??
+        (dataSaver()
+            ? DesktopMode.low
+            : smoothAvailable
+            ? DesktopMode.smooth
+            : DesktopMode.balanced);
+    mode = selectedMode == DesktopMode.smooth && !smoothAvailable
+        ? DesktopMode.balanced
+        : selectedMode;
+    requestedFps = mode == DesktopMode.smooth && hardware
+        ? preferredFps ?? 60
+        : 30;
   }
 
   Map<String, dynamic> get options => {
@@ -130,7 +157,7 @@ class RemoteDesktopController extends ChangeNotifier {
     _notify();
     try {
       await _preferences();
-      _selectAutomaticOptions();
+      _selectOptions();
       Map<String, dynamic>? info;
       for (final url in [_url, ...host.urls].whereType<String>().toSet()) {
         _url = url;
@@ -152,7 +179,7 @@ class RemoteDesktopController extends ChangeNotifier {
       );
       hardware = info['hardware'] == true;
       smoothAvailable = info['smooth'] == true;
-      _selectAutomaticOptions();
+      _selectOptions();
       monitors = (info['monitors'] as List? ?? [])
           .whereType<Map<String, dynamic>>()
           .toList();
@@ -162,7 +189,12 @@ class RemoteDesktopController extends ChangeNotifier {
                 as String? ??
             monitors.firstOrNull?['id'] as String?;
       }
-      final session = await _request('POST', '/api/desktop/sessions', options);
+      final sessionOptions = options;
+      final session = await _request(
+        'POST',
+        '/api/desktop/sessions',
+        sessionOptions,
+      );
       if (generation != _generation || !visible || disposed) {
         unawaited(
           _request(
@@ -173,6 +205,8 @@ class RemoteDesktopController extends ChangeNotifier {
         return;
       }
       _sessionId = session['sessionId'] as String;
+      _sessionOptions = sessionOptions;
+      _socketAuthenticated = false;
       final base = HostConfig.httpBase(_url!);
       final socket = WebSocketChannel.connect(
         base.replace(
@@ -209,6 +243,10 @@ class RemoteDesktopController extends ChangeNotifier {
       socket.sink.add(
         jsonEncode({'type': 'auth', 'ticket': session['ticket']}),
       );
+      _socketAuthenticated = true;
+      _selectOptions();
+      await _applyOptions();
+      if (generation != _generation || disposed) return;
       _statsTimer?.cancel();
       _statsTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         fps = _frames.toDouble();
@@ -250,29 +288,93 @@ class RemoteDesktopController extends ChangeNotifier {
   void release() => input({'kind': 'release'});
   void refresh() => _send({'type': 'refresh'});
 
-  /// Updates the monitor and reevaluates automatic connection settings.
-  /// Legacy mode, fps and privilege arguments are accepted but no longer override
-  /// host capabilities or the app's data saver setting.
+  Future<void> _serializePreferenceChange(Future<void> Function() change) {
+    final pending = _preferenceChanges.then((_) async {
+      if (disposed) return;
+      await _preferences();
+      if (!disposed) await change();
+    });
+    _preferenceChanges = pending.catchError((Object _) {});
+    return pending;
+  }
+
+  Map<String, dynamic> _savedPreferences({
+    required String? monitorId,
+    required DesktopMode? mode,
+    required int? fps,
+  }) => {
+    'monitorId': ?monitorId,
+    'preferredMode': ?mode?.name,
+    'preferredFps': ?fps,
+  };
+
+  /// Persists explicit stream choices; null restores automatic selection.
+  /// Hidden or disconnected desktops apply these on their next connection.
+  Future<void> setStreamPreferences({
+    required DesktopMode? mode,
+    required int? fps,
+  }) {
+    if (fps != null && fps != 30 && fps != 60) {
+      return Future.error(ArgumentError.value(fps, 'fps', 'Expected 30 or 60'));
+    }
+    return _serializePreferenceChange(() async {
+      if (preferredMode == mode && preferredFps == fps) return;
+      await store.saveDesktopPreferences(
+        host,
+        _savedPreferences(monitorId: monitorId, mode: mode, fps: fps),
+      );
+      if (disposed) return;
+      preferredMode = mode;
+      preferredFps = fps;
+      _selectOptions();
+      await _applyOptions();
+    });
+  }
+
+  /// Updates the monitor and reevaluates the selected connection settings.
+  /// Legacy mode, fps and privilege arguments are accepted for compatibility;
+  /// explicit stream choices use [setStreamPreferences].
   Future<void> configure({
     DesktopMode? mode,
     String? monitorId,
     int? fps,
     String? privilege,
-  }) async {
-    final previousPrivilege = this.privilege;
-    this.monitorId = monitorId ?? this.monitorId;
-    _selectAutomaticOptions();
-    final changedPrivilege = previousPrivilege != this.privilege;
-    active = false;
-    notice = null;
-    await store.saveDesktopPreferences(host, {'monitorId': ?this.monitorId});
-    if (changedPrivilege || _socket == null) {
+  }) => _serializePreferenceChange(() async {
+    final selectedMonitor = monitorId ?? this.monitorId;
+    if (selectedMonitor != this.monitorId) {
+      await store.saveDesktopPreferences(
+        host,
+        _savedPreferences(
+          monitorId: selectedMonitor,
+          mode: preferredMode,
+          fps: preferredFps,
+        ),
+      );
+      if (disposed) return;
+      this.monitorId = selectedMonitor;
+    }
+    _selectOptions();
+    await _applyOptions();
+  });
+
+  Future<void> _applyOptions() async {
+    final selectedOptions = options;
+    if (_socket == null ||
+        !_socketAuthenticated ||
+        mapEquals(_sessionOptions, selectedOptions)) {
+      _notify();
+      return;
+    }
+    if (_sessionOptions?['privilege'] != privilege) {
       await disconnect();
       await connect();
-    } else {
-      release();
-      _send({'type': 'configure', 'options': options});
+      return;
     }
+    release();
+    active = false;
+    notice = null;
+    _sessionOptions = selectedOptions;
+    _send({'type': 'configure', 'options': selectedOptions});
     _notify();
   }
 
@@ -559,6 +661,8 @@ class RemoteDesktopController extends ChangeNotifier {
     state = 'disconnected';
     final socket = _socket;
     _socket = null;
+    _socketAuthenticated = false;
+    _sessionOptions = null;
     unawaited(_subscription?.cancel());
     _subscription = null;
     unawaited(socket?.sink.close());
@@ -591,6 +695,8 @@ class RemoteDesktopController extends ChangeNotifier {
     release();
     final socket = _socket, id = _sessionId;
     _socket = null;
+    _socketAuthenticated = false;
+    _sessionOptions = null;
     _sessionId = null;
     active = false;
     loading = false;

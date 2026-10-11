@@ -10,6 +10,8 @@ import 'package:http/testing.dart';
 
 class _MemoryStore extends HostStore {
   Map<String, dynamic>? preferences;
+  final writes = <Map<String, dynamic>>[];
+  Future<void> Function(Map<String, dynamic>)? beforeSave;
 
   @override
   Future<Map<String, dynamic>?> loadDesktopPreferences(HostConfig host) async =>
@@ -20,7 +22,9 @@ class _MemoryStore extends HostStore {
     HostConfig host,
     Map<String, dynamic> value,
   ) async {
+    await beforeSave?.call(value);
     preferences = Map.of(value);
+    writes.add(Map.of(value));
   }
 }
 
@@ -44,6 +48,8 @@ class _DesktopHarness {
     ],
   };
   bool dataSaver = false;
+  Completer<void>? sessionResponseGate;
+  Completer<void>? sessionRequested;
   late final RemoteDesktopController controller;
   int epoch = 0;
 
@@ -89,6 +95,8 @@ class _DesktopHarness {
           harness.requests.add(
             jsonDecode(request.body) as Map<String, dynamic>,
           );
+          harness.sessionRequested?.complete();
+          await harness.sessionResponseGate?.future;
           return http.Response(
             jsonEncode({
               'sessionId': 'session-${harness.requests.length}',
@@ -266,11 +274,255 @@ void main() {
 
       expect(harness.controller.active, isTrue);
       expect(harness.controller.mode, DesktopMode.smooth);
+      expect(harness.controller.targetFps, 15);
       expect(
         harness.messages.where((message) => message['type'] == 'configure'),
         isEmpty,
       );
       expect(harness.requests, hasLength(1));
+    },
+  );
+
+  test(
+    'manual choices apply in place and reload on the next connection',
+    () async {
+      await harness.connect();
+      final controller = harness.controller;
+
+      await controller.setStreamPreferences(mode: DesktopMode.smooth, fps: 30);
+      await harness.waitFor(
+        () => controller.active && controller.targetFps == 30,
+      );
+
+      expect(harness.requests, hasLength(1));
+      expect(harness.messages.skip(1).map((message) => message['type']), [
+        'input',
+        'configure',
+      ]);
+      expect((harness.messages[1]['input'] as Map)['kind'], 'release');
+      expect(harness.store.preferences, {
+        'monitorId': 'primary',
+        'preferredMode': 'smooth',
+        'preferredFps': 30,
+      });
+      expect(controller.modeAutomatic, isFalse);
+      expect(controller.fpsAutomatic, isFalse);
+
+      final reloaded = await _DesktopHarness.create();
+      reloaded.store.preferences = Map.of(harness.store.preferences!);
+      try {
+        await reloaded.connect();
+        expect(reloaded.requests.single['mode'], 'smooth');
+        expect(reloaded.requests.single['fps'], 30);
+        expect(reloaded.controller.preferredMode, DesktopMode.smooth);
+        expect(reloaded.controller.preferredFps, 30);
+      } finally {
+        await reloaded.close();
+      }
+    },
+  );
+
+  test(
+    'manual quality overrides data saver and null restores automatic choice',
+    () async {
+      harness.dataSaver = true;
+      await harness.controller.setStreamPreferences(
+        mode: DesktopMode.smooth,
+        fps: 60,
+      );
+      await harness.connect();
+      expect(harness.requests.single['mode'], 'smooth');
+      expect(harness.controller.targetFps, 60);
+
+      await harness.controller.setStreamPreferences(mode: null, fps: null);
+      await harness.waitFor(() => harness.controller.active);
+
+      expect(harness.controller.mode, DesktopMode.low);
+      expect(harness.controller.targetFps, 2);
+      expect(harness.controller.modeAutomatic, isTrue);
+      expect(harness.controller.fpsAutomatic, isTrue);
+      expect(harness.store.preferences, {'monitorId': 'primary'});
+      expect(harness.requests, hasLength(1));
+    },
+  );
+
+  test(
+    'manual smooth and 60 fps preferences survive capability limits',
+    () async {
+      harness.info['hardware'] = false;
+      await harness.controller.setStreamPreferences(
+        mode: DesktopMode.smooth,
+        fps: 60,
+      );
+      await harness.connect();
+      expect(harness.controller.targetFps, 30);
+      expect(harness.controller.preferredFps, 60);
+
+      await harness.controller.disconnect();
+      harness.info['smooth'] = false;
+      await harness.connect();
+      expect(harness.controller.mode, DesktopMode.balanced);
+      expect(harness.controller.targetFps, 15);
+      expect(harness.controller.preferredMode, DesktopMode.smooth);
+      expect(harness.controller.preferredFps, 60);
+
+      await harness.controller.disconnect();
+      harness.info['smooth'] = true;
+      harness.info['hardware'] = true;
+      await harness.connect();
+      expect(harness.controller.mode, DesktopMode.smooth);
+      expect(harness.controller.targetFps, 60);
+      expect(harness.requests.last['fps'], 60);
+    },
+  );
+
+  test(
+    'fixed-rate modes keep their limits and retain later smooth fps preference',
+    () async {
+      await harness.connect();
+      for (final entry in {
+        DesktopMode.balanced: 15,
+        DesktopMode.low: 2,
+        DesktopMode.onDemand: 1,
+      }.entries) {
+        await harness.controller.setStreamPreferences(mode: entry.key, fps: 60);
+        await harness.waitFor(() => harness.controller.active);
+        expect(harness.controller.targetFps, entry.value);
+        expect(harness.controller.requestedFps, 30);
+        expect(harness.controller.preferredFps, 60);
+      }
+      await harness.controller.setStreamPreferences(
+        mode: DesktopMode.smooth,
+        fps: 60,
+      );
+      await harness.waitFor(() => harness.controller.active);
+      expect(harness.controller.targetFps, 60);
+    },
+  );
+
+  test(
+    'unchanged choices and inactive fps changes do not reconfigure',
+    () async {
+      harness.info['hardware'] = false;
+      await harness.connect();
+      await harness.controller.setStreamPreferences(mode: null, fps: null);
+      expect(harness.store.writes, isEmpty);
+
+      await harness.controller.setStreamPreferences(mode: null, fps: 60);
+      expect(harness.controller.preferredFps, 60);
+      expect(harness.controller.targetFps, 30);
+      expect(harness.messages, hasLength(1));
+      expect(harness.controller.active, isTrue);
+      expect(harness.store.writes, hasLength(1));
+
+      await harness.controller.setStreamPreferences(mode: null, fps: 60);
+      expect(harness.messages, hasLength(1));
+      expect(harness.store.writes, hasLength(1));
+    },
+  );
+
+  test('offline changes persist without opening a desktop session', () async {
+    harness.store.preferences = {
+      'mode': 'onDemand',
+      'fps': 60,
+      'privilege': 'system',
+      'monitorId': 'second',
+    };
+    await harness.controller.setStreamPreferences(
+      mode: DesktopMode.low,
+      fps: 30,
+    );
+    expect(harness.controller.visible, isFalse);
+    expect(harness.controller.active, isFalse);
+    expect(harness.requests, isEmpty);
+    expect(harness.sockets, isEmpty);
+    expect(harness.controller.mode, DesktopMode.low);
+    expect(harness.controller.targetFps, 2);
+    expect(harness.store.preferences, {
+      'monitorId': 'second',
+      'preferredMode': 'low',
+      'preferredFps': 30,
+    });
+
+    await harness.controller.configure(monitorId: 'primary');
+    expect(harness.requests, isEmpty);
+    expect(harness.store.preferences, {
+      'monitorId': 'primary',
+      'preferredMode': 'low',
+      'preferredFps': 30,
+    });
+  });
+
+  test(
+    'monitor and stream preference writes are serialized without lost choices',
+    () async {
+      await harness.connect();
+      final saveStarted = Completer<void>();
+      final saveGate = Completer<void>();
+      harness.store.beforeSave = (_) async {
+        if (!saveStarted.isCompleted) {
+          saveStarted.complete();
+          await saveGate.future;
+        }
+      };
+      final streamChange = harness.controller.setStreamPreferences(
+        mode: DesktopMode.low,
+        fps: 30,
+      );
+      await saveStarted.future;
+      final monitorChange = harness.controller.configure(monitorId: 'second');
+      saveGate.complete();
+      await Future.wait([streamChange, monitorChange]);
+      await harness.waitFor(
+        () => harness.controller.active && harness.epoch == 3,
+      );
+
+      expect(harness.store.preferences, {
+        'monitorId': 'second',
+        'preferredMode': 'low',
+        'preferredFps': 30,
+      });
+      final configurations = harness.messages
+          .where((message) => message['type'] == 'configure')
+          .map((message) => message['options'] as Map);
+      expect(configurations.map((options) => options['monitorId']), [
+        'primary',
+        'second',
+      ]);
+      expect(
+        configurations.every((options) => options['mode'] == 'low'),
+        isTrue,
+      );
+      expect(harness.requests, hasLength(1));
+    },
+  );
+
+  test(
+    'preferences changed during session creation apply after authentication',
+    () async {
+      harness.sessionRequested = Completer<void>();
+      harness.sessionResponseGate = Completer<void>();
+      final connection = harness.controller.connect();
+      await harness.sessionRequested!.future;
+      await harness.controller.setStreamPreferences(
+        mode: DesktopMode.low,
+        fps: null,
+      );
+      expect(harness.messages, isEmpty);
+      harness.sessionResponseGate!.complete();
+      await connection;
+      await harness.waitFor(
+        () => harness.controller.actualMode == DesktopMode.low,
+      );
+
+      expect(harness.messages.map((message) => message['type']), [
+        'auth',
+        'input',
+        'configure',
+      ]);
+      expect(harness.requests, hasLength(1));
+      expect(harness.requests.single['mode'], 'smooth');
+      expect(harness.controller.targetFps, 2);
     },
   );
 

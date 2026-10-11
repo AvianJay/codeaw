@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:codeaw/app_state.dart';
+import 'package:codeaw/data/remote_desktop_controller.dart';
 import 'package:codeaw/ui/remote_desktop/remote_desktop_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -147,6 +148,20 @@ Future<void> pinch(
   await tester.pump();
 }
 
+Future<void> openStreamSettings(WidgetTester tester) async {
+  await tester.tap(find.byTooltip('桌面選項'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('畫質與 FPS'));
+  await tester.pumpAndSettle();
+}
+
+Future<void> chooseQuality(WidgetTester tester, String label) async {
+  await tester.tap(find.byType(DropdownButtonFormField<String>));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
 Rect desktopViewport(WidgetTester tester) => tester.getRect(
   find
       .ancestor(of: find.byType(RawImage), matching: find.byType(ClipRect))
@@ -192,6 +207,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.text('顯示鍵盤'), findsOneWidget);
       expect(find.text('手勢教學'), findsOneWidget);
+      expect(find.text('畫質與 FPS'), findsOneWidget);
       expect(find.text('一般權限'), findsNothing);
       expect(find.text('高流暢'), findsNothing);
       await capture(tester, 'overflow-menu');
@@ -204,6 +220,75 @@ void main() {
         ),
         isTrue,
       );
+    },
+  );
+
+  testWidgets(
+    'quality and FPS changes stay in overflow and apply only on confirmation',
+    (tester) async {
+      final controller = await mountDesktop(tester);
+      controller.smoothAvailable = true;
+      controller.hardware = true;
+      controller.notifyListeners();
+      await tester.pump();
+      expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+
+      await openStreamSettings(tester);
+      await chooseQuality(tester, '高流暢');
+      await tester.tap(find.text('30 FPS'));
+      await tester.pumpAndSettle();
+      expect(controller.preferenceChanges, isEmpty);
+      await capture(tester, 'stream-settings');
+      await tester.ensureVisible(find.text('取消'));
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+      expect(controller.preferenceChanges, isEmpty);
+      expect(controller.preferredMode, isNull);
+
+      await openStreamSettings(tester);
+      await chooseQuality(tester, '高流暢');
+      await tester.tap(find.text('30 FPS'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('套用'));
+      await tester.tap(find.text('套用'));
+      await tester.pumpAndSettle();
+      expect(controller.preferenceChanges, [
+        {'mode': DesktopMode.smooth, 'fps': 30},
+      ]);
+      expect(controller.preferredMode, DesktopMode.smooth);
+      expect(controller.preferredFps, 30);
+      expect(controller.requestedFps, 30);
+      expect(find.byType(DropdownButtonFormField<String>), findsNothing);
+
+      await openStreamSettings(tester);
+      expect(
+        tester
+            .widget<DropdownButtonFormField<String>>(
+              find.byType(DropdownButtonFormField<String>),
+            )
+            .initialValue,
+        'smooth',
+      );
+      expect(
+        tester
+            .widget<SegmentedButton<int>>(find.byType(SegmentedButton<int>))
+            .selected,
+        {30},
+      );
+      await chooseQuality(tester, '自動');
+      await tester.tap(
+        find.descendant(
+          of: find.byType(SegmentedButton<int>),
+          matching: find.text('自動'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('套用'));
+      await tester.tap(find.text('套用'));
+      await tester.pumpAndSettle();
+      expect(controller.preferredMode, isNull);
+      expect(controller.preferredFps, isNull);
+      expect(controller.requestedFps, 60);
     },
   );
 

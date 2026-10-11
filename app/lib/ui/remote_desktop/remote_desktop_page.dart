@@ -11,6 +11,7 @@ import '../../app_state.dart';
 import '../../data/remote_desktop_controller.dart';
 import '../common/adaptive.dart';
 import 'desktop_trackpad_gestures.dart';
+import 'desktop_stream_settings.dart';
 import 'remote_desktop_gesture_guide.dart';
 
 const _maxDesktopZoom = 8.0;
@@ -287,6 +288,29 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     if (zoom != null && mounted) setState(() => _zoom = zoom);
   }
 
+  Future<void> _streamSettings() async {
+    final c = _controller;
+    if (c == null) return;
+    _releaseInput();
+    final selected = await showAdaptiveSheet<DesktopStreamPreferences>(
+      context: context,
+      builder: (_) => DesktopStreamSettings(controller: c),
+    );
+    if (!mounted) return;
+    if (selected != null) {
+      try {
+        await c.setStreamPreferences(mode: selected.mode, fps: selected.fps);
+      } catch (_) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('設定未儲存，請再試一次。')));
+        }
+      }
+    }
+    if (mounted && !_keyboard) _focus.requestFocus();
+  }
+
   Future<void> _connectionInfo() async {
     final c = _controller;
     if (c == null) return;
@@ -303,11 +327,16 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             children: [
               Text('連線資訊', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 8),
-              const Text('畫質、幀率與權限會自動調整；已啟用省流量時會優先節省流量。'),
+              const Text('畫質與 FPS 預設自動調整，也可在選單手動設定。控制權限會自動選擇。'),
               const SizedBox(height: 16),
               for (final entry in {
-                '畫質': c.actualMode.label,
-                '幀率': '${c.fps.toStringAsFixed(0)} fps',
+                '畫質設定': c.preferredMode?.label ?? '自動',
+                '目前畫質': c.actualMode.label,
+                'FPS 設定': c.preferredFps == null
+                    ? '自動'
+                    : '${c.preferredFps} FPS',
+                '目標幀率': '${c.targetFps} FPS',
+                '接收幀率': '${c.fps.toStringAsFixed(0)} FPS',
                 '已接收': '${(c.bytesReceived / 1048576).toStringAsFixed(2)} MiB',
                 '控制權限': c.privilege == 'system' ? '進階' : '一般',
               }.entries)
@@ -347,6 +376,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         await _chooseMonitor();
       case 'zoom':
         await _chooseZoom();
+      case 'stream':
+        await _streamSettings();
       case 'refresh':
         c?.refresh();
       case 'reconnect':
@@ -478,6 +509,12 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                 Icons.fit_screen_rounded,
                 '畫面大小',
                 enabled: c != null && c.width > 0,
+              ),
+              _menuItem(
+                'stream',
+                Icons.tune_rounded,
+                '畫質與 FPS',
+                enabled: c != null && !c.loading,
               ),
               _menuItem(
                 'refresh',

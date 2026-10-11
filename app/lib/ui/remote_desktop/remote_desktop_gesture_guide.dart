@@ -98,7 +98,7 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              '畫質與控制權限會自動調整。鍵盤、螢幕選擇與這份教學，都在右上角的三點選單。',
+              '畫質與 FPS 預設自動，也能在右上角三點選單調整。鍵盤、螢幕選擇與這份教學也都在選單裡。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colors.onSurfaceVariant,
                 height: 1.5,
