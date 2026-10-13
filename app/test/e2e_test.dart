@@ -185,8 +185,11 @@ void main() {
     await client.connected.first.timeout(const Duration(seconds: 15));
     final hub = TerminalHub(client);
     cleanups.add(hub.dispose);
-    final c = hub.open(info['home'] as String);
-    await c.attach();
+    await hub.show(cwd: info['home'] as String);
+    expect(hub.error, isNull);
+    expect(hub.active, isNotNull);
+    final c = hub.active!;
+    await until(() => c.canInput || c.error != null);
     expect(c.error, isNull);
     expect(c.canInput, isTrue);
     final id = c.terminalId;
