@@ -20,7 +20,12 @@ class TerminalPage extends StatefulWidget {
 }
 
 class _TerminalPageState extends State<TerminalPage> {
-  ShellController? _shell;
+  late final TerminalHub _hub;
+  bool _choosingFolder = false;
+  ShellController? get _shell => _choosingFolder ? null : _hub.active;
+  xterm.Terminal? _lastScreen;
+  final _activeTabKey = GlobalKey();
+  double? _tabsWidth;
   final _focus = FocusNode();
   final _selection = xterm.TerminalController();
   List<Map<String, dynamic>> _roots = [];
@@ -33,25 +38,51 @@ class _TerminalPageState extends State<TerminalPage> {
   void initState() {
     super.initState();
     _client = AppScope.read(context).client!;
+    _hub = AppScope.read(context).terminals!;
+    _hub.addListener(_onHubChanged);
     _connection = _client.connected.listen((_) {
-      if (_shell == null) unawaited(_loadRoots());
-    });
-    if (widget.cwd.isNotEmpty) {
-      _open(widget.cwd);
-    } else {
+      if (!_hub.initialized) unawaited(_hub.show(cwd: widget.cwd));
       unawaited(_loadRoots());
+    });
+    unawaited(_hub.show(cwd: widget.cwd));
+    unawaited(_loadRoots());
+  }
+
+  void _onHubChanged() {
+    if (_lastScreen != _shell?.terminal) {
+      _lastScreen = _shell?.terminal;
+      _focus.unfocus();
+      _selection.clearSelection();
+      _revealActiveTab();
     }
+  }
+
+  void _revealActiveTab() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = _activeTabKey.currentContext;
+      if (mounted && context != null) {
+        unawaited(Scrollable.ensureVisible(context, alignment: .5));
+      }
+    });
   }
 
   void _open(String cwd) {
     _focus.unfocus();
-    _shell?.detach();
     _selection.clearSelection();
-    final hub = AppScope.read(context).terminals;
-    if (hub == null) return;
-    _shell = hub.open(cwd);
-    unawaited(_shell!.attach());
-    setState(() {});
+    if (_hub.create(cwd) != null) setState(() => _choosingFolder = false);
+  }
+
+  void _select(ShellController c) {
+    setState(() => _choosingFolder = false);
+    _hub.select(c);
+  }
+
+  void _chooseFolder() {
+    _hub.hide();
+    _focus.unfocus();
+    _selection.clearSelection();
+    setState(() => _choosingFolder = true);
+    unawaited(_loadRoots());
   }
 
   Future<void> _loadRoots() async {
@@ -98,7 +129,8 @@ class _TerminalPageState extends State<TerminalPage> {
 
   @override
   void dispose() {
-    _shell?.detach();
+    _hub.removeListener(_onHubChanged);
+    _hub.hide();
     _connection?.cancel();
     _focus.dispose();
     _selection.dispose();
@@ -107,153 +139,236 @@ class _TerminalPageState extends State<TerminalPage> {
 
   @override
   Widget build(BuildContext context) {
-    final c = _shell;
     return ListenableBuilder(
-      listenable: Listenable.merge([_client, ?c, _selection]),
-      builder: (context, _) => Scaffold(
-        appBar: AppBar(
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text('終端機'),
-              Text(
-                c == null ? '選擇電腦上的工作目錄' : c.cwd,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 11.5),
-              ),
-            ],
-          ),
-          actions: [
-            if (c != null) ...[
-              IconButton(
-                tooltip: '複製選取文字',
-                icon: const Icon(Icons.copy_outlined),
-                onPressed: _selection.selection == null ? null : _copy,
-              ),
-              PopupMenuButton<String>(
-                onSelected: (v) {
-                  if (v == 'restart') unawaited(c.restart());
-                  if (v == 'close') unawaited(c.close());
-                  if (v == 'clear') c.terminal.write('\x1b[2J\x1b[H\x1b[3J');
-                  if (v == 'folder') {
-                    c.detach();
-                    setState(() => _shell = null);
-                    unawaited(_loadRoots());
-                  }
-                },
-                itemBuilder: (_) => [
-                  const PopupMenuItem(value: 'clear', child: Text('清除畫面')),
-                  PopupMenuItem(
-                    value: 'close',
-                    enabled: _client.isOnline && !c.loading && !c.exited,
-                    child: const Text('關閉終端機'),
-                  ),
-                  PopupMenuItem(
-                    value: 'restart',
-                    enabled: _client.isOnline && !c.loading,
-                    child: const Text('關閉並重開 shell'),
-                  ),
-                  const PopupMenuItem(value: 'folder', child: Text('切換工作目錄')),
-                ],
-              ),
-            ],
+      listenable: Listenable.merge([_client, _hub, _selection]),
+      builder: (context, _) => _buildPage(context),
+    );
+  }
+
+  Widget _buildPage(BuildContext context) {
+    final c = _shell;
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('終端機'),
+            Text(
+              c == null ? '選擇電腦上的工作目錄' : c.cwd,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 11.5),
+            ),
           ],
         ),
-        body: Column(
-          children: [
-            const ConnectionBanner(),
-            if (c?.error != null)
-              MaterialBanner(
-                content: Text(c!.error!),
-                actions: [
-                  TextButton(onPressed: c.attach, child: const Text('重試')),
-                ],
-              ),
-            if (c != null && c.exited)
-              MaterialBanner(
-                content: Text('Shell 已結束（退出碼 ${c.exitCode ?? '—'}）'),
-                actions: [
-                  TextButton(
-                    onPressed: _client.isOnline ? c.restart : null,
-                    child: const Text('重新開啟'),
-                  ),
-                ],
-              ),
-            if (c?.loading == true) const LinearProgressIndicator(),
-            Expanded(
-              child: c == null
-                  ? _workspaceList()
-                  : ColoredBox(
-                      color: xterm.TerminalThemes.defaultTheme.background,
-                      child: xterm.TerminalView(
-                        c.terminal,
-                        controller: _selection,
-                        focusNode: _focus,
-                        autofocus: false,
-                        readOnly: !c.canInput,
-                        keyboardType: TextInputType.visiblePassword,
-                        textStyle: const xterm.TerminalStyle(fontSize: 13),
-                        padding: const EdgeInsets.all(8),
-                      ),
-                    ),
+        actions: [
+          IconButton(
+            tooltip: '新增終端機',
+            icon: const Icon(Icons.add_rounded),
+            onPressed: _hub.canCreate
+                ? () => c == null ? _chooseFolder() : _open(c.cwd)
+                : null,
+          ),
+          if (c != null) ...[
+            IconButton(
+              tooltip: '複製選取文字',
+              icon: const Icon(Icons.copy_outlined),
+              onPressed: _selection.selection == null ? null : _copy,
             ),
-            if (c != null)
-              SafeArea(
-                top: false,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 4,
-                    vertical: 4,
-                  ),
-                  child: Row(
-                    children: [
-                      for (final key in [
-                        ('Ctrl+C', '\x03'),
-                        ('Tab', '\t'),
-                        ('Esc', '\x1b'),
-                      ])
-                        TextButton(
-                          onPressed: c.canInput
-                              ? () => unawaited(c.write(key.$2))
-                              : null,
-                          child: Text(key.$1),
-                        ),
-                      for (final key in [
-                        ('↑', xterm.TerminalKey.arrowUp),
-                        ('↓', xterm.TerminalKey.arrowDown),
-                        ('←', xterm.TerminalKey.arrowLeft),
-                        ('→', xterm.TerminalKey.arrowRight),
-                      ])
-                        TextButton(
-                          onPressed: c.canInput
-                              ? () {
-                                  c.terminal.keyInput(key.$2);
-                                }
-                              : null,
-                          child: Text(key.$1),
-                        ),
-                      IconButton(
-                        tooltip: '貼上',
-                        onPressed: c.canInput ? _paste : null,
-                        icon: const Icon(Icons.content_paste_rounded),
+            PopupMenuButton<String>(
+              onSelected: (v) {
+                if (v == 'restart') unawaited(c.restart());
+                if (v == 'close') unawaited(_hub.close(c));
+                if (v == 'clear') c.terminal.write('\x1b[2J\x1b[H\x1b[3J');
+                if (v == 'folder') {
+                  _chooseFolder();
+                }
+              },
+              itemBuilder: (_) => [
+                const PopupMenuItem(value: 'clear', child: Text('清除畫面')),
+                PopupMenuItem(
+                  value: 'close',
+                  enabled: _client.isOnline && !c.loading,
+                  child: const Text('關閉終端機'),
+                ),
+                PopupMenuItem(
+                  value: 'restart',
+                  enabled: _client.isOnline && !c.loading,
+                  child: const Text('關閉並重開 shell'),
+                ),
+                PopupMenuItem(
+                  value: 'folder',
+                  enabled: _hub.canCreate,
+                  child: const Text('在其他目錄新增'),
+                ),
+              ],
+            ),
+          ],
+        ],
+      ),
+      body: Column(
+        children: [
+          const ConnectionBanner(),
+          if (_hub.controllers.isNotEmpty) _tabs(context),
+          if (_hub.error != null)
+            MaterialBanner(
+              content: Text(_hub.error!),
+              actions: [
+                TextButton(onPressed: _hub.refresh, child: const Text('重試')),
+              ],
+            ),
+          if (c?.error != null)
+            MaterialBanner(
+              content: Text(c!.error!),
+              actions: [
+                TextButton(onPressed: c.attach, child: const Text('重試')),
+              ],
+            ),
+          if (c != null && c.exited)
+            MaterialBanner(
+              content: Text('Shell 已結束（退出碼 ${c.exitCode ?? '—'}）'),
+              actions: [
+                TextButton(
+                  onPressed: _client.isOnline ? c.restart : null,
+                  child: const Text('重新開啟'),
+                ),
+              ],
+            ),
+          if (_hub.loading || c?.loading == true)
+            const LinearProgressIndicator(),
+          Expanded(
+            child: c == null
+                ? _workspaceList()
+                : ColoredBox(
+                    color: xterm.TerminalThemes.defaultTheme.background,
+                    child: xterm.TerminalView(
+                      c.terminal,
+                      key: ObjectKey(c.terminal),
+                      controller: _selection,
+                      focusNode: _focus,
+                      autofocus: false,
+                      readOnly: !c.canInput,
+                      keyboardType: TextInputType.visiblePassword,
+                      // Bundle the font: browser canvas rendering cannot rely on
+                      // the host's CSS monospace family for accurate cell widths.
+                      textStyle: const xterm.TerminalStyle(
+                        fontSize: 13,
+                        fontFamily: 'JetBrainsMono',
                       ),
-                      IconButton(
-                        tooltip: _focus.hasFocus ? '收起鍵盤' : '鍵盤',
+                      padding: const EdgeInsets.all(8),
+                    ),
+                  ),
+          ),
+          if (c != null)
+            SafeArea(
+              top: false,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Row(
+                  children: [
+                    for (final key in [
+                      ('Ctrl+C', '\x03'),
+                      ('Tab', '\t'),
+                      ('Esc', '\x1b'),
+                    ])
+                      TextButton(
                         onPressed: c.canInput
-                            ? () => _focus.hasFocus
-                                  ? _focus.unfocus()
-                                  : _focus.requestFocus()
+                            ? () => unawaited(c.write(key.$2))
                             : null,
-                        icon: const Icon(Icons.keyboard_outlined),
+                        child: Text(key.$1),
                       ),
-                    ],
-                  ),
+                    for (final key in [
+                      ('↑', xterm.TerminalKey.arrowUp),
+                      ('↓', xterm.TerminalKey.arrowDown),
+                      ('←', xterm.TerminalKey.arrowLeft),
+                      ('→', xterm.TerminalKey.arrowRight),
+                    ])
+                      TextButton(
+                        onPressed: c.canInput
+                            ? () {
+                                c.terminal.keyInput(key.$2);
+                              }
+                            : null,
+                        child: Text(key.$1),
+                      ),
+                    IconButton(
+                      tooltip: '貼上',
+                      onPressed: c.canInput ? _paste : null,
+                      icon: const Icon(Icons.content_paste_rounded),
+                    ),
+                    IconButton(
+                      tooltip: _focus.hasFocus ? '收起鍵盤' : '鍵盤',
+                      onPressed: c.canInput
+                          ? () => _focus.hasFocus
+                                ? _focus.unfocus()
+                                : _focus.requestFocus()
+                          : null,
+                      icon: const Icon(Icons.keyboard_outlined),
+                    ),
+                  ],
                 ),
               ),
-          ],
-        ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tabs(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surfaceContainerLow,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          if (_tabsWidth != constraints.maxWidth) {
+            _tabsWidth = constraints.maxWidth;
+            _revealActiveTab();
+          }
+        return SizedBox(
+          width: double.infinity,
+          height: 48,
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                children: [
+                  for (final (index, c) in _hub.controllers.indexed)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 3,
+                        vertical: 5,
+                      ),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 240),
+                        child: InputChip(
+                          key: c == _shell ? _activeTabKey : ObjectKey(c),
+                          selected: c == _shell,
+                          avatar: Icon(
+                            c.exited
+                                ? Icons.stop_circle_outlined
+                                : Icons.terminal_rounded,
+                            size: 16,
+                          ),
+                          label: Text(
+                            '${folderName(c.cwd)} · ${index + 1}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          tooltip: c.cwd,
+                          onPressed: () => _select(c),
+                          onDeleted: _client.isOnline && !c.loading
+                              ? () => unawaited(_hub.close(c))
+                              : null,
+                          deleteButtonTooltipMessage: '關閉終端機 ${index + 1}',
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -291,7 +406,7 @@ class _TerminalPageState extends State<TerminalPage> {
               title: Text('${root['name'] ?? folderName('${root['path']}')}'),
               subtitle: Text('${root['path']}'),
               trailing: const Icon(Icons.chevron_right_rounded),
-              onTap: _client.isOnline ? () => _open('${root['path']}') : null,
+              onTap: _hub.canCreate ? () => _open('${root['path']}') : null,
             ),
         ],
       ),

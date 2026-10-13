@@ -1532,13 +1532,14 @@ export class SessionManager implements AgentHandlers {
       else this.orphans.delete(id);
     }
     for (const s of this.sessions.values()) {
-      const idle = !s.turn && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;
+      const idle = !s.turn && !s.activating && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;
       if (!idle || now - s.lastActivity < this.opts.idleSessionCloseMs) continue;
       if (s.backendGen) await this.releaseBackend(s);
       s.entries = undefined; // reloaded from disk on next attach
     }
     for (const agent of this.registry.all()) {
-      if (!agent.running || agent.inflight > 0) continue;
+      // A reconnect can start a slow onefile executable during this sweep.
+      if (agent.describe().status !== "ready" || agent.inflight > 0) continue;
       const live = [...this.sessions.values()].some((s) => s.meta.agentId === agent.id && s.backendGen === agent.generation);
       if (!live && now - agent.lastUsed > this.opts.idleAgentStopMs) await agent.stop("idle");
     }

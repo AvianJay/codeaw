@@ -6,7 +6,6 @@ import type { ClientHandle } from "../session/manager.js";
 import { spawnShell, type ShellProcess } from "./pty.js";
 
 const MAX_HISTORY = 512 * 1024;
-const IDLE_MS = 10 * 60_000;
 const MAX_TERMINALS = 8;
 
 interface TerminalEvent {
@@ -20,6 +19,7 @@ interface TerminalEvent {
 interface TerminalSession {
   id: string;
   owner: string;
+  creationId?: string;
   cwd: string;
   shell: string;
   pty?: ShellProcess;
@@ -30,7 +30,6 @@ interface TerminalSession {
   history: TerminalEvent[];
   historySize: number;
   clients: Map<string, ClientHandle>;
-  idle?: ReturnType<typeof setTimeout>;
 }
 
 function dimension(value: unknown, fallback: number): number {
@@ -41,27 +40,46 @@ function dimension(value: unknown, fallback: number): number {
   return value;
 }
 
-/** Ephemeral, device-owned shells. Output stays in memory and never enters agent logs. */
+/** Device-owned shells retained until explicitly closed or the bridge stops. */
 export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
+  private readonly active = new Map<string, string>();
 
   constructor(private readonly guard: PathGuard) {}
+
+  list(owner: string) {
+    return {
+      terminals: [...this.sessions.values()].filter((s) => s.owner === owner).map((s) => ({
+        terminalId: s.id, creationId: s.creationId, cwd: s.cwd, shell: s.shell, exited: s.exited, exitCode: s.exitCode,
+      })),
+      activeTerminalId: this.active.get(owner),
+      maxTerminals: MAX_TERMINALS,
+    };
+  }
 
   open(owner: string, client: ClientHandle, params: Record<string, unknown>) {
     const cols = dimension(params.cols, 80);
     const rows = dimension(params.rows, 24);
+    const creationId = params.creationId;
+    if (creationId !== undefined && (typeof creationId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(creationId))) {
+      throw acp.RequestError.invalidParams(undefined, "Invalid terminal creationId");
+    }
     let session: TerminalSession | undefined;
     if (params.terminalId !== undefined) session = this.get(owner, params.terminalId);
     else {
       const cwd = this.guard.resolve(params.cwd);
       if (!fs.statSync(cwd).isDirectory()) throw acp.RequestError.invalidParams(undefined, "cwd must be a directory");
-      session = [...this.sessions.values()].find((s) => s.owner === owner && s.cwd === cwd);
+      // Retrying an open whose response was lost must not spawn another shell.
+      if (creationId) session = [...this.sessions.values()].find((s) => s.owner === owner && s.creationId === creationId);
+      if (session && session.cwd !== cwd) throw acp.RequestError.invalidParams(undefined, "Terminal creationId belongs to another directory");
+      // Older clients reuse a directory; new clients explicitly create independent tabs.
+      if (!session && params.createNew !== true) session = [...this.sessions.values()].find((s) => s.owner === owner && s.cwd === cwd);
       if (!session) {
         if ([...this.sessions.values()].filter((s) => s.owner === owner).length >= MAX_TERMINALS) {
           throw acp.RequestError.invalidParams(undefined, "Close an existing terminal before opening another");
         }
         session = {
-          id: "term_" + crypto.randomBytes(12).toString("hex"), owner, cwd, shell: "",
+          id: "term_" + crypto.randomBytes(12).toString("hex"), owner, creationId, cwd, shell: "",
           exited: false, seq: 0, history: [], historySize: 0, clients: new Map(),
         };
         const s = session;
@@ -84,8 +102,7 @@ export class TerminalManager {
     }
     const after = typeof params.afterSeq === "number" && Number.isSafeInteger(params.afterSeq) && params.afterSeq >= 0 ? params.afterSeq : 0;
     const full = after === 0 || after > session.seq || after < (session.history[0]?.seq ?? 1) - 1;
-    if (session.idle) clearTimeout(session.idle);
-    session.idle = undefined;
+    this.active.set(owner, session.id);
     session.clients.set(client.id, client);
     if (!session.exited) session.pty!.resize(cols, rows);
     return {
@@ -122,13 +139,12 @@ export class TerminalManager {
   detach(owner: string, client: ClientHandle, id: unknown) {
     const s = this.get(owner, id);
     s.clients.delete(client.id);
-    this.scheduleExpiry(s);
     return {};
   }
 
   removeClient(client: ClientHandle) {
     for (const s of this.sessions.values()) {
-      if (s.clients.delete(client.id)) this.scheduleExpiry(s);
+      s.clients.delete(client.id);
     }
   }
 
@@ -152,15 +168,13 @@ export class TerminalManager {
     for (const client of s.clients.values()) void client.notify("_codeaw/terminal/event", entry);
   }
 
-  private scheduleExpiry(s: TerminalSession) {
-    if (s.clients.size || s.idle) return;
-    s.idle = setTimeout(() => { void this.destroy(s); }, IDLE_MS);
-    s.idle.unref();
-  }
-
   private async destroy(s: TerminalSession) {
     this.sessions.delete(s.id);
-    if (s.idle) clearTimeout(s.idle);
+    if (this.active.get(s.owner) === s.id) {
+      this.active.delete(s.owner);
+      const remaining = [...this.sessions.values()].filter((other) => other.owner === s.owner);
+      if (remaining.length) this.active.set(s.owner, remaining[remaining.length - 1].id);
+    }
     if (!s.exited) {
       try { s.pty?.kill(); } catch { /* Already exited. */ }
     }

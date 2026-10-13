@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/cpa_usage.dart';
+import '../../data/model_family.dart';
 import '../common/widgets.dart';
 import '../usage/quota_color.dart';
 
@@ -12,6 +13,18 @@ String? cpaProviderForAgent(String agentId) => switch (agentId.toLowerCase()) {
   _ => null,
 };
 
+/// The agent's own quota provider; the running model's family only for agents
+/// without one, such as Oh My Pi or other generic ACP agents.
+String? cpaProviderFor(String agentId, ModelFamily? model) =>
+    cpaProviderForAgent(agentId) ??
+    switch (model) {
+      ModelFamily.openai => 'codex',
+      ModelFamily.claude => 'claude',
+      ModelFamily.gemini => 'antigravity',
+      ModelFamily.grok => 'grok',
+      null => null,
+    };
+
 class ChatHeaderTitle extends StatelessWidget {
   const ChatHeaderTitle({
     super.key,
@@ -19,10 +32,12 @@ class ChatHeaderTitle extends StatelessWidget {
     required this.subtitle,
     required this.agentId,
     required this.agentName,
+    this.model,
     this.usage,
     this.onUsageTap,
   });
   final String title, subtitle, agentId, agentName;
+  final ModelFamily? model;
   final CpaController? usage;
   final VoidCallback? onUsageTap;
 
@@ -32,7 +47,7 @@ class ChatHeaderTitle extends StatelessWidget {
     Widget header() => LayoutBuilder(
       builder: (context, constraints) {
         final configured = controller?.settings != null;
-        final provider = cpaProviderForAgent(agentId);
+        final provider = cpaProviderFor(agentId, model);
         final average = configured
             ? cpaProviderAverages(
                 controller!.accounts,

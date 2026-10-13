@@ -12,6 +12,7 @@ import type { AgentBackend } from "./backend.js";
 import type { DesktopState } from "./codex-desktop-state.js";
 import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/environment.js";
 import { AcpSubagents } from "./acp-subagents.js";
+import { AgentTempDirectory } from "./agent-temp.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -61,6 +62,14 @@ export interface AgentHandlers {
 
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
 
+interface AgentRun {
+  child: ChildProcess;
+  temporary?: AgentTempDirectory;
+  closed: Promise<void>;
+  hasClosed: boolean;
+  retiring?: Promise<void>;
+}
+
 /** Capabilities the bridge advertises to every agent (see docs/protocol.md). */
 export function bridgeClientCapabilities(): acp.ClientCapabilities {
   return {
@@ -87,9 +96,12 @@ export class AgentProcess implements AgentBackend {
   lastError?: string;
   init?: acp.InitializeResponse;
 
-  private child?: ChildProcess;
+  private run?: AgentRun;
   private conn?: acp.ClientConnection;
   private starting?: Promise<void>;
+  private stopping?: Promise<void>;
+  private retiring: Promise<void> = Promise.resolve();
+  private stoppedGeneration = 0;
   private goneGeneration = 0;
   private stderrTail = "";
   private readonly log: Logger;
@@ -156,20 +168,32 @@ export class AgentProcess implements AgentBackend {
 
   private async start(): Promise<void> {
     this.status = "starting";
+    this.lastUsed = Date.now();
     this.lastError = undefined;
+    this.init = undefined;
     this.stderrTail = "";
     this.subagents.clear();
     const generation = ++this.generation;
+    await this.stopping;
+    await this.retiring;
+    if (this.status !== "starting") return this.fail(generation, "agent stopped during initialize");
+    if (this.run && !this.run.hasClosed) return this.fail(generation, "previous agent process is still exiting; retry after it has stopped");
     const { command, args, env } = this.config;
     const inherited = desktopEnvironment({ ...process.env, ...env });
-    const environment = this.id === "codex" ? recoverCodexPath(inherited) : inherited;
+    let environment = this.id === "codex" ? recoverCodexPath(inherited) : inherited;
     if (environment.CODEX_PATH !== inherited.CODEX_PATH) this.log.warn("Codex desktop's old WindowsApps executable disappeared; using the current installed Codex CLI");
     if (!resolveCommand(command, environment)) {
       return this.fail(generation, `ACP executable not found: ${command}. Install this agent from the ACP installer or fix its command in settings.`);
     }
     this.log.info(`starting: ${command} ${args.join(" ")}`);
+    let temporary: AgentTempDirectory | undefined;
     let child: ChildProcess;
     try {
+      if (process.platform === "win32" && /(?:^|[\\/])agy_acp_server\.exe$/i.test(command)) {
+        temporary = await AgentTempDirectory.create(path.join(path.dirname(this.logFile), "..", "tmp", "agy-acp"));
+        environment = temporary.environment(environment);
+      }
+      if (this.status !== "starting") throw new Error("agent stopped during initialize");
       child = spawn(command, args, {
         cwd: this.config.cwd ?? os.homedir(),
         env: environment,
@@ -177,14 +201,17 @@ export class AgentProcess implements AgentBackend {
         windowsHide: true,
       });
     } catch (err) {
+      await temporary?.dispose().catch(() => this.log.warn("could not remove agent temp directory"));
       return this.fail(generation, `spawn failed: ${(err as Error).message}`);
     }
-    this.child = child;
+    const run: AgentRun = { child, temporary, hasClosed: false, closed: Promise.resolve() };
+    run.closed = new Promise<void>((resolve) => child.once("close", () => { run.hasClosed = true; resolve(); }));
+    this.run = run;
 
     const spawnError = new Promise<never>((_, reject) => {
       child.once("error", (err) => reject(new Error(`spawn failed: ${err.message}`)));
     });
-    child.stderr!.on("data", (chunk: Buffer) => this.onStderr(chunk));
+    child.stderr!.on("data", (chunk: Buffer) => { if (generation === this.generation) this.onStderr(chunk); });
     child.once("exit", (code, signal) => this.onExit(generation, code, signal));
 
     const stream = acp.ndJsonStream(
@@ -198,7 +225,7 @@ export class AgentProcess implements AgentBackend {
       })
       .onRequest("session/request_permission", (ctx) => this.handlers.onPermission(this.id, ctx.params, ctx.signal))
       .onRequest("elicitation/create", (ctx) => this.handlers.onElicitation(this.id, ctx.params, ctx.signal));
-    this.conn = app.connect({
+    const conn = this.conn = app.connect({
       writable: stream.writable,
       readable: stream.readable.pipeThrough(new TransformStream<acp.AnyMessage, acp.AnyMessage>({
         transform: (message, controller) => {
@@ -207,7 +234,7 @@ export class AgentProcess implements AgentBackend {
       })),
     });
     // stdout closing is the earliest sign of death; the process 'exit' event can lag behind.
-    void this.conn.closed.then(() => this.onGone(generation, "closed its connection"));
+    void conn.closed.then(() => this.onGone(generation, "closed its connection"));
 
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -216,15 +243,19 @@ export class AgentProcess implements AgentBackend {
     });
     try {
       const init = await Promise.race([
-        this.conn.agent.request("initialize", {
-          protocolVersion: acp.PROTOCOL_VERSION,
-          clientCapabilities: bridgeClientCapabilities(),
-          clientInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
-        }),
+        (async () => {
+          if (temporary && child.pid) await temporary.recordProcess(child.pid);
+          return conn.agent.request("initialize", {
+            protocolVersion: acp.PROTOCOL_VERSION,
+            clientCapabilities: bridgeClientCapabilities(),
+            clientInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
+          });
+        })(),
         spawnError,
         timeout,
       ]);
       if (generation !== this.generation) throw new Error("agent restarted during initialize");
+      if (this.status !== "starting" || this.run !== run) throw new Error("agent stopped during initialize");
       this.init = init;
       this.status = "ready";
       this.lastUsed = Date.now();
@@ -233,13 +264,14 @@ export class AgentProcess implements AgentBackend {
       const message = (err as Error).message;
       const detail = (/abort/i.test(message) ? "ACP connection closed before initialization completed. Check the agent executable and its Node.js runtime." : message)
         + (this.stderrTail ? `\n${this.stderrTail.trim().slice(-800)}` : "");
-      this.killTree();
+      clearTimeout(timer);
+      await this.retire(run);
       return this.fail(generation, detail);
     } finally { clearTimeout(timer); }
   }
 
   private fail(generation: number, detail: string): never {
-    if (generation === this.generation) {
+    if (generation === this.generation && this.stoppedGeneration !== generation) {
       this.status = "error";
       this.lastError = detail;
     }
@@ -276,10 +308,10 @@ export class AgentProcess implements AgentBackend {
     if (this.status !== "stopped") {
       this.status = clean ? "stopped" : "error";
       if (this.status === "error") this.lastError = detail + (this.stderrTail ? `\n${this.stderrTail.trim().slice(-800)}` : "");
-      this.killTree();
     }
     this.conn = undefined;
-    this.child = undefined;
+    const run = this.run;
+    if (run) void this.retire(run);
     this.subagents.clear();
     if (wasReady) this.log.warn(detail);
     this.handlers.onExit(this.id, generation, detail);
@@ -311,32 +343,58 @@ export class AgentProcess implements AgentBackend {
   }
 
   /** Closes stdin (agents exit on EOF), then kills the whole process tree if it lingers. */
-  async stop(reason = "stopped"): Promise<void> {
-    const child = this.child;
-    if (!child) {
-      this.status = "stopped";
-      return;
-    }
-    this.log.info(`stopping (${reason})`);
-    this.status = "stopped";
-    try {
-      child.stdin?.end();
-    } catch {
-      // already closed
-    }
-    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
-    const timer = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 2500).unref());
-    if ((await Promise.race([exited, timer])) === "timeout") this.killTree();
-    this.conn = undefined;
-    this.child = undefined;
-    this.subagents.clear();
+  stop(reason = "stopped"): Promise<void> {
+    return this.stopping ??= this.stopRun(reason).finally(() => { this.stopping = undefined; });
   }
 
-  private killTree(): void {
-    const child = this.child;
-    if (!child?.pid) return;
+  private async stopRun(reason: string): Promise<void> {
+    this.log.info(`stopping (${reason})`);
+    this.status = "stopped";
+    this.stoppedGeneration = this.generation;
+    const run = this.run;
+    if (run) await this.retire(run);
+    else await this.retiring;
+    if (this.run === run && (!run || run.hasClosed)) {
+      this.conn = undefined;
+      this.run = undefined;
+      this.subagents.clear();
+    }
+  }
+
+  /** stdout EOF can precede PyInstaller's parent cleanup; let it finish first. */
+  private retire(run: AgentRun): Promise<void> {
+    if (!run.retiring) {
+      run.retiring = (async () => {
+        try { run.child.stdin?.end(); } catch { /* Already closed. */ }
+        if (!await this.waitForClose(run, run.temporary ? 5000 : 2500)) {
+          this.killTree(run.child);
+          if (!await this.waitForClose(run, 2500)) {
+            this.log.warn("agent process did not exit; retaining its temp directory");
+            return;
+          }
+        }
+        await run.temporary?.dispose().catch(() => this.log.warn("could not remove agent temp directory; will retry after bridge restart"));
+        if (this.run === run) this.run = undefined;
+      })();
+    }
+    return this.retiring = run.retiring;
+  }
+
+  private async waitForClose(run: AgentRun, timeoutMs: number): Promise<boolean> {
+    if (run.hasClosed) return true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([run.closed.then(() => true), new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+        timer.unref();
+      })]);
+    } finally { clearTimeout(timer); }
+  }
+
+  private killTree(child: ChildProcess): void {
+    if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 5000 });
     } else {
       try {
         child.kill("SIGKILL");

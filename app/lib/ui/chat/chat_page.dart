@@ -143,6 +143,7 @@ class _ChatPageState extends State<ChatPage> {
                   subtitle: '$agentName · ${c.displayLocation}${c.desktopSync ? (c.desktopConnected ? ' · 桌面同步' : ' · 桌面未連線') : ''}',
                   agentId: c.agentId,
                   agentName: agentName,
+                  model: c.modelFamily,
                   usage: state.cpa,
                   onUsageTap: () => context.push('/usage'),
                 ),
@@ -337,7 +338,7 @@ class _TimelineList extends StatelessWidget {
             return WorkingIndicator(
               key: ValueKey('working:${controller.sessionId}'),
               timeline: controller.timeline,
-              showThoughts: controller.agentId == 'codex',
+              showThoughts: controller.thoughtSummary,
               waitingForInput: controller.pending.values.any((req) => !req.isPermission),
             );
           }

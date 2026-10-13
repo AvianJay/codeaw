@@ -28,6 +28,7 @@
     "smoke": "tsx scripts/smoke.ts",
     "smoke:omp": "tsx scripts/omp-smoke.ts",
     "smoke:terminal": "tsx scripts/terminal-smoke.ts",
+    "smoke:terminal:web": "tsx scripts/terminal-web-smoke.ts",
     "smoke:desktop": "tsx scripts/desktop-smoke.ts",
     "smoke:remote-desktop": "tsx scripts/remote-desktop-smoke.ts",
     "smoke:remote-desktop-input": "tsx scripts/remote-desktop-smoke.ts --input",

@@ -21,12 +21,12 @@ import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
 import 'turn_summary.dart';
 
-/// Codex thought messages stay in the log; their turn's card presents them once.
+/// Codex and GPT thought messages stay in the log; their turn's card presents them once.
 /// Thoughts without a matching turn remain visible, including older histories.
 List<TimelineItem> chatTimelineItems(SessionController controller) {
   final timeline = controller.timeline;
   final roots = timeline.rootItems.where((item) => item is! MessageItem || !item.removed).toList();
-  if (controller.agentId != 'codex') return roots;
+  if (!controller.thoughtSummary) return roots;
   final grouped = <MessageItem>{
     for (final turn in [...roots.whereType<TurnSummaryItem>(), ?timeline.currentTurn])
       ...turn.messages.where((m) => m.role == MessageRole.thought),
@@ -52,7 +52,7 @@ class TimelineItemView extends StatelessWidget {
         MessageItem m => m.role == MessageRole.user
             ? UserMessageView(m, controller: controller)
             : m.role == MessageRole.thought
-                ? ThoughtView(m)
+                ? ThoughtView(m, markdown: controller.thoughtSummary)
                 : AgentMessageView(m, streaming: isLast && controller.running, client: controller.client, basePath: controller.cwd),
         ToolItem t => controller.timeline.isSubagent(t)
             ? SubagentCard(
@@ -71,7 +71,7 @@ class TimelineItemView extends StatelessWidget {
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
         TurnSummaryItem t => TurnSummaryView(
             turn: t,
-            showThoughts: controller.agentId == 'codex',
+            showThoughts: controller.thoughtSummary,
             onReusePrompt: controller.running || t.prompt?.promptText.isNotEmpty != true ? null : () => controller.reusePrompt(t.prompt!),
           ),
         _ => const SizedBox.shrink(),
@@ -356,8 +356,11 @@ class AgentMessageView extends StatelessWidget {
 }
 
 class ThoughtView extends StatefulWidget {
-  const ThoughtView(this.m, {super.key});
+  const ThoughtView(this.m, {super.key, this.markdown = false});
   final MessageItem m;
+
+  /// Codex/GPT summaries: the collapsed line drops `**` markers, the expanded text renders Markdown.
+  final bool markdown;
 
   @override
   State<ThoughtView> createState() => _ThoughtViewState();
@@ -372,6 +375,7 @@ class _ThoughtViewState extends State<ThoughtView> {
     final text = widget.m.text.trim();
     if (text.isEmpty) return const SizedBox.shrink();
     final firstLine = text.split('\n').first;
+    final style = TextStyle(fontSize: 12.5, fontStyle: FontStyle.italic, color: scheme.outline, height: 1.35);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: InkWell(
@@ -383,12 +387,14 @@ class _ThoughtViewState extends State<ThoughtView> {
             Icon(Icons.psychology_alt_outlined, size: 16, color: scheme.outline),
             const SizedBox(width: 6),
             Expanded(
-              child: Text(
-                _open ? text : firstLine,
-                maxLines: _open ? null : 1,
-                overflow: _open ? null : TextOverflow.ellipsis,
-                style: TextStyle(fontSize: 12.5, fontStyle: FontStyle.italic, color: scheme.outline, height: 1.35),
-              ),
+              child: widget.markdown && _open
+                  ? Markdown(text, style: style)
+                  : Text(
+                      _open ? text : widget.markdown ? firstLine.replaceAll('**', '').trim() : firstLine,
+                      maxLines: _open ? null : 1,
+                      overflow: _open ? null : TextOverflow.ellipsis,
+                      style: style,
+                    ),
             ),
           ]),
         ),

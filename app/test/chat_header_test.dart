@@ -1,4 +1,5 @@
 import 'package:codeaw/data/cpa_usage.dart';
+import 'package:codeaw/data/model_family.dart';
 import 'package:codeaw/ui/chat/chat_header.dart';
 import 'package:codeaw/ui/usage/cpa_usage_page.dart';
 import 'package:flutter/material.dart';
@@ -89,7 +90,7 @@ void main() {
     const Size(844, 390),
   ]) {
     testWidgets(
-      'header quota fits beside title at $size and changes with agent',
+      'header quota fits beside title at $size and follows agent, then model',
       (tester) async {
         tester.view.physicalSize = size;
         tester.view.devicePixelRatio = 1;
@@ -97,7 +98,7 @@ void main() {
         final c = _usage();
         addTearDown(c.dispose);
         var opened = false;
-        Widget page(String agent) => MaterialApp(
+        Widget page(String agent, [ModelFamily? model]) => MaterialApp(
           home: Scaffold(
             appBar: AppBar(
               toolbarHeight: size.height < 500 ? 44 : 56,
@@ -108,6 +109,7 @@ void main() {
                 subtitle: 'desktop sync',
                 agentId: agent,
                 agentName: agent,
+                model: model,
                 usage: c,
                 onUsageTap: () => opened = true,
               ),
@@ -119,15 +121,22 @@ void main() {
             ),
           ),
         );
-        for (final (agent, weekly, five, color)
-            in <(String, String?, String?, Color?)>[
-              ('codex', '46.7%', '50.0%', const Color(0xFFB77900)),
-              ('claude', '12.0%', '72.0%', const Color(0xFFDC2626)),
-              ('agy', '90.0%', '10.0%', const Color(0xFF15803D)),
-              ('grok', '64.0%', null, const Color(0xFF15803D)),
-              ('other', null, null, null),
+        for (final (agent, model, weekly, five, color)
+            in <(String, ModelFamily?, String?, String?, Color?)>[
+              ('codex', null, '46.7%', '50.0%', const Color(0xFFB77900)),
+              ('claude', null, '12.0%', '72.0%', const Color(0xFFDC2626)),
+              ('agy', null, '90.0%', '10.0%', const Color(0xFF15803D)),
+              ('grok', null, '64.0%', null, const Color(0xFF15803D)),
+              ('other', null, null, null, null),
+              // Agents without a provider fall back to the running model.
+              ('omp', ModelFamily.openai, '46.7%', '50.0%', const Color(0xFFB77900)),
+              ('omp', ModelFamily.claude, '12.0%', '72.0%', const Color(0xFFDC2626)),
+              ('other', ModelFamily.gemini, '90.0%', '10.0%', const Color(0xFF15803D)),
+              ('other', ModelFamily.grok, '64.0%', null, const Color(0xFF15803D)),
+              // The agent's own provider wins over its model.
+              ('claude', ModelFamily.openai, '12.0%', '72.0%', const Color(0xFFDC2626)),
             ]) {
-          await tester.pumpWidget(page(agent));
+          await tester.pumpWidget(page(agent, model));
           await tester.pumpAndSettle();
           final bars = find.byKey(const ValueKey('chat-usage-bars'));
           expect(tester.takeException(), isNull);

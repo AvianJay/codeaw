@@ -224,7 +224,7 @@ class TurnSummaryItem extends TimelineItem {
 
   String get responseText => messages.where((m) => m.role == MessageRole.agent).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
   String get thoughtText => messages.where((m) => m.role == MessageRole.thought).map((m) => m.text).where((s) => s.isNotEmpty).join('\n\n');
-  /// Latest Codex summary heading, without Markdown markers, for compact views.
+  /// Latest Codex/GPT summary heading, without Markdown markers, for compact views.
   String? get latestThoughtSummary {
     for (final message in messages.reversed) {
       if (message.role != MessageRole.thought) continue;

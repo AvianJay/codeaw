@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import http from "node:http";
+import net from "node:net";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { once } from "node:events";
 import { WebSocket } from "ws";
 import { DeviceStore } from "../src/server/auth.js";
+import { serveWeb } from "../src/server/web.js";
 import { DesktopManager } from "../src/remote-desktop/manager.js";
 import { FrameBudget, type DesktopBackend, type NativeReply } from "../src/remote-desktop/protocol.js";
 import { startDesktopGateway } from "../src/remote-desktop/gateway.js";
@@ -189,6 +191,58 @@ describe("pre-login gateway", () => {
     expect(fs.statSync(path.join(h.home, "devices.json")).mtimeMs).toBe(before);
     expect((await (await fetch(base + "/api/health")).json() as any).desktopGateway).toBe(true);
     expect((await fetch(base + "/api/missing")).status).toBe(503);
+  });
+  it("serves the updated bridge Web build and uses the service copy only while the backend is offline", async () => {
+    const h = await harness();
+    const serviceWeb = path.join(h.home, "service-web"), bridgeWeb = path.join(h.home, "bridge-web");
+    for (const [root, build] of [[serviceWeb, "5061"], [bridgeWeb, "5073"]]) {
+      fs.mkdirSync(root);
+      fs.writeFileSync(path.join(root, "index.html"), `<title>codeaw ${build}</title>`);
+      fs.writeFileSync(path.join(root, "version.json"), JSON.stringify({ version: "0.1.0", build_number: build }));
+      fs.writeFileSync(path.join(root, "main.dart.js"), `window.build = '${build}';\n`.repeat(100));
+    }
+    fs.writeFileSync(path.join(serviceWeb, "removed.js"), "stale service asset");
+    let backend: http.Server | undefined;
+    let backendPort = 0;
+    const startBackend = async () => {
+      backend = http.createServer((req, res) => {
+        const url = new URL(req.url!, "http://localhost");
+        if (url.pathname === "/backend-error") { res.writeHead(503); res.end("backend error"); return; }
+        if (!serveWeb(req, res, url.pathname, bridgeWeb)) { res.writeHead(404); res.end("missing bridge asset"); }
+      });
+      await new Promise<void>((resolve) => backend!.listen(0, "127.0.0.1", resolve));
+      backendPort = (backend.address() as net.AddressInfo).port;
+    };
+    const stopBackend = async () => {
+      const current = backend; backend = undefined;
+      if (current) { current.closeAllConnections(); await new Promise<void>((resolve) => current.close(() => resolve())); }
+    };
+    cleanup.push(stopBackend); await startBackend();
+    const gateway = await startDesktopGateway({ name: "CodeawDesktop-0123456789abcdef", configFile: path.join(h.home, "config.yaml"), home: h.home,
+      ownerSid: "S-1-5-21-1-2-3-1001", backendPipe: "\\\\.\\pipe\\codeaw-backend-0123456789abcdef0123456789abcdef",
+      port: 7860, hosts: "auto", gateway: "unused", helper: "missing-test-helper", webRoot: serviceWeb, enabled: false },
+      { port: 0, hosts: ["127.0.0.1"], connectBackend: () => net.connect({ host: "127.0.0.1", port: backendPort }) });
+    cleanup.push(() => gateway.close()); const base = `http://127.0.0.1:${gateway.port()}`;
+    const version = async () => (await (await fetch(base + "/version.json")).json() as { build_number: string }).build_number;
+    expect(await version()).toBe("5073");
+    expect(await (await fetch(base + "/pair")).text()).toContain("5073");
+    const script = await fetch(base + "/main.dart.js");
+    expect(script.headers.get("cache-control")).toBe("no-cache");
+    expect(script.headers.get("content-encoding")).toBe("gzip");
+    expect(await script.text()).toContain("5073");
+    const head = await fetch(base + "/version.json", { method: "HEAD" });
+    expect(head.status).toBe(200); expect(await head.text()).toBe("");
+    const etag = head.headers.get("etag")!;
+    expect((await fetch(base + "/version.json", { headers: { "If-None-Match": etag } })).status).toBe(304);
+    expect((await fetch(base + "/removed.js")).status).toBe(404);
+    expect((await fetch(base + "/backend-error")).status).toBe(503);
+    await stopBackend();
+    expect(await version()).toBe("5061");
+    expect(await (await fetch(base + "/pair")).text()).toContain("5061");
+    expect((await fetch(base + "/api/missing")).status).toBe(503);
+    await startBackend();
+    expect(await version()).toBe("5073");
+    expect((await fetch(base + "/version.json", { headers: { "If-None-Match": etag } })).status).toBe(304);
   });
   it("restricts service manifests and includes transactional rollback and protected paths", () => {
     expect(GatewayManifest.safeParse({ backendPipe: "\\\\other-pc\\pipe\\arbitrary" }).success).toBe(false);

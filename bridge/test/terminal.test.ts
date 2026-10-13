@@ -23,6 +23,44 @@ function output(c: TestClient, id: string) {
 }
 
 describe("interactive terminals", () => {
+  it("restores independent terminals in the same folder after disconnect, including the selected tab", async () => {
+    tb = await startTestBridge();
+    const a = await connect();
+    const first = await a.request("_codeaw/terminal/open", { cwd: tb.home, createNew: true });
+    const second = await a.request("_codeaw/terminal/open", { cwd: tb.home, createNew: true });
+    expect(second.terminalId).not.toBe(first.terminalId);
+    await a.waitFor(() => [first, second].every((t) => process.platform === "win32" ? output(a, t.terminalId).includes("> ") : output(a, t.terminalId).length > 0));
+    for (const [t, value] of [[first, "one"], [second, "two"]] as const) {
+      await a.request("_codeaw/terminal/write", {
+        terminalId: t.terminalId,
+        data: process.platform === "win32" ? `$terminalValue = '${value}'; Write-Output ('ready-' + $terminalValue)\r` : `terminalValue=${value}; printf 'ready-%s\\n' "$terminalValue"\r`,
+      });
+      await a.waitFor(() => output(a, t.terminalId).includes(`ready-${value}`));
+    }
+    await a.request("_codeaw/terminal/detach", { terminalId: second.terminalId });
+    a.close();
+    const b = await connect();
+    const saved = await b.request("_codeaw/terminal/list", {});
+    expect(saved.terminals.map((t: any) => t.terminalId)).toEqual([first.terminalId, second.terminalId]);
+    expect(saved.activeTerminalId).toBe(second.terminalId);
+    expect(saved.maxTerminals).toBe(8);
+    const other = await connect("other-device");
+    expect((await other.request("_codeaw/terminal/list", {})).terminals).toEqual([]);
+    for (const [t, value] of [[first, "one"], [second, "two"]] as const) {
+      const replay = await b.request("_codeaw/terminal/open", { terminalId: t.terminalId });
+      expect(replay.events.map((e: any) => e.data ?? "").join("")).toContain(`ready-${value}`);
+      await b.request("_codeaw/terminal/write", {
+        terminalId: t.terminalId,
+        data: process.platform === "win32" ? "Write-Output ('restored-' + $terminalValue)\r" : "printf 'restored-%s\\n' \"$terminalValue\"\r",
+      });
+      await b.waitFor(() => output(b, t.terminalId).includes(`restored-${value}`));
+    }
+    await b.request("_codeaw/terminal/close", { terminalId: second.terminalId });
+    const remaining = await b.request("_codeaw/terminal/list", {});
+    expect(remaining.terminals.map((t: any) => t.terminalId)).toEqual([first.terminalId]);
+    expect(remaining.activeTerminalId).toBe(first.terminalId);
+  }, 25_000);
+
   it.runIf(process.platform === "win32")("executes iOS LF and multiline paste in PowerShell instead of entering continuation mode", async () => {
     tb = await startTestBridge();
     const c = await connect();

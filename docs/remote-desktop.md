@@ -29,6 +29,7 @@ codeaw-bridge remote-desktop uninstall
 
 服務開機啟動；Tailscale 就緒後，即使尚未有人登入，也能從原本網址開啟 Web／桌面。
 在操作端選擇「進階權限」可控制登入、解鎖與 UAC。登入 Windows 後，使用者 bridge 透過私人管線接上 gateway；agent 仍以原本的使用者帳號執行。
+使用者 bridge 執行中時，Web 使用該 bridge 的版本；bridge 尚未啟動時，才使用進階服務內的 Web 副本。
 
 服務與 gateway 安裝於受保護的 Program Files，設定位於 ProgramData。裝置 token 沿用既有配對，只讀取 token 的雜湊登錄。
 安裝會啟用此帳號的登入時 bridge 自動啟動；升級可再次執行 install，失敗會回復原服務與設定。

@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import '../acp/jsonrpc.dart';
 import 'bridge_client.dart';
 import 'mentions.dart';
+import 'model_family.dart';
 import 'models.dart';
 import 'history_cache.dart';
 import 'timeline.dart';
@@ -165,6 +166,21 @@ class SessionController extends ChangeNotifier {
       .map(ConfigOption.new)
       .where((o) => o.type == 'select' || o.type == 'boolean')
       .toList();
+
+  /// The agent's model selector, identified as the composer does.
+  ConfigOption? get modelOption =>
+      configOptions.where((o) => o.category == 'model' || o.id == 'model').firstOrNull;
+
+  /// The selected model's family: its explicit value first, then its label.
+  ModelFamily? get modelFamily {
+    final option = modelOption;
+    final value = option?.currentValue;
+    if (option == null || value == null) return null;
+    return modelFamilyOf(value is String ? value : null, label: option.currentLabel);
+  }
+
+  /// Codex and GPT models fold their Markdown thought summaries into the turn.
+  bool get thoughtSummary => thoughtSummaryFor(agentId, modelFamily);
 
   void _onClientChange() {
     if (client.status != ConnStatus.online) {

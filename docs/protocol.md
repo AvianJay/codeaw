@@ -601,7 +601,8 @@ out on the bridge.
 | `_codeaw/fs/search` | `{cwd, query?, limit?}` | `{cwd, files: [{path, relative, type: "file"\|"dir"}], truncated}` — best matches first; `relative` uses `/` |
 | `_codeaw/git/status` | `{cwd}` | `{root?, branch?, files: [{path, index, worktree, origPath?}]}` |
 | `_codeaw/git/diff` | `{cwd, path?, staged?}` | `{diff, truncated}` |
-| `_codeaw/terminal/open` | `{cwd?, terminalId?, afterSeq?, cols?, rows?}` | `{terminalId, cwd, shell, exited, exitCode?, lastSeq, full, events}` |
+| `_codeaw/terminal/list` | `{}` | `{terminals: [{terminalId, creationId?, cwd, shell, exited, exitCode?}], activeTerminalId?, maxTerminals}` |
+| `_codeaw/terminal/open` | `{cwd?, terminalId?, createNew?, creationId?, afterSeq?, cols?, rows?}` | `{terminalId, cwd, shell, exited, exitCode?, lastSeq, full, events}` |
 | `_codeaw/terminal/write` | `{terminalId, data}` | `{}` |
 | `_codeaw/terminal/resize` | `{terminalId, cols, rows}` | `{}` |
 | `_codeaw/terminal/detach` | `{terminalId}` | `{}` |
@@ -772,8 +773,17 @@ On Windows, writes normalize LF/CRLF to CR so newline means Enter in PSReadLine;
 POSIX bytes are unchanged.
 The starting `cwd` must be an allowed workspace directory. The shell itself has
 the bridge account's usual permissions; the workspace check is not a sandbox.
-There is one retained shell per device and starting directory, with at most eight
-per device. Only the authenticated device that created a terminal can attach,
+`open` with `createNew: true` creates an independent shell, including in a directory
+that already has a terminal. Supplying `terminalId` always attaches to that exact
+shell. For older clients, omitting both reuses the first shell in the same directory.
+New clients supply a stable random `creationId` (1–128 ASCII letters, digits, `_`
+or `-`) when creating a tab. Retrying it on the same device returns the same shell
+if the original response was lost. `list` includes it to reconcile pending opens.
+`list` returns only the authenticated device's terminals in creation order, plus
+the last attached terminal ID so a fresh app/browser can restore its tabs and
+selection. Listing does not attach viewers or resize shells. There are at most
+eight terminals per device, including exited shells until explicitly closed.
+Only the authenticated device that created a terminal can list, attach,
 write, resize, detach or close it. Dimensions range from 2 to 500; defaults are
 80 columns and 24 rows. Input is limited to 64 KiB per request.
 
@@ -787,8 +797,9 @@ means reset the screen and replay all retained events, because the client is new
 or its sequence is outside the retained history.
 
 Leaving the screen detaches without stopping commands. Terminals survive socket
-reconnects but expire after ten minutes with no attached viewers, and disappear
-when the bridge restarts. About 512 Ki UTF-16 code units of recent output are
+reconnects, page reloads and closed browsers without an idle timeout. They remain
+until explicitly closed or the bridge stops; they do not survive bridge restarts.
+About 512 Ki UTF-16 code units of recent output are
 retained in memory, with no terminal output written into the agent event log.
 `close` ends the shell and releases its slot; a later `open` starts a new shell.
 The Node distribution uses prebuilt node-pty bindings; standalone Bun 1.4.2

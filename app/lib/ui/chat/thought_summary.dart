@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../data/timeline.dart';
 import '../common/markdown.dart';
 
-/// One turn's thought summaries, kept compact while Codex streams new sections.
+/// One turn's thought summaries, kept compact while Codex or a GPT model streams new sections.
 class ThoughtSummary extends StatefulWidget {
   const ThoughtSummary({super.key, required this.turn, this.live = false});
 

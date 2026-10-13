@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:xterm/xterm.dart';
@@ -6,24 +7,197 @@ import 'package:xterm/xterm.dart';
 import '../acp/jsonrpc.dart';
 import 'bridge_client.dart';
 
-/// Retains the screen and shell identity when navigating away and back.
-class TerminalHub {
-  TerminalHub(this.client);
+/// The bridge owns the shells; this hub restores their tabs after a fresh launch.
+class TerminalHub extends ChangeNotifier {
+  TerminalHub(this.client) {
+    _connection = client.connected.listen((_) {
+      if (initialized) unawaited(refresh());
+    });
+  }
   final BridgeClient client;
-  final _controllers = <String, ShellController>{};
+  final _controllers = <ShellController>[];
+  late final StreamSubscription<void> _connection;
+  ShellController? active;
+  bool initialized = false;
+  bool loading = false;
+  String? error;
+  int maxTerminals = 8;
+  bool _visible = false;
+  bool _disposed = false;
+  Future<void>? _refreshing;
 
-  ShellController open(String cwd) => _controllers.putIfAbsent(cwd, () => ShellController(client, cwd));
+  List<ShellController> get controllers => List.unmodifiable(_controllers);
+  bool get canCreate =>
+      client.isOnline &&
+      initialized &&
+      !loading &&
+      error == null &&
+      _controllers.length < maxTerminals;
 
+  Future<void> show({String cwd = ''}) async {
+    _visible = true;
+    await refresh();
+    if (_disposed || !_visible) return;
+    if (cwd.isNotEmpty) {
+      final existing = active?.cwd == cwd
+          ? active
+          : _controllers.where((c) => c.cwd == cwd).firstOrNull;
+      if (existing != null) {
+        select(existing);
+      } else if (canCreate) {
+        create(cwd);
+      }
+    } else if (active != null) {
+      select(active!);
+    }
+  }
+
+  Future<void> refresh() =>
+      _refreshing ??= _refresh().whenComplete(() => _refreshing = null);
+
+  Future<void> _refresh() async {
+    if (_disposed || !client.isOnline) return;
+    loading = true;
+    error = null;
+    notifyListeners();
+    final knownIds = {for (final c in _controllers) c: c.terminalId};
+    try {
+      final result =
+          await client.request('_codeaw/terminal/list') as Map<String, dynamic>;
+      if (_disposed) return;
+      final saved = (result['terminals'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>();
+      final ids = <String>{};
+      for (final item in saved) {
+        final id = item['terminalId'] as String;
+        ids.add(id);
+        var c = _controllers
+            .where(
+              (c) =>
+                  c.terminalId == id ||
+                  (c.terminalId == null && c.creationId == item['creationId']),
+            )
+            .firstOrNull;
+        if (c == null) {
+          c = ShellController(
+            client,
+            item['cwd'] as String,
+            terminalId: id,
+            creationId: item['creationId'] as String?,
+          );
+          _add(c);
+        }
+        c.terminalId = id;
+        c.shell = item['shell'] as String?;
+        c.exited = item['exited'] == true;
+        c.exitCode = (item['exitCode'] as num?)?.toInt();
+      }
+      for (final c in _controllers.toList()) {
+        if (c.terminalId != null &&
+            knownIds[c] == c.terminalId &&
+            !ids.contains(c.terminalId)) {
+          _controllers.remove(c);
+          c.removeListener(_changed);
+          c.dispose();
+        }
+      }
+      if (!_controllers.contains(active)) {
+        active =
+            _controllers
+                .where((c) => c.terminalId == result['activeTerminalId'])
+                .firstOrNull ??
+            _controllers.lastOrNull;
+      }
+      maxTerminals = (result['maxTerminals'] as num?)?.toInt() ?? 8;
+      initialized = true;
+      if (_visible && active != null) {
+        unawaited(active!.attach());
+      }
+    } catch (e) {
+      if (!_disposed) {
+        error = e is RpcError && e.code == -32601
+            ? '請更新電腦上的 bridge 以使用多終端機'
+            : e is RpcError
+            ? e.detail
+            : '$e';
+      }
+    } finally {
+      if (!_disposed) {
+        loading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _add(ShellController c) {
+    _controllers.add(c);
+    c.addListener(_changed);
+  }
+
+  ShellController? create(String cwd) {
+    if (!canCreate) return null;
+    final c = ShellController(client, cwd);
+    _add(c);
+    select(c);
+    return c;
+  }
+
+  void select(ShellController c) {
+    if (_disposed || !_controllers.contains(c)) return;
+    if (active != c) active?.detach();
+    active = c;
+    _visible = true;
+    notifyListeners();
+    unawaited(c.attach());
+  }
+
+  Future<void> close(ShellController c) async {
+    await c.close();
+    if (_disposed ||
+        !_controllers.contains(c) ||
+        c.terminalId != null ||
+        c.error != null ||
+        c.loading) {
+      return;
+    }
+    final index = _controllers.indexOf(c);
+    _controllers.remove(c);
+    c.removeListener(_changed);
+    c.dispose();
+    if (active == c) {
+      active = _controllers.isEmpty
+          ? null
+          : _controllers[index.clamp(0, _controllers.length - 1)];
+      if (_visible && active != null) unawaited(active!.attach());
+    }
+    notifyListeners();
+  }
+
+  void hide() {
+    _visible = false;
+    active?.detach();
+  }
+
+  void _changed() {
+    if (!_disposed) notifyListeners();
+  }
+
+  @override
   void dispose() {
-    for (final c in _controllers.values) {
+    _disposed = true;
+    _connection.cancel();
+    for (final c in _controllers) {
+      c.removeListener(_changed);
       c.dispose();
     }
     _controllers.clear();
+    super.dispose();
   }
 }
 
 class ShellController extends ChangeNotifier {
-  ShellController(this.client, this.cwd) {
+  ShellController(this.client, this.cwd, {this.terminalId, String? creationId})
+    : creationId = creationId ?? _newCreationId() {
     _resetScreen();
     _events = client.terminalEvents.listen(_onEvent);
     _connected = client.connected.listen((_) {
@@ -34,6 +208,7 @@ class ShellController extends ChangeNotifier {
 
   final BridgeClient client;
   final String cwd;
+  final String creationId;
   late Terminal terminal;
   String? terminalId;
   String? shell;
@@ -53,6 +228,14 @@ class ShellController extends ChangeNotifier {
   late final StreamSubscription<void> _connected;
   final _buffered = <Map<String, dynamic>>[];
   Future<void> _writes = Future.value();
+
+  static String _newCreationId() {
+    final random = Random.secure();
+    return List.generate(
+      16,
+      (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
 
   bool get canInput => attached && client.isOnline && !loading && !exited;
 
@@ -79,7 +262,7 @@ class ShellController extends ChangeNotifier {
 
   Future<void> attach() async {
     _active = true;
-    if (!client.isOnline || loading || _disposed) return;
+    if (!client.isOnline || loading || attached || _disposed) return;
     final generation = ++_generation;
     loading = true;
     error = null;
@@ -90,6 +273,8 @@ class ShellController extends ChangeNotifier {
           await client.request('_codeaw/terminal/open', {
                 'cwd': cwd,
                 'terminalId': ?terminalId,
+                if (terminalId == null) 'createNew': true,
+                if (terminalId == null) 'creationId': creationId,
                 'afterSeq': lastSeq,
                 'cols': _cols,
                 'rows': _rows,
@@ -98,7 +283,9 @@ class ShellController extends ChangeNotifier {
       if (_disposed || generation != _generation) return;
       terminalId = r['terminalId'] as String;
       if (!_active) {
-        await client.request('_codeaw/terminal/detach', {'terminalId': terminalId});
+        await client.request('_codeaw/terminal/detach', {
+          'terminalId': terminalId,
+        });
         return;
       }
       shell = r['shell'] as String?;
@@ -110,7 +297,9 @@ class ShellController extends ChangeNotifier {
       exitCode = (r['exitCode'] as num?)?.toInt();
       attached = true;
       loading = false;
-      for (final e in (r['events'] as List? ?? const []).whereType<Map<String, dynamic>>()) {
+      for (final e
+          in (r['events'] as List? ?? const [])
+              .whereType<Map<String, dynamic>>()) {
         _apply(e);
       }
       for (final e in _buffered) {
@@ -162,7 +351,10 @@ class ShellController extends ChangeNotifier {
     _writes = _writes.then((_) async {
       if (!canInput || id != terminalId || generation != _generation) return;
       try {
-        await client.request('_codeaw/terminal/write', {'terminalId': id, 'data': data});
+        await client.request('_codeaw/terminal/write', {
+          'terminalId': id,
+          'data': data,
+        });
       } catch (e) {
         if (!_disposed && client.isOnline) {
           error = e is RpcError ? e.detail : '$e';
@@ -175,7 +367,11 @@ class ShellController extends ChangeNotifier {
 
   Future<void> _resize() async {
     try {
-      await client.request('_codeaw/terminal/resize', {'terminalId': terminalId, 'cols': _cols, 'rows': _rows});
+      await client.request('_codeaw/terminal/resize', {
+        'terminalId': terminalId,
+        'cols': _cols,
+        'rows': _rows,
+      });
     } catch (_) {
       /* A reconnect sends the current dimensions again. */
     }
@@ -199,11 +395,13 @@ class ShellController extends ChangeNotifier {
     _notify();
     try {
       if (terminalId != null) {
-        await client.request('_codeaw/terminal/close', {'terminalId': terminalId});
+        await client.request('_codeaw/terminal/close', {
+          'terminalId': terminalId,
+        });
       }
-    } on RpcError catch (e) {
-      if (!e.detail.contains('Terminal not found')) {
-        error = e.detail;
+    } catch (e) {
+      if (e is! RpcError || !e.detail.contains('Terminal not found')) {
+        error = e is RpcError ? e.detail : '$e';
         return;
       }
     } finally {
@@ -224,7 +422,11 @@ class ShellController extends ChangeNotifier {
     attached = false;
     _resizeTimer?.cancel();
     if (client.isOnline && terminalId != null) {
-      unawaited(client.request('_codeaw/terminal/detach', {'terminalId': terminalId}).catchError((Object _) => null));
+      unawaited(
+        client
+            .request('_codeaw/terminal/detach', {'terminalId': terminalId})
+            .catchError((Object _) => null),
+      );
     }
   }
 

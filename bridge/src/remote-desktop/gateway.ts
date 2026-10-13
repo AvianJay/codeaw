@@ -31,7 +31,6 @@ export async function startDesktopGateway(manifest: GatewayManifest, overrides: 
     const url = new URL(req.url ?? "/", "http://localhost");
     void (async () => {
       if (await desktop.onRequest(req, res, url)) return;
-      if (serveWeb(req, res, url.pathname, manifest.webRoot)) return;
       if (req.method === "GET" && url.pathname === "/api/health") {
         res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify({ ok: true, name: "codeaw-bridge", version: VERSION, host: os.hostname(), desktopGateway: true })); return;
@@ -41,11 +40,20 @@ export async function startDesktopGateway(manifest: GatewayManifest, overrides: 
         res.writeHead(device ? 200 : 401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
         res.end(JSON.stringify(device ? { deviceId: device.id } : { error: "Unauthorized" })); return;
       }
+      // Prefer the running bridge's web build; the protected service copy can lag behind updates.
+      const webRequest = ["GET", "HEAD"].includes(req.method ?? "") && !/^\/(api|acp)(\/|$)/.test(url.pathname);
       // The user's backend pipe is ACL-restricted to that user and SYSTEM.
       const proxy = http.request({ method: req.method, path: req.url, headers: req.headers, agent }, (response) => {
         res.writeHead(response.statusCode ?? 502, response.headers); response.pipe(res);
       });
-      proxy.on("error", () => unavailable(res)); req.on("aborted", () => proxy.destroy()); res.on("close", () => proxy.destroy()); req.pipe(proxy);
+      proxy.on("error", () => {
+        if (res.destroyed) return;
+        // Keep pre-login Web available only when no backend response has started.
+        try { if (webRequest && !res.headersSent && serveWeb(req, res, url.pathname, manifest.webRoot)) return; }
+        catch { /* A missing service bundle must not escape the request handler. */ }
+        unavailable(res);
+      });
+      req.on("aborted", () => proxy.destroy()); res.on("close", () => proxy.destroy()); req.pipe(proxy);
     })().catch(() => unavailable(res));
   };
   const upgrade = (req: http.IncomingMessage, socket: Duplex, head: Buffer) => {

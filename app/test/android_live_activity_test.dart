@@ -409,6 +409,62 @@ void main() {
   );
 
   testWidgets(
+    'uses streamed summaries for GPT models of other agents once selected',
+    (tester) async {
+      final h = _Harness();
+      await h.setUp([_listed('omp:a', 'running')]);
+      h.open('omp:a');
+      h.tracker.viewing = 'omp:a';
+      h.tracker.visible = false;
+      h.update('omp:a', {
+        'sessionUpdate': 'tool_call_update',
+        'toolCallId': 't1',
+        'status': 'completed',
+      });
+      h.update('omp:a', {
+        'sessionUpdate': 'agent_thought_chunk',
+        'content': {'type': 'text', 'text': '**Checking Android SDK tools**'},
+        '_meta': {
+          'codeaw': {'mid': 'thought'},
+        },
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['detail'], '思考中…');
+
+      h.update('omp:a', {
+        'sessionUpdate': 'config_option_update',
+        'configOptions': [
+          {
+            'id': 'model',
+            'name': 'Model',
+            'category': 'model',
+            'type': 'select',
+            'currentValue': 'openai/gpt-5.2-codex',
+            'options': const [],
+          },
+        ],
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['detail'], 'Checking Android SDK tools');
+      expect(h.channel.sent.last?['shortText'], '思考中');
+
+      h.update('omp:a', {
+        'sessionUpdate': 'agent_thought_chunk',
+        'content': {
+          'type': 'text',
+          'text': '\n**Filtering OTA endpoint metadata**',
+        },
+        '_meta': {
+          'codeaw': {'mid': 'thought'},
+        },
+      });
+      await tester.pump(const Duration(seconds: 1));
+      expect(h.channel.sent.last?['detail'], 'Filtering OTA endpoint metadata');
+      h.dispose();
+    },
+  );
+
+  testWidgets(
     'picks up a conversation opened after it was armed and coalesces updates',
     (tester) async {
       final h = _Harness();

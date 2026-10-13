@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'bridge_client.dart';
+import 'model_family.dart';
 import 'models.dart';
 import 'session_controller.dart';
 import 'sessions_model.dart';
@@ -253,7 +254,7 @@ class LiveActivityTracker extends ChangeNotifier {
       c?.addListener(_sync);
       c?.timeline.addListener(_sync);
     }
-    final thought = c?.agentId == 'codex'
+    final thought = c?.thoughtSummary == true
         ? c?.timeline.currentTurn?.messages
               .where((m) => m.role == MessageRole.thought)
               .lastOrNull
@@ -288,7 +289,7 @@ class LiveActivityTracker extends ChangeNotifier {
             ),
             'running' => (
               'running',
-              _doing(timeline, showThoughts: agentId == 'codex'),
+              _doing(timeline, showThoughts: thoughtSummaryFor(agentId, c?.modelFamily)),
             ),
             _ => ('running', '準備處理下一則排隊訊息…'),
           };

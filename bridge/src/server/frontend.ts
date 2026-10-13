@@ -96,6 +96,7 @@ export class FrontendConnection implements ClientHandle {
       .onRequest("_codeaw/fs/search", passthrough, (ctx) => searchFiles(deps.guard, ctx.params.cwd, ctx.params.query, ctx.params.limit))
       .onRequest("_codeaw/git/status", passthrough, (ctx) => gitStatus(deps.guard, ctx.params.cwd))
       .onRequest("_codeaw/git/diff", passthrough, (ctx) => gitDiff(deps.guard, ctx.params.cwd, ctx.params.path, ctx.params.staged))
+      .onRequest("_codeaw/terminal/list", passthrough, () => deps.terminals.list(this.deviceId))
       .onRequest("_codeaw/terminal/open", passthrough, (ctx) => deps.terminals.open(this.deviceId, this, ctx.params))
       .onRequest("_codeaw/terminal/write", passthrough, (ctx) => deps.terminals.write(this.deviceId, ctx.params))
       .onRequest("_codeaw/terminal/resize", passthrough, (ctx) => deps.terminals.resize(this.deviceId, ctx.params))
