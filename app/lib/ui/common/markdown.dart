@@ -5,9 +5,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/bridge_client.dart';
 import 'code_view.dart';
+import 'markdown_blocks.dart';
 import 'markdown_details.dart';
 import 'markdown_image.dart';
 import 'markdown_link.dart';
+import 'markdown_visualization.dart';
 
 /// Agent markdown. `streaming` keeps unfinished code fences cheap while tokens arrive.
 class Markdown extends StatelessWidget {
@@ -30,7 +32,7 @@ class Markdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final sections = splitMarkdownDetails(data);
+    final sections = splitMarkdownBlocks(data, streaming: streaming);
     // Keep interactive blocks outside GptMarkdown's transient streaming tree.
     // Their line keys remain stable as tokens append to this message.
     return Column(
@@ -39,14 +41,22 @@ class Markdown extends StatelessWidget {
       children: [
         for (final section in sections)
           if (section.node case final node?)
-            MarkdownDetails(
-              key: ValueKey(section.line),
-              node: node,
-              client: client,
-              basePath: basePath,
-              streaming: streaming && !node.closed,
-              style: style,
-            )
+            if (node.type == 'visualization')
+              MarkdownVisualization(
+                key: ValueKey(section.line),
+                node: node,
+                client: client,
+                basePath: basePath,
+              )
+            else
+              MarkdownDetails(
+                key: ValueKey(section.line),
+                node: node,
+                client: client,
+                basePath: basePath,
+                streaming: streaming && !node.closed,
+                style: style,
+              )
           else
             _MarkdownText(
               key: ValueKey(section.line),

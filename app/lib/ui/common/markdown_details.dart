@@ -4,49 +4,6 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import '../../data/bridge_client.dart';
 import 'markdown.dart';
 
-typedef MarkdownSection = ({int line, String? text, MdCustomBlock? node});
-
-/// Split only standalone details blocks, leaving the surrounding Markdown and
-/// code examples intact. Each section is identified by its original start line.
-List<MarkdownSection> splitMarkdownDetails(String source) {
-  final lines = source.split('\n');
-  final sections = <MarkdownSection>[];
-  var textStart = 0;
-  String? fence;
-  for (var i = 0; i < lines.length; i++) {
-    final fenceMatch = DetailsSyntax._fence.firstMatch(lines[i]);
-    if (fence != null) {
-      if (fenceMatch != null &&
-          fenceMatch[1]!.startsWith(fence[0]) &&
-          fenceMatch[1]!.length >= fence.length &&
-          lines[i].substring(fenceMatch.end).trim().isEmpty) {
-        fence = null;
-      }
-      continue;
-    }
-    if (fenceMatch != null) {
-      fence = fenceMatch[1];
-      continue;
-    }
-    // Four-space-indented code is also literal Markdown.
-    if (lines[i].startsWith('    ') || lines[i].startsWith('\t')) continue;
-    final match = const DetailsSyntax().parse(lines, i);
-    if (match == null) continue;
-    final text = lines.sublist(textStart, i).join('\n');
-    if (text.trim().isNotEmpty) {
-      sections.add((line: textStart, text: text, node: null));
-    }
-    sections.add((line: i, text: null, node: match.node));
-    i = match.endLine - 1;
-    textStart = match.endLine;
-  }
-  final text = lines.sublist(textStart).join('\n');
-  if (text.trim().isNotEmpty) {
-    sections.add((line: textStart, text: text, node: null));
-  }
-  return sections;
-}
-
 /// A Markdown container, so tags in code fences stay literal and unfinished
 /// streamed bodies can be rendered without waiting for the closing tag.
 class DetailsSyntax extends MarkdownBlockSyntax {
