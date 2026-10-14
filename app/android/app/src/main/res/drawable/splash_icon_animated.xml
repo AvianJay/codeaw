@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ rasterises a static splash icon at 108 dp and stretches it, which blurs it.
+     Animated icons are drawn at full size, so this wraps splash_icon in an animation that
+     changes nothing. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:drawable="@drawable/splash_icon">
+    <target android:name="art">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="1"
+                android:propertyName="translateX"
+                android:valueFrom="0"
+                android:valueTo="0"
+                android:valueType="floatType" />
+        </aapt:attr>
+    </target>
+</animated-vector>
