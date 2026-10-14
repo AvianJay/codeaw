@@ -492,6 +492,8 @@ npx tsx scripts/dev-bridge.ts --host 0.0.0.0 --port 7861   # 只有假 agent 的
 cd ../app
 flutter test                                              # 單元測試 + 端對端測試（會自動起 dev bridge）
 $env:CODEAW_SCREENSHOTS=1; flutter test --update-goldens test/screenshot_test.dart   # 主要畫面截圖 → test/screenshots/
+$env:CODEAW_SCREENSHOTS=1; flutter test --update-goldens test/launch_splash_test.dart   # 啟動動畫各階段 → test/screenshots/launch_*.png
+python tool/generate_icon.py   # 改 icon 幾何後重新產生 Android/iOS icon、啟動畫面圖與 lib/ui/common/codeaw_icon.dart；加 --preview <png> 輸出預覽圖（需 Pillow、numpy）
 ```
 
 在 bridge 執行 `npx tsx scripts/make-fixture.ts` 會重新產生 `app/test/fixtures/replay.json`，用來檢查兩件事是否一致：完整重播（壓縮後的歷史）與逐筆事件，在 App 端歸併出來的畫面要一模一樣。

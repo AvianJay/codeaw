@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
 
+/// App backgrounds. The native launch screens use the same colors (Android
+/// res/values*/colors.xml, iOS LaunchBackground.colorset).
+const codeawSurfaceLight = Color(0xFFFCFCFE);
+const codeawSurfaceDark = Color(0xFF151820);
+
 /// Shared neutral surfaces and restrained indigo accents, for all app screens.
 ThemeData codeawTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
@@ -8,7 +13,7 @@ ThemeData codeawTheme(Brightness brightness) {
         seedColor: const Color(0xFF5964E8),
         brightness: brightness,
       ).copyWith(
-        surface: dark ? const Color(0xFF151820) : const Color(0xFFFCFCFE),
+        surface: dark ? codeawSurfaceDark : codeawSurfaceLight,
         surfaceContainerLowest: dark ? const Color(0xFF101218) : Colors.white,
         surfaceContainerLow: dark
             ? const Color(0xFF1A1D27)

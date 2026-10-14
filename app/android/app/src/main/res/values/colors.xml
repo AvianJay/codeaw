@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- codeawSurfaceLight in lib/ui/common/app_theme.dart; the launch screens fade into it. -->
+    <color name="app_surface">#FCFCFE</color>
+</resources>

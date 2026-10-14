@@ -8,12 +8,29 @@ import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
 import java.io.File
 
 class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            // Flutter's first frame repeats the splash screen (lib/ui/common/launch_splash.dart),
+            // so swap without the system fade. remove() restores the system bars from before Dart ran.
+            splashScreen.setOnExitAnimationListener { view ->
+                view.remove()
+                updateSystemUiOverlays()
+            }
+        }
+        super.onCreate(savedInstanceState)
+        // Centres Flutter on the window splash on Android 11-14 too. Only after super.onCreate,
+        // which switches to NormalTheme before anything builds the decor view.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

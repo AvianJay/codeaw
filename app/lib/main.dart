@@ -9,6 +9,7 @@ import 'app_state.dart';
 import 'data/host.dart';
 import 'ui/chat/chat_page.dart';
 import 'ui/common/app_theme.dart';
+import 'ui/common/launch_splash.dart';
 import 'ui/files/file_view_page.dart';
 import 'ui/files/files_page.dart';
 import 'ui/files/git_page.dart';
@@ -190,45 +191,47 @@ class _CodeawAppState extends State<CodeawApp> {
 
   ThemeData _theme(Brightness b) => codeawTheme(b);
 
+  Widget _app() {
+    if (!widget.state.loaded) {
+      return MaterialApp(
+        theme: _theme(Brightness.light),
+        darkTheme: _theme(Brightness.dark),
+        home: const Scaffold(body: Center(child: CircularProgressIndicator())),
+      );
+    }
+    if (!_platformFeaturesScheduled) {
+      _platformFeaturesScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(widget.state.initializePlatformFeatures());
+      });
+    }
+    return MaterialApp.router(
+      title: 'codeaw',
+      debugShowCheckedModeBanner: false,
+      theme: _theme(Brightness.light),
+      darkTheme: _theme(Brightness.dark),
+      themeMode: widget.state.themeMode,
+      routerConfig: widget.router,
+      builder: (context, child) => AppUpdatePrompt(
+        updater: widget.state.updater,
+        navigatorKey: widget.router.routerDelegate.navigatorKey,
+        routes: widget.router.routerDelegate,
+        isUpdatePage: () => widget.router.state.uri.path == '/updates',
+        openUpdates: () => unawaited(widget.router.push('/updates')),
+        child: child!,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return AppScope(
       state: widget.state,
       child: ListenableBuilder(
         listenable: widget.state,
-        builder: (context, _) {
-          if (!widget.state.loaded) {
-            return MaterialApp(
-              theme: _theme(Brightness.light),
-              darkTheme: _theme(Brightness.dark),
-              home: const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              ),
-            );
-          }
-          if (!_platformFeaturesScheduled) {
-            _platformFeaturesScheduled = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) unawaited(widget.state.initializePlatformFeatures());
-            });
-          }
-          return MaterialApp.router(
-            title: 'codeaw',
-            debugShowCheckedModeBanner: false,
-            theme: _theme(Brightness.light),
-            darkTheme: _theme(Brightness.dark),
-            themeMode: widget.state.themeMode,
-            routerConfig: widget.router,
-            builder: (context, child) => AppUpdatePrompt(
-              updater: widget.state.updater,
-              navigatorKey: widget.router.routerDelegate.navigatorKey,
-              routes: widget.router.routerDelegate,
-              isUpdatePage: () => widget.router.state.uri.path == '/updates',
-              openUpdates: () => unawaited(widget.router.push('/updates')),
-              child: child!,
-            ),
-          );
-        },
+        // Wraps both branches, so the animation carries on when loading finishes.
+        builder: (context, _) =>
+            LaunchSplash(ready: widget.state.loaded, child: _app()),
       ),
     );
   }
