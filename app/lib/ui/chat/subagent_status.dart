@@ -8,7 +8,7 @@ bool subagentIsUnfinished(SubagentStatus status) => subagentIsActive(status) || 
 
 String subagentStatusLabel(Timeline timeline, ToolItem tool) {
   final status = timeline.statusOfSubagent(tool);
-  if (subagentIsActive(status) && !timeline.running) return '未回報完成';
+  if (subagentIsActive(status) && !timeline.running) return timeline.reportsBackground(tool) ? '背景執行中' : '未回報完成';
   return switch (status) {
     SubagentStatus.pending => '等待中',
     SubagentStatus.running => '執行中',
@@ -29,7 +29,7 @@ class SubagentStatusBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final status = timeline.statusOfSubagent(tool);
-    final active = subagentIsActive(status) && timeline.running;
+    final active = subagentIsActive(status) && (timeline.running || timeline.reportsBackground(tool));
     final color = switch (status) {
       SubagentStatus.failed => scheme.error,
       SubagentStatus.completed => scheme.tertiary,

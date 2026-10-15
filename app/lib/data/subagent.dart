@@ -1,3 +1,5 @@
+import 'workflow.dart';
+
 /// Presentation facts from ACP's ordinary tool-call representation. Keep this
 /// tolerant of older adapters, but never infer delegation from free-form prose.
 String? nonEmptyString(Object? value) => value is String && value.trim().isNotEmpty ? value.trim() : null;
@@ -43,6 +45,13 @@ class SubagentInfo {
 
   static SubagentInfo? fromTool({String? name, String? title, Object? input, Object? output, Object? metadata}) {
     final raw = objectMap(input);
+    if (WorkflowAgentInfo.of(metadata) case final agent?) {
+      return SubagentInfo(name: agent.label ?? agent.phase ?? 'Workflow agent', task: nonEmptyString(raw['prompt']), role: agent.phase, model: agent.model);
+    }
+    // A workflow's agents run after the launch RPC has returned.
+    if (WorkflowInfo.fromTool(name: name, title: title, input: input, metadata: metadata) case final workflow?) {
+      return SubagentInfo(name: workflow.name, task: workflow.description, launchOnly: true, background: true);
+    }
     final meta = objectMap(metadata);
     final claude = objectMap(meta['claudeCode']);
     final response = objectMap(claude['toolResponse']);

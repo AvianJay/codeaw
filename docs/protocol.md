@@ -454,6 +454,39 @@ reports end them. Full replay retains `toolStatusSeq` and `toolLifecycleSeq` in
 `update._meta.codeaw` so cosmetic updates cannot move those lifecycle bookends.
 The main timeline and subagent browser share the same status calculation.
 
+Claude Code's Workflow tool returns as soon as it launches a background run
+(`_meta.claudeCode.toolResponse.status: "async_launched"`). claude-agent-acp
+reports run progress only to JetBrains AIR clients, so the bridge follows the
+run itself. It starts only for a live launch result whose `transcriptDir` is
+local; `remote_launched` runs and launches replayed by `session/load` are not
+followed. While the agent process runs, the bridge polls once per second:
+
+- `<transcriptDir>/journal.jsonl` (`started` / `result` / `failed` per agent,
+  with `agent-<id>.meta.json` for model and phase) becomes one child tool call
+  per agent: `toolCallId: "workflow:<Workflow toolCallId>:<agentId>"`,
+  `kind: "think"`, `rawInput: { description, prompt }`, status `in_progress` →
+  `completed` / `failed`, the agent's return value as text content, and
+  `_meta = { parentToolCallId, codeawWorkflowAgent: { agentId, runId?, label?,
+  phase?, model?, state } }`.
+- The session transcript (`<project>/<session>.jsonl`, three directories above
+  `transcriptDir`) receives Claude Code's `<task-notification>` when the run
+  ends. The bridge then reads the task's output file (summary, logs, totals and
+  return value, up to 512 KiB) into the Workflow tool's `rawOutput`.
+
+The Workflow tool carries the run lifecycle as
+`_meta.codeawWorkflow = { state, runId?, taskId?, name?, summary?, result? }`.
+`state` is `running`, `completed`, `failed` or `stopped`; `result` is the
+notification summary. Each report replaces the whole object, and the bridge keeps
+these keys when it defers large tool details, so a lazy history still shows the
+name and state. Closing or deleting the session, or the agent process
+exiting, ends its runs as `stopped`, and unfinished agents as `failed` with
+`state: "stopped"`. An idle session with a followed run is not closed by the
+idle sweep, because closing it would end the run.
+
+Replayed Claude histories contain the `<task-notification>` as a user message.
+The app shows it as a status line, does not use it as a turn prompt, and uses
+its `<tool-use-id>` and `<status>` to settle the background tool it names.
+
 Image data in logged user messages is replaced by
 `{ "type": "image", "mimeType": "…", "data": "", "uri": "codeaw-blob:<sha256>" }`;
 fetch the bytes from `/api/blobs/<sha256>`.

@@ -20,6 +20,7 @@ import '../common/markdown_image.dart';
 import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
 import 'turn_summary.dart';
+import 'workflow_view.dart';
 
 /// Codex and GPT thought messages stay in the log; their turn's card presents them once.
 /// Thoughts without a matching turn remain visible, including older histories.
@@ -50,7 +51,10 @@ class TimelineItemView extends StatelessWidget {
       listenable: item,
       builder: (context, _) => switch (item) {
         MessageItem m => m.role == MessageRole.user
-            ? UserMessageView(m, controller: controller)
+            ? switch (m.taskNotification) {
+                final notice? => TaskNotificationView(notice),
+                null => UserMessageView(m, controller: controller),
+              }
             : m.role == MessageRole.thought
                 ? ThoughtView(m, markdown: controller.thoughtSummary)
                 : AgentMessageView(m, streaming: isLast && controller.running, client: controller.client, basePath: controller.cwd),
@@ -60,7 +64,12 @@ class TimelineItemView extends StatelessWidget {
                 timeline: controller.timeline,
                 nested: depth > 0,
                 initiallyExpanded: expandSubagent,
-                report: _ToolDetails(t, showInput: false, showEmpty: false, excludeText: t.subagent?.task),
+                report: t.workflow != null
+                    ? WorkflowDetails(t, controller: controller)
+                    : t.detailsDeferred
+                    // Workflow agents' results are not kept inline in lazy histories.
+                    ? _DeferredDetails(t, controller: controller)
+                    : _ToolDetails(t, showInput: false, showEmpty: false, excludeText: t.subagent?.task),
                 itemBuilder: (child) => TimelineItemView(key: ValueKey(child.key), item: child, controller: controller, isLast: false, depth: depth + 1),
               )
             : ToolCallCard(t, controller: controller),
@@ -507,20 +516,31 @@ class _ToolCallCardState extends State<ToolCallCard> {
               ]),
             ),
           ),
-          if (open && t.detailsDeferred)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: t.loadingDetails
-                ? const LinearProgressIndicator()
-                : TextButton.icon(
-                    onPressed: () => widget.controller.loadToolDetails(t),
-                    icon: const Icon(Icons.download_rounded, size: 16),
-                    label: Text(t.detailError ?? '讀取完整輸出'),
-                  ),
-            ),
+          if (open && t.detailsDeferred) _DeferredDetails(t, controller: widget.controller),
           if (open && !t.detailsDeferred) _ToolDetails(t),
         ]),
       ),
+    );
+  }
+}
+
+/// Replayed tool output above the lazy-history threshold, read on demand.
+class _DeferredDetails extends StatelessWidget {
+  const _DeferredDetails(this.t, {required this.controller});
+  final ToolItem t;
+  final SessionController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+      child: t.loadingDetails
+          ? const LinearProgressIndicator()
+          : TextButton.icon(
+              onPressed: () => controller.loadToolDetails(t),
+              icon: const Icon(Icons.download_rounded, size: 16),
+              label: Text(t.detailError ?? '讀取完整輸出'),
+            ),
     );
   }
 }

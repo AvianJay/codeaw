@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'subagent.dart';
 import 'tool_display.dart';
+import 'workflow.dart';
 
 /// Base of everything shown in a session's conversation. Items are mutable and notify
 /// their own listeners, so a streaming chunk only rebuilds the bubble it belongs to.
@@ -52,6 +53,20 @@ class MessageItem extends TimelineItem {
 
   String get text => parts.where((p) => p['type'] == 'text').map((p) => p['text'] as String? ?? '').join();
 
+  /// Claude Code delivers background task results as user-role messages.
+  TaskNotification? get taskNotification {
+    if (role != MessageRole.user || parentToolCallId != null) return null;
+    final text = this.text;
+    if (text.length != _noticeLength) {
+      _noticeLength = text.length;
+      _notice = text.trimLeft().startsWith('<task-notification>') ? TaskNotification.parse(text) : null;
+    }
+    return _notice;
+  }
+
+  int _noticeLength = -1;
+  TaskNotification? _notice;
+
   /// A prompt's text with its file mentions written back as `@name`, for copying and reuse.
   String get promptText => parts
       .map((p) => switch (p['type']) {
@@ -96,6 +111,7 @@ class ToolItem extends TimelineItem {
 
 
   SubagentInfo? get subagent => SubagentInfo.fromTool(name: name, title: title, input: rawInput, output: rawOutput, metadata: meta);
+  WorkflowInfo? get workflow => WorkflowInfo.fromTool(name: name, title: title, input: rawInput, metadata: meta);
   McpToolRef? get mcp => mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: meta);
   String get displayTitle => toolTitle(title: title, name: name, rawInput: rawInput, metadata: meta);
 
@@ -282,6 +298,8 @@ class Timeline extends ChangeNotifier {
   final _parents = <String, ToolItem>{};
   final _subagentOwners = <String, ToolItem>{};
   final _agentStates = <String, ({int revision, Map state})>{};
+  /// Ended background tasks by the tool call that started them.
+  final _taskNotices = <String, ({int revision, SubagentStatus status})>{};
   int _revision = 0;
   bool _hierarchyDirty = false;
   bool _structureChanged = false;
@@ -359,10 +377,22 @@ class Timeline extends ChangeNotifier {
     return active ?? latestActivityOf(tool);
   }
 
+  /// The bridge follows this workflow run or agent, so its running state holds
+  /// after the turn that launched it has ended.
+  bool reportsBackground(ToolItem tool) =>
+      workflowRunStatus(tool.meta) == SubagentStatus.running || WorkflowAgentInfo.of(tool.meta)?.state == 'running';
+
   SubagentStatus statusOfSubagent(ToolItem tool) {
     final info = tool.subagent;
     final descendants = descendantsOf(tool).toList();
     final lastActivity = descendants.fold(0, (latest, item) => item.activityRevision > latest ? item.activityRevision : latest);
+    if (WorkflowAgentInfo.of(tool.meta)?.state == 'stopped') return SubagentStatus.cancelled;
+    if (workflowRunStatus(tool.meta) case final run?) return run;
+    final workflow = tool.workflow;
+    if (workflow?.error != null) return SubagentStatus.failed;
+    // Replayed histories report a background task's end only to the model.
+    final notice = _taskNotices[tool.toolCallId];
+    if (notice != null && notice.revision >= lastActivity) return notice.status;
     final reported = reportedSubagentStatus(tool.meta, tool.rawOutput);
     if (reported != null && reported != SubagentStatus.pending && reported != SubagentStatus.running && tool.lifecycleRevision >= lastActivity) {
       return reported;
@@ -401,7 +431,15 @@ class Timeline extends ChangeNotifier {
     _parents.clear();
     _children.clear();
     _subagentOwners.clear();
+    _taskNotices.clear();
     _rootItems = [];
+    for (final message in items.whereType<MessageItem>()) {
+      final notice = message.taskNotification;
+      final status = notice?.subagentStatus;
+      if (notice?.toolUseId case final String id when status != null) {
+        _taskNotices[id] = (revision: message.activityRevision, status: status);
+      }
+    }
     // Legacy Codex activity notifications have a fresh tool ID for every
     // interaction. Preserve the log while showing one card per child thread.
     final ownersByThread = <String, ToolItem>{};
@@ -473,7 +511,7 @@ class Timeline extends ChangeNotifier {
           ? DateTime.fromMillisecondsSinceEpoch(startedAt.toInt(), isUtc: true)
           : turnStartedAt ?? observedAt ?? DateTime.now();
       if (currentTurn == null || currentTurn!.startedAt != turnStartedAt) {
-        final prompts = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.parentToolCallId == null);
+        final prompts = items.whereType<MessageItem>().where((m) => m.role == MessageRole.user && m.parentToolCallId == null && m.taskNotification == null);
         final prompt = promptId == null
             ? prompts.where((m) => !m.steered && (!m.queued || m.dequeued == 'started')).lastOrNull
             : prompts.where((m) => m.promptId == promptId).lastOrNull;
@@ -1055,6 +1093,10 @@ class Timeline extends ChangeNotifier {
             } else if (item.steered && !turn.steeredPrompts.contains(item)) {
               turn.steeredPrompts.add(item);
             }
+          }
+          if (item.taskNotification?.toolUseId case final String id) {
+            _hierarchyDirty = true;
+            if (_byKey['tool:$id'] case final ToolItem tool) _touch(tool);
           }
         }
         _touch(item);

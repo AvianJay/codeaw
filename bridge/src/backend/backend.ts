@@ -23,4 +23,6 @@ export interface AgentBackend {
   stop(reason?: string): Promise<void>;
   sessionConnection?(sessionId: string): "desktop" | "acp";
   sessionConnected?(sessionId: string): boolean;
+  /** The session still runs work that a turn left in the background, such as a Claude workflow. */
+  hasBackgroundWork?(sessionId: string): boolean;
 }

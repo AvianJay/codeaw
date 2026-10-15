@@ -13,6 +13,7 @@ import type { DesktopState } from "./codex-desktop-state.js";
 import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/environment.js";
 import { AcpSubagents } from "./acp-subagents.js";
 import { AgentTempDirectory } from "./agent-temp.js";
+import { ClaudeWorkflows } from "./claude-workflows.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -107,6 +108,9 @@ export class AgentProcess implements AgentBackend {
   private readonly log: Logger;
   private readonly logFile: string;
   private readonly subagents = new AcpSubagents();
+  private readonly workflows = new ClaudeWorkflows((params) => this.handlers.onUpdate(this.id, params));
+  /** Sessions replaying history; a replayed launch is not a run to follow. */
+  private readonly loading = new Set<string>();
   /** Requests currently in flight; used to decide whether the process is idle. */
   inflight = 0;
   lastUsed = Date.now();
@@ -135,6 +139,10 @@ export class AgentProcess implements AgentBackend {
 
   get supportsForkAtMessage(): boolean {
     return supportsForkPoint(this.init);
+  }
+
+  hasBackgroundWork(sessionId: string): boolean {
+    return this.workflows.active(sessionId);
   }
 
   get running(): boolean {
@@ -221,7 +229,9 @@ export class AgentProcess implements AgentBackend {
     const app = acp
       .client({ name: "codeaw-bridge" })
       .onNotification("session/update", (ctx) => {
-        if (generation === this.generation) this.handlers.onUpdate(this.id, ctx.params);
+        if (generation !== this.generation) return;
+        this.handlers.onUpdate(this.id, ctx.params);
+        if (!this.loading.has(ctx.params.sessionId)) this.workflows.observe(ctx.params);
       })
       .onRequest("session/request_permission", (ctx) => this.handlers.onPermission(this.id, ctx.params, ctx.signal))
       .onRequest("elicitation/create", (ctx) => this.handlers.onElicitation(this.id, ctx.params, ctx.signal));
@@ -313,6 +323,8 @@ export class AgentProcess implements AgentBackend {
     const run = this.run;
     if (run) void this.retire(run);
     this.subagents.clear();
+    // Background workflows run inside the agent process and end with it.
+    this.workflows.stop();
     if (wasReady) this.log.warn(detail);
     this.handlers.onExit(this.id, generation, detail);
   }
@@ -323,14 +335,19 @@ export class AgentProcess implements AgentBackend {
     if (!conn) throw new Error(`Agent "${this.config.name}" is not running`);
     this.inflight++;
     this.lastUsed = Date.now();
+    const sessionId = (params as { sessionId?: string } | undefined)?.sessionId;
+    const loading = method === "session/load" && typeof sessionId === "string" && !this.loading.has(sessionId);
     try {
-      if (method === "session/load") this.subagents.clear((params as { sessionId: string }).sessionId);
+      if (method === "session/load") this.subagents.clear(sessionId);
+      if (loading) this.loading.add(sessionId);
       const result = (await conn.agent.request(method, params as never, options)) as T;
       if (method === "session/close" || method === "session/delete") {
-        this.subagents.clear((params as { sessionId: string }).sessionId);
+        this.subagents.clear(sessionId);
+        this.workflows.stop(sessionId);
       }
       return result;
     } finally {
+      if (loading) this.loading.delete(sessionId);
       this.inflight--;
       this.lastUsed = Date.now();
     }
