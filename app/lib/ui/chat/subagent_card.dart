@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../data/subagent.dart';
 import '../../data/timeline.dart';
+import '../../data/workflow.dart';
 import 'subagent_status.dart';
+import 'workflow_view.dart';
 
 /// Delegation stays in the conversation, with its transcript folded underneath.
 class SubagentCard extends StatefulWidget {
@@ -46,6 +48,7 @@ class _SubagentCardState extends State<SubagentCard> {
     final scheme = Theme.of(context).colorScheme;
     final tool = widget.tool;
     final info = tool.subagent;
+    final workflow = tool.workflow;
     final children = widget.timeline.childrenOf(tool);
     final label = subagentStatusLabel(widget.timeline, tool);
     final tools = children.whereType<ToolItem>().toList();
@@ -72,7 +75,7 @@ class _SubagentCardState extends State<SubagentCard> {
             Semantics(
               button: true,
               expanded: _open,
-              label: '子代理 ${info?.name ?? tool.title ?? ''}，$label',
+              label: '${workflow == null ? '子代理' : 'Workflow'} ${info?.name ?? tool.title ?? ''}，$label',
               child: InkWell(
                 onTap: _toggle,
                 child: Padding(
@@ -86,7 +89,7 @@ class _SubagentCardState extends State<SubagentCard> {
                           color: scheme.primaryContainer.withValues(alpha: 0.6),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: Icon(Icons.account_tree_outlined, size: 20, color: scheme.primary),
+                        child: Icon(workflow == null ? Icons.account_tree_outlined : Icons.hub_outlined, size: 20, color: scheme.primary),
                       ),
                       const SizedBox(width: 10),
                       Expanded(
@@ -94,7 +97,7 @@ class _SubagentCardState extends State<SubagentCard> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '子代理${info?.role == null ? '' : ' · ${info!.role}'}',
+                              workflow != null ? 'Workflow' : '子代理${info?.role == null ? '' : ' · ${info!.role}'}',
                               style: TextStyle(fontSize: 11, color: scheme.primary, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 3),
@@ -112,11 +115,16 @@ class _SubagentCardState extends State<SubagentCard> {
                               children: [
                                 SubagentStatusBadge(timeline: widget.timeline, tool: tool),
                                 if (tools.isNotEmpty)
-                                  Text('工具 $completed/${tools.length}', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+                                  Text('${workflow == null ? '工具' : 'Agent'} $completed/${tools.length}', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
                                 if (info?.model case final String model)
                                   Text(model, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
                               ],
                             ),
+                            if (workflow != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 7),
+                                child: WorkflowPhaseChips(timeline: widget.timeline, tool: tool, workflow: workflow),
+                              ),
                             if (!_open && nonEmptyString(latestText) != null)
                               Padding(
                                 padding: const EdgeInsets.only(top: 7),
@@ -145,7 +153,7 @@ class _SubagentCardState extends State<SubagentCard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        '任務',
+                        workflow == null ? '任務' : '說明',
                         style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.primary),
                       ),
                       const SizedBox(height: 5),
@@ -160,7 +168,7 @@ class _SubagentCardState extends State<SubagentCard> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                   child: Text(
-                    '活動紀錄 · ${children.length}',
+                    '${workflow == null ? '活動紀錄' : 'Agent'} · ${children.length}',
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.primary),
                   ),
                 ),
@@ -178,7 +186,14 @@ class _SubagentCardState extends State<SubagentCard> {
               ] else
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                  child: Text('尚無子代理活動紀錄', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                  child: Text(
+                    workflow == null
+                        ? '尚無子代理活動紀錄'
+                        : workflowRunStatus(tool.meta) == null
+                        ? 'bridge 未回報 agent 進度'
+                        : '尚無 agent 開始執行',
+                    style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                  ),
                 ),
               if (result != null)
                 Padding(

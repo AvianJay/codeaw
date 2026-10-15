@@ -214,7 +214,8 @@ class _AgentRow extends StatelessWidget {
                   crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     SubagentStatusBadge(timeline: timeline, tool: tool),
-                    if (info?.role != null) Text(info!.role!, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+                    if (tool.workflow != null || info?.role != null)
+                      Text(tool.workflow != null ? 'Workflow' : info!.role!, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
                     if (tools.isNotEmpty) Text('工具 $done/${tools.length}', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
                   ],
                 ),

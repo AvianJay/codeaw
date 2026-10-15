@@ -1534,6 +1534,8 @@ export class SessionManager implements AgentHandlers {
     for (const s of this.sessions.values()) {
       const idle = !s.turn && !s.activating && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;
       if (!idle || now - s.lastActivity < this.opts.idleSessionCloseMs) continue;
+      // Closing the session would end the background run with it.
+      if (this.registry.has(s.meta.agentId) && this.requireAgent(s.meta.agentId).hasBackgroundWork?.(s.meta.backendId)) continue;
       if (s.backendGen) await this.releaseBackend(s);
       s.entries = undefined; // reloaded from disk on next attach
     }
