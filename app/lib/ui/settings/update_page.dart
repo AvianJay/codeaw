@@ -31,6 +31,9 @@ class _UpdatePageState extends State<UpdatePage> {
         listenable: updater,
         builder: (context, _) => ContentScrollFrame(
           maxWidth: 640,
+          padding:
+              MediaQuery.paddingOf(context) +
+              const EdgeInsets.fromLTRB(20, 8, 20, 24),
           builder: (context, padding) => ListView(
             padding: padding,
             children: [
