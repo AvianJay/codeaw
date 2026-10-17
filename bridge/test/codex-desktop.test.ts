@@ -7,9 +7,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodexDesktopIpc, DesktopIpcFrameDecoder, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
+import { desktopConfigOptions, desktopSettingsPatch } from "../src/backend/codex-desktop-settings.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
+
+it("distinguishes desktop auto review from workspace access and resets the reviewer when switching modes", () => {
+  for (const mode of ["read-only", "workspace-write", "agent", "agent-full-access"]) {
+    const patch = desktopSettingsPatch({ cwd: "/workspace" }, "mode", mode);
+    const options = desktopConfigOptions({ latestThreadSettings: patch }, []);
+    expect(options.find((o: any) => o.id === "mode")?.currentValue).toBe(mode);
+    expect(patch.approvalsReviewer).toBe(mode === "agent" ? "auto_review" : "user");
+  }
+});
 
 function appArchive(file: string): void {
   const source = Buffer.from(`const versions=${JSON.stringify(VERSIONS)};`);

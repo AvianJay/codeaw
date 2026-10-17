@@ -3,6 +3,7 @@ import fs from "node:fs";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentHandlers } from "../backend/agent-process.js";
 import type { AgentBackend } from "../backend/backend.js";
+import { codexDefaults, saveCodexDefaults } from "../backend/codex-defaults.js";
 import type { DesktopState } from "../backend/codex-desktop-state.js";
 import type { AgentRegistry } from "../backend/registry.js";
 import type { PushNotifier, PushKind } from "../notify/ntfy.js";
@@ -129,6 +130,10 @@ function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
+function configOrder(option: { id: string; category?: string | null }): number {
+  return option.category === "model" || option.id === "model" ? 0 : option.category === "thought_level" || option.id === "reasoning_effort" ? 2 : 1;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof acp.RequestError) {
     const details = (err.data as any)?.details ?? (err.data as any)?.message;
@@ -150,7 +155,7 @@ function beforeOf(page: { before?: number }): { before?: number } {
 }
 
 function modeOf(meta: SessionMeta): string | undefined {
-  const opt = meta.configOptions?.find((o: any) => o.category === "mode" || o.id === "mode") as any;
+  const opt = meta.configOptions?.find((o: any) => o.id === "mode") as any;
   if (opt && typeof opt.currentValue === "string") return opt.currentValue;
   return meta.modes?.currentModeId ?? undefined;
 }
@@ -801,7 +806,7 @@ export class SessionManager implements AgentHandlers {
   }
 
   /** Makes sure the agent process holds this session live, resuming it after restarts. */
-  private async ensureActive(s: BridgeSession, allowDisconnected = false): Promise<AgentBackend> {
+  private async ensureActive(s: BridgeSession, allowDisconnected = false, override?: { configId: string; value: unknown }): Promise<AgentBackend> {
     const agent = this.requireAgent(s.meta.agentId);
     if (s.meta.connection === "desktop" && !agent.sessionConnection) throw acp.RequestError.invalidRequest(undefined, "Enable Codex desktop synchronization to reopen this desktop-linked conversation");
     // A remembered desktop session must never start ACP merely because desktop
@@ -809,7 +814,7 @@ export class SessionManager implements AgentHandlers {
     if (s.meta.connection !== "desktop") await agent.ensureStarted();
     if (s.meta.connection === "desktop" ? agent.sessionConnected?.(s.meta.backendId) : s.backendGen === agent.generation) return agent;
     if (!s.activating) {
-      s.activating = this.activate(s, agent, allowDisconnected).finally(() => {
+      s.activating = this.activate(s, agent, allowDisconnected, override).finally(() => {
         s.activating = undefined;
       });
     }
@@ -820,10 +825,10 @@ export class SessionManager implements AgentHandlers {
     return agent;
   }
 
-  private async activate(s: BridgeSession, agent: AgentBackend, allowDisconnected = false): Promise<void> {
+  private async activate(s: BridgeSession, agent: AgentBackend, allowDisconnected = false, override?: { configId: string; value: unknown }): Promise<void> {
     const caps = agent.capabilities;
     const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
-    const lastMode = modeOf(s.meta);
+    const saved = structuredClone(s.meta);
     let resp: any;
     if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
       resp = await agent.request("session/resume", base);
@@ -838,26 +843,28 @@ export class SessionManager implements AgentHandlers {
     } else {
       throw acp.RequestError.invalidRequest(undefined, `${agent.config.name} cannot reopen sessions after a restart`);
     }
-    s.backendGen = agent.generation;
     this.applySetup(s, resp);
     // The owner's next snapshot supplies its current settings. Saved bridge
     // settings must not overwrite changes made on desktop while disconnected.
-    if (s.meta.connection === "desktop") return;
-    // Some agents (Codex) reset the mode on resume; put back what the user had.
-    const nowMode = modeOf(s.meta);
-    if (lastMode && nowMode && lastMode !== nowMode) {
-      const modeOpt = s.meta.configOptions?.find((o: any) => o.category === "mode" || o.id === "mode") as any;
-      try {
-        if (modeOpt) {
-          const r = await agent.request<any>("session/set_config_option", { sessionId: s.meta.backendId, configId: modeOpt.id, value: lastMode });
-          this.applySetup(s, r);
-        } else {
-          await agent.request("session/set_mode", { sessionId: s.meta.backendId, modeId: lastMode });
-          this.applySetup(s, { modes: { ...s.meta.modes, currentModeId: lastMode } });
-        }
-      } catch (err) {
-        log.warn(`could not restore mode ${lastMode} for ${s.id}: ${errorMessage(err)}`);
+    if (s.meta.connection === "desktop") { s.backendGen = agent.generation; return; }
+    try {
+      const wanted = structuredClone(saved);
+      if (override) {
+        const option = wanted.configOptions?.find((o) => o.id === override.configId) as any;
+        if (option) option.currentValue = override.value;
+        if (override.configId === "model") wanted.configOptions = wanted.configOptions?.filter((o) => o.category !== "thought_level" && o.id !== "reasoning_effort");
+        if (override.configId === "mode" && wanted.modes) wanted.modes.currentModeId = String(override.value);
       }
+      await this.restoreSettings(s, agent, wanted);
+      s.backendGen = agent.generation;
+      this.saveMeta(s, true);
+    } catch (error) {
+      // Retain the desired settings for retries/restarts. Never mark the session
+      // active or send a prompt using the agent's fallback model after a failure.
+      s.backendGen = 0;
+      this.applySetup(s, saved);
+      this.saveMeta(s, true);
+      throw error;
     }
   }
 
@@ -966,12 +973,14 @@ export class SessionManager implements AgentHandlers {
     const projectless = m.projectless === true;
     const cwd = projectless ? this.store.createChatDirectory() : params.cwd;
     const req: Record<string, unknown> = { cwd, mcpServers: [] };
+    let defaults: Record<string, string>;
     if (!projectless && params.additionalDirectories?.length && agent.capabilities?.sessionCapabilities?.additionalDirectories) {
       req.additionalDirectories = params.additionalDirectories;
     }
     let resp: any;
     let s: BridgeSession;
     try {
+      defaults = codexDefaults(agent);
       resp = await agent.request<any>("session/new", req);
       s = this.createSession({ id: extId(agentId, resp.sessionId), agentId, backendId: resp.sessionId, cwd, ...(projectless ? { projectless: true } : {}), origin: "bridge" });
     } catch (error) {
@@ -981,13 +990,21 @@ export class SessionManager implements AgentHandlers {
     s.backendGen = agent.generation;
     this.applySetup(s, resp);
     this.flushOrphans(s);
-    const initial = m.initialConfig && typeof m.initialConfig === "object" ? (m.initialConfig as Record<string, unknown>) : {};
-    for (const [configId, value] of Object.entries(initial)) {
-      try {
-        await this.applyConfigOption(s, agent, configId, value);
-      } catch (err) {
-        log.warn(`initial ${configId}=${String(value)} failed for ${s.id}: ${errorMessage(err)}`);
+    const initial = { ...defaults, ...(m.initialConfig && typeof m.initialConfig === "object" ? (m.initialConfig as Record<string, unknown>) : {}) };
+    const initialOptions = Object.entries(initial).sort(([a], [b]) => configOrder({ id: a }) - configOrder({ id: b }));
+    try {
+      for (const [configId, value] of initialOptions) {
+        const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
+        if (!current || !sameJson(current.currentValue, value)) await this.applyConfigOption(s, agent, configId, value);
       }
+      for (const [configId, value] of initialOptions) {
+        const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
+        if (!current || !sameJson(current.currentValue, value)) throw new Error(`Unconfirmed ${configId}`);
+      }
+    } catch (err) {
+      // An explicit/saved model must not silently become an expensive default.
+      await this.removeChat(s.id, s, { native: false });
+      throw acp.RequestError.invalidRequest(undefined, "Could not apply the initial settings; no message was sent");
     }
     await this.attach(c, s);
     this.activity(s);
@@ -1336,17 +1353,28 @@ export class SessionManager implements AgentHandlers {
     return this.forkView(fork, replace);
   }
 
-  /** Puts the original chat's model, effort, mode and other settings back on a branch. */
+  /** Restores a reopened chat/branch before allowing its next prompt. */
   private async restoreSettings(fork: BridgeSession, agent: AgentBackend, source: SessionMeta): Promise<void> {
-    for (const wanted of (source.configOptions ?? []) as any[]) {
+    // Models can change the available effort levels; always restore the model first.
+    const options = [...(source.configOptions ?? [])] as any[];
+    options.sort((a, b) => configOrder(a) - configOrder(b));
+    for (const wanted of options) {
       if (wanted.type !== "select" && wanted.type !== "boolean") continue;
       const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
-      if (!current || current.type !== wanted.type || sameJson(current.currentValue, wanted.currentValue)) continue;
+      if (current && sameJson(current.currentValue, wanted.currentValue)) continue;
       try {
+        if (!current || current.type !== wanted.type) throw new Error("Setting is no longer available");
         await this.applyConfigOption(fork, agent, wanted.id, wanted.currentValue);
+        const applied = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
+        if (!sameJson(applied?.currentValue, wanted.currentValue)) throw new Error("Agent did not confirm the setting");
       } catch (err) {
-        log.warn(`could not restore ${wanted.id} on ${fork.id}: ${errorMessage(err)}`);
+        throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent. Choose the setting again before retrying`);
       }
+    }
+    for (const wanted of options) {
+      if (wanted.type !== "select" && wanted.type !== "boolean") continue;
+      const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
+      if (!sameJson(current?.currentValue, wanted.currentValue)) throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent`);
     }
     const mode = source.modes?.currentModeId;
     if (!mode || !fork.meta.modes || fork.meta.modes.currentModeId === mode || modeOf(fork.meta) === mode) return;
@@ -1354,7 +1382,7 @@ export class SessionManager implements AgentHandlers {
       await agent.request("session/set_mode", { sessionId: fork.meta.backendId, modeId: mode });
       this.applySetup(fork, { modes: { ...fork.meta.modes, currentModeId: mode } });
     } catch (err) {
-      log.warn(`could not restore mode ${mode} on ${fork.id}: ${errorMessage(err)}`);
+      throw acp.RequestError.invalidRequest(undefined, "Could not restore mode; no message was sent. Choose the mode again before retrying");
     }
   }
 
@@ -1403,17 +1431,21 @@ export class SessionManager implements AgentHandlers {
 
   async setConfigOption(_c: ClientHandle, params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
     const s = this.requireLoaded(params.sessionId);
-    const agent = await this.ensureActive(s);
+    const agent = await this.ensureActive(s, false, { configId: params.configId, value: (params as any).value });
     const r = await this.applyConfigOption(s, agent, params.configId, (params as any).value);
+    this.saveMeta(s, true);
+    saveCodexDefaults(agent, params.configId, s.meta.configOptions ?? []);
     return { ...r, configOptions: s.meta.configOptions ?? r.configOptions };
   }
 
   async setMode(_c: ClientHandle, params: acp.SetSessionModeRequest): Promise<acp.SetSessionModeResponse> {
     const s = this.requireLoaded(params.sessionId);
-    const agent = await this.ensureActive(s);
+    const agent = await this.ensureActive(s, false, { configId: "mode", value: params.modeId });
     const r = await agent.request<any>("session/set_mode", { sessionId: s.meta.backendId, modeId: params.modeId });
     if (s.meta.modes) this.applySetup(s, { modes: { ...s.meta.modes, currentModeId: params.modeId } });
     else this.append(s, { kind: "update", update: { sessionUpdate: "current_mode_update", currentModeId: params.modeId } });
+    this.saveMeta(s, true);
+    saveCodexDefaults(agent, "mode", s.meta.configOptions ?? [], params.modeId);
     return r ?? {};
   }
 

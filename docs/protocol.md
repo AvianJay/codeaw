@@ -180,6 +180,23 @@ suggestions. Check `initialize._meta.codeaw.projectless` before offering creatio
 against an older bridge. Failed creation removes only an empty allocated folder;
 deleting session history preserves working files. This is not an agent sandbox.
 
+For Codex, explicit model/effort changes save the confirmed model and effort to
+`$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). Permission-mode changes
+save `approval_policy`, `approvals_reviewer` and `sandbox_mode`, or update an
+existing `default_permissions` profile instead of mixing the two sandbox formats.
+New chats apply these defaults before returning their selectors. A failure to
+apply or confirm the initial settings fails creation without sending a prompt.
+Other config keys, tables and comments are preserved. A default-save failure is
+reported separately from the setting already applied to the current chat.
+
+Reopened ACP sessions restore their saved model first, then mode/other options,
+then reasoning effort before sending any prompt. Restoration does not update
+global defaults. If restoration fails or the agent does not confirm it, the
+bridge blocks the prompt and retains the saved settings for retries. Selecting
+a replacement model allows recovery when the old model is unavailable. Cached
+history remains available before the agent is reactivated. Desktop-owned chats
+continue to use their owner's current settings.
+
 ### `session/load` (attach + replay)
 
 Params: standard plus optional `_meta.codeaw.afterSeq`, `_meta.codeaw.epoch`,
@@ -589,10 +606,12 @@ Codex desktop steering includes the owner's required `restoreMessage` (message
 ID, input, cwd, workspace roots and collaboration context), and requires an
 accepted result. It never starts a second ACP runtime for a desktop-owned turn.
 Desktop `session/set_config_option` supports `model`, `reasoning_effort`, `mode`
-(`read-only`, `agent`, `agent-full-access`) and `collaboration_mode` (`default`,
+(`read-only`, `workspace-write`, `agent`, `agent-full-access`) and `collaboration_mode` (`default`,
 `plan`); `session/set_mode` is also supported. Settings are applied to the next
 turn and confirmed from the owner's snapshot. Updated options are returned and
 broadcast as `config_option_update`.
+`agent` selects Auto review; `workspace-write` asks the user for sandbox
+escalations. Switching permission modes also updates `approvalsReviewer`.
 
 ## Permission and elicitation requests
 

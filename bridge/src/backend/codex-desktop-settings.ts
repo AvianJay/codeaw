@@ -32,8 +32,9 @@ export function desktopConfigOptions(conversation: any, models: Model[]): acp.Se
   const collaboration = settings.collaborationMode ?? conversation?.latestCollaborationMode;
   const sandbox = settings.sandboxPolicy?.type;
   const permission = settings.activePermissionProfile?.id;
+  const reviewer = settings.approvalsReviewer ?? conversation?.currentPermissions?.approvalsReviewer;
   const mode = sandbox === "dangerFullAccess" || permission === ":danger-full-access" ? "agent-full-access"
-    : sandbox === "readOnly" || permission === ":read-only" ? "read-only" : "agent";
+    : sandbox === "readOnly" || permission === ":read-only" ? "read-only" : reviewer === "auto_review" || reviewer === "guardian_subagent" ? "agent" : "workspace-write";
   const catalog = models.some((entry) => entry.id === model) ? models : [{ id: model, name: model || "目前模型", efforts: [] }, ...models];
   const efforts = models.find((entry) => entry.id === model)?.efforts ?? [];
   const values = [...new Set([effort, ...(efforts.length ? efforts : ["low", "medium", "high", "xhigh", "max"])])];
@@ -41,7 +42,8 @@ export function desktopConfigOptions(conversation: any, models: Model[]): acp.Se
     { id: "model", name: "模型", category: "model", type: "select", currentValue: model, options: catalog.map(({ id, name }) => ({ value: id, name })) },
     { id: "reasoning_effort", name: "推理強度", category: "thought_level", type: "select", currentValue: effort, options: values.map((value) => ({ value, name: value })) },
     { id: "mode", name: "權限模式", category: "mode", type: "select", currentValue: mode, options: [
-      { value: "read-only", name: "唯讀" }, { value: "agent", name: "Agent" }, { value: "agent-full-access", name: "完整存取", description: "允許 agent 存取工作區外檔案與網路" },
+      { value: "read-only", name: "唯讀" }, { value: "workspace-write", name: "工作區存取" },
+      { value: "agent", name: "Auto review" }, { value: "agent-full-access", name: "完整存取", description: "允許 agent 存取工作區外檔案與網路" },
     ] },
     { id: "collaboration_mode", name: "協作模式", category: "mode", type: "select", currentValue: collaboration?.mode ?? "default", options: [
       { value: "default", name: "Default" }, { value: "plan", name: "Plan" },
@@ -62,8 +64,8 @@ export function desktopSettingsPatch(conversation: any, configId: string, value:
     return { collaborationMode: { mode: value, settings: { model, reasoning_effort: effort, developer_instructions: null } } };
   if (configId === "mode") {
     const sandboxPolicy = value === "read-only" ? { type: "readOnly" } : value === "agent-full-access" ? { type: "dangerFullAccess" }
-      : value === "agent" ? { type: "workspaceWrite", writableRoots: [conversation.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } : undefined;
-    if (sandboxPolicy) return { sandboxPolicy, permissions: null, approvalPolicy: value === "agent-full-access" ? "never" : "on-request" };
+      : value === "agent" || value === "workspace-write" ? { type: "workspaceWrite", writableRoots: [conversation.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } : undefined;
+    if (sandboxPolicy) return { sandboxPolicy, permissions: null, approvalPolicy: value === "agent-full-access" ? "never" : "on-request", approvalsReviewer: value === "agent" ? "auto_review" : "user" };
   }
   throw acp.RequestError.invalidParams(undefined, "Unknown desktop setting or unsupported value");
 }
