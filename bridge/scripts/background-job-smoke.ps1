@@ -1,5 +1,13 @@
-﻿param([string]$Executable, [string]$Config)
+﻿param([string]$Executable, [string]$Config, [switch]$ForbidBreakaway)
 $CommandLine = '"' + $Executable + '" start --background --tray --config "' + $Config + '"'
+$jobExecutable = $Executable
+if ($ForbidBreakaway) {
+    # Put the native launcher directly in the restrictive job; a Bun child has
+    # its own nested job, whose breakaway policy differs from its ancestors.
+    $jobExecutable = Join-Path (Split-Path -Parent $Executable) 'codeaw-launcher.exe'
+    $state = Split-Path -Parent $Config
+    $CommandLine = '"' + $jobExecutable + '" --launch "' + $state + '" "' + (Join-Path $state 'bridge.log') + '" "' + $Executable + '" start --headless --config "' + $Config + '"'
+}
 $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
@@ -13,9 +21,17 @@ public static class CodeawJobProbe {
   public IntPtr reserved3,input,output,error;
  }
  [StructLayout(LayoutKind.Sequential)] struct Info {public IntPtr process,thread;public int pid,tid;}
+ [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
+  public long processTime,jobTime; public uint flags; public UIntPtr minWorkingSet,maxWorkingSet;
+  public uint activeProcesses; public UIntPtr affinity; public uint priority,scheduling;
+ }
+ [StructLayout(LayoutKind.Sequential)] struct IoCounters {public ulong a,b,c,d,e,f;}
+ [StructLayout(LayoutKind.Sequential)] struct Limits {public BasicLimits basic;public IoCounters io;public UIntPtr processMemory,jobMemory,peakProcessMemory,peakJobMemory;}
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr a,string name);
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcess(string app,StringBuilder cmd,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr env,string cwd,ref Startup startup,out Info info);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int type,ref Limits limits,int size);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
  [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
  [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
  [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
@@ -24,12 +40,15 @@ public static class CodeawJobProbe {
  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
  static IntPtr job;
  static void Check(bool ok) {if(!ok) throw new Win32Exception(Marshal.GetLastWin32Error());}
- public static void Start(string app,string command,string cwd) {
+ public static uint Start(string app,string command,string cwd,bool allowBreakaway) {
   job=CreateJobObject(IntPtr.Zero,null); if(job==IntPtr.Zero) throw new Win32Exception();
+  var limits=new Limits(); limits.basic.flags=0x2000u | (allowBreakaway ? 0x800u : 0u);
+  Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(Limits))));
   var si=new Startup {cb=Marshal.SizeOf(typeof(Startup))}; Info pi;
   Check(CreateProcess(app,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x08000004,IntPtr.Zero,cwd,ref si,out pi));
   try {Check(AssignProcessToJobObject(job,pi.process));ResumeThread(pi.thread);
    if(WaitForSingleObject(pi.process,30000)!=0) throw new Exception("Test CLI timed out");
+   uint code; Check(GetExitCodeProcess(pi.process,out code)); return code;
   } finally {CloseHandle(pi.thread);CloseHandle(pi.process);}
  }
  public static bool Member(int pid) {var h=OpenProcess(0x1000,false,pid);if(h==IntPtr.Zero) throw new Win32Exception();try {bool m;Check(IsProcessInJob(h,job,out m));return m;}finally {CloseHandle(h);}}
@@ -37,7 +56,17 @@ public static class CodeawJobProbe {
 }
 '@
 try {
- [CodeawJobProbe]::Start($Executable,$CommandLine,(Split-Path -Parent $Config))
+ $exitCode = [CodeawJobProbe]::Start($jobExecutable,$CommandLine,(Split-Path -Parent $Config),(-not $ForbidBreakaway))
+ if ($ForbidBreakaway) {
+  if ($exitCode -eq 0) { throw 'Restricted job unexpectedly allowed background startup' }
+  $diagnostic = [IO.File]::ReadAllText((Join-Path (Split-Path -Parent $Config) 'bridge.log'))
+  if (-not $diagnostic.Contains('[launcher] create_process failed (Windows error 5)')) { throw 'Missing job-policy diagnostic' }
+  $status = (& $Executable status --config $Config) -join "`n"
+  if ($status -notmatch 'stopped') { throw 'Restricted job left a running bridge' }
+  [PSCustomObject]@{ refusedByJobPolicy=$true } | ConvertTo-Json -Compress
+  return
+ }
+ if ($exitCode -ne 0) { throw ('Test CLI failed with exit code ' + $exitCode) }
  $before = (& $Executable status --config $Config) -join "`n"
  if ($before -notmatch 'PID (\d+)') { throw "Isolated bridge failed to start: $before" }
  $bridgePid = [int]$Matches[1]

@@ -50,8 +50,10 @@ const webrtc = !values['no-webrtc'];
 const build = desktopBuildDirectory(nativeCache, values.arch, studio, webrtc);
 process.stdout.write(`Desktop toolchain: ${studio.generator}, ${values.arch}, CMake ${cmakeVersion}\n`);
 run(cmake, desktopConfigureArgs({ source: path.join(root, 'native/windows-desktop'), build, arch: values.arch, studio, webrtc, cmakeVersion }));
-run(cmake, ['--build', build, '--config', 'Release', '--target', 'codeaw-desktop', '--parallel', '4']);
+run(cmake, ['--build', build, '--config', 'Release', '--target', 'codeaw-desktop', 'codeaw-launcher', '--parallel', '4']);
 const out = path.resolve(root, values['out-dir']); fs.mkdirSync(out, { recursive: true });
-fs.copyFileSync(path.join(build, 'Release/codeaw-desktop.exe'), path.join(out, 'codeaw-desktop.exe'));
 // Source builds find the same helper as release builds.
-if (out !== path.join(root, 'dist/assets')) { fs.mkdirSync(path.join(root, 'dist/assets'), { recursive: true }); fs.copyFileSync(path.join(out, 'codeaw-desktop.exe'), path.join(root, 'dist/assets/codeaw-desktop.exe')); }
+for (const name of ['codeaw-desktop.exe', 'codeaw-launcher.exe']) {
+  fs.copyFileSync(path.join(build, 'Release', name), path.join(out, name));
+  if (out !== path.join(root, 'dist/assets')) { fs.mkdirSync(path.join(root, 'dist/assets'), { recursive: true }); fs.copyFileSync(path.join(out, name), path.join(root, 'dist/assets', name)); }
+}

@@ -38,6 +38,12 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   if (trayPid) throw new Error("Isolated tray did not exit after its bridge stopped");
+  // A job that forbids breakaway must receive an explicit failure, never a broker fallback.
+  const restricted = await exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass",
+    "-File", fileURLToPath(new URL("./background-job-smoke.ps1", import.meta.url)), "-Executable", executable, "-Config", file, "-ForbidBreakaway"],
+    { windowsHide: true, env, timeout: 60_000 });
+  assert.equal(JSON.parse(restricted.stdout.trim()).refusedByJobPolicy, true);
+  process.stdout.write("Restricted Windows job refused background startup with a recorded diagnostic.\n");
   const target = path.resolve(home);
   if (path.dirname(target) !== path.resolve(os.tmpdir()) || !path.basename(target).startsWith("codeaw-job-smoke-")) throw new Error("Invalid test cleanup path");
   fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

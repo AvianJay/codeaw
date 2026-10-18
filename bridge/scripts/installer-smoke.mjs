@@ -45,7 +45,7 @@ async function uninstall() {
 try {
   installed = true;
   await setup();
-  for (const file of ["codeaw-bridge.exe", "launch.ps1", "uninstall.exe", "LICENSE", "README.md"]) {
+  for (const file of ["codeaw-bridge.exe", "codeaw-launcher.exe", "launch.ps1", "uninstall.exe", "LICENSE", "README.md"]) {
     if (!fs.existsSync(path.join(destination, file))) throw new Error(`Installer did not copy ${file}`);
   }
   const hasWeb = fs.existsSync(path.resolve("dist/bin/web/index.html"));

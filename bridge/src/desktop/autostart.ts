@@ -4,7 +4,8 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { bridgeInvocation } from "./process.js";
-import { launchdPlist, serviceName } from "./service.js";
+import { launchdPlist, quoteWindowsArgument, serviceName } from "./service.js";
+import { windowsLauncher } from "./windows-launcher.js";
 
 export function loginPlistPath(file: string): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `tw.codeaw.${serviceName(file)}.tray.plist`);
@@ -13,11 +14,10 @@ export function loginPlistPath(file: string): string {
 const exec = promisify(execFile);
 const RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-export function loginCommand(file: string, invocation = bridgeInvocation()): string {
-  const quote = (value: string) => "'" + value.replace(/'/g, "''") + "'";
+export function loginCommand(file: string, invocation = bridgeInvocation(), launcher = windowsLauncher()): string {
   const args = [...invocation.args, "tray", "--config", file];
-  const script = `& ${quote(invocation.executable)} ${args.map(quote).join(" ")} *>> ${quote(path.join(path.dirname(file), "desktop-launch.log"))}`;
-  return `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(script, "utf16le").toString("base64")}`;
+  return [launcher, "--launch", path.dirname(file), path.join(path.dirname(file), "desktop-launch.log"), invocation.executable, ...args]
+    .map(quoteWindowsArgument).join(" ");
 }
 
 export async function loginStartupEnabled(file: string): Promise<boolean> {

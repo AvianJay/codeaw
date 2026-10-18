@@ -5,7 +5,11 @@ $ErrorActionPreference = 'Stop'
 try {
 $script:mutex = [System.Threading.Mutex]::new($false, ('Local\\' + $PipeName + '-tray'))
 try { $owned = $script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $owned = $true }
-if (-not $owned) { $script:mutex.Dispose(); exit 0 }
+if (-not $owned) {
+    # A second launcher acknowledges the existing tray without creating another icon.
+    if ($ReadyFile) { [IO.File]::WriteAllText($ReadyFile, '{"existing":true}') }
+    $script:mutex.Dispose(); exit 0
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()

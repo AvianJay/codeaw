@@ -150,6 +150,7 @@ Section "$(CoreName)" Core
   Call StopInstalledBridge
   SetOutPath "$INSTDIR"
   File /oname=codeaw-bridge.exe "${BRIDGE_EXE}"
+  File /oname=codeaw-launcher.exe "${LAUNCHER_EXE}"
   !ifdef DESKTOP_HELPER
     File /oname=codeaw-desktop.exe "${DESKTOP_HELPER}"
     File /oname=codeaw-desktop-gateway.exe "${DESKTOP_GATEWAY}"
@@ -222,6 +223,7 @@ Section "Uninstall"
   RMDir "$SMPROGRAMS\$StartMenuFolder"
   Delete "$DESKTOP\codeaw bridge.lnk"
   Delete "$INSTDIR\codeaw-bridge.exe"
+  Delete "$INSTDIR\codeaw-launcher.exe"
   Delete "$INSTDIR\codeaw-desktop.exe"
   Delete "$INSTDIR\codeaw-desktop-gateway.exe"
   Delete "$INSTDIR\launch.ps1"

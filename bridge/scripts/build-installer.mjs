@@ -20,6 +20,7 @@ const version = pkg.version.split(/[-+]/)[0].split(".").map(Number);
 if (version.some((part) => part > 65535)) throw new Error("NSIS version components must be at most 65535");
 const binDir = path.resolve(bridgeDir, values["bin-dir"]);
 const executable = path.join(binDir, "codeaw-bridge.exe");
+const launcher = path.join(binDir, "codeaw-launcher.exe");
 const outputDir = path.resolve(bridgeDir, values["out-dir"]);
 
 function run(command, args) {
@@ -44,6 +45,7 @@ if (!compiler) throw new Error("NSIS 3.09+ is required. Install NSIS or pass --m
 
 if (!values["skip-build"]) run("npm", ["run", "build:bin", "--", `--target=bun-windows-${values.arch}`, `--out-dir=${binDir}`]);
 if (!fs.existsSync(executable)) throw new Error(`Missing ${executable}. Build the Windows executable first or omit --skip-build.`);
+if (!fs.existsSync(launcher)) throw new Error(`Missing ${launcher}. Build the complete Windows release first or omit --skip-build.`);
 // Refuse a mislabeled x64/ARM64 payload; CI builds both targets into the same file name.
 const fd = fs.openSync(executable, "r");
 try {
@@ -60,6 +62,7 @@ const output = path.join(outputDir, `codeaw-bridge-windows-${values.arch}-setup.
 const define = (key, value) => `-D${key}=${value}`;
 run(compiler, ["-V3", "-INPUTCHARSET", "UTF8", "-WX", define("APP_VERSION", pkg.version), define("PRODUCT_VERSION", [...version, 0].join(".")),
   define("ARCH", values.arch), define("BRIDGE_EXE", executable), define("REPO_DIR", path.resolve(bridgeDir, "..")),
+  define("LAUNCHER_EXE", launcher),
   define("APP_ICON", path.join(bridgeDir, "src/assets/codeaw.ico")),
   ...(fs.existsSync(path.join(binDir, "codeaw-desktop.exe")) ? [define("DESKTOP_HELPER", path.join(binDir, "codeaw-desktop.exe")), define("DESKTOP_GATEWAY", path.join(binDir, "codeaw-desktop-gateway.exe"))] : []),
   ...(fs.existsSync(path.join(binDir, "web/index.html")) ? [define("WEB_DIR", path.join(binDir, "web"))] : []),

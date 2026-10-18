@@ -79,6 +79,8 @@ npm run build
 npm link            # 之後就能直接用 codeaw-bridge 指令（或改用 node dist/index.js）
 ```
 
+Windows 從原始碼執行背景／系統匣模式前，需先安裝 Visual Studio 2022／2026 的 C++ 桌面開發工具，並在 `bridge` 執行 `npm run build:desktop`，產生原生啟動器。正式 Windows 安裝包與壓縮包已附帶此元件。
+
 第一次執行：
 
 ```powershell
@@ -89,7 +91,7 @@ codeaw-bridge start   # 前景 CLI 模式；首次使用會印出配對 QR code
 
 `~/.codeaw/config.yaml` 重點：
 
-Windows 背景 bridge 與系統匣透過本機 WMI broker 隱藏啟動，獨立於啟動它們的終端機／Codex 桌面程序，桌面更新或關閉不會連帶終止 bridge。若企業原則停用 WMI，背景啟動會回報錯誤，可改用前景 `start` 或正式服務模式。Codex 設定若指向已刪除的版本目錄，bridge 會先查找目前註冊的桌面版本，未找到時才使用固定 CLI 安裝路徑；自訂路徑及仍存在的明確路徑不會被替換。
+Windows 背景 bridge、系統匣與登入啟動由附帶的 `codeaw-launcher.exe` 直接呼叫 Windows `CreateProcess` 啟動，不使用 WMI broker 或編碼 PowerShell 指令；系統匣使用檔案形式的 PowerShell 腳本。啟動器關閉後，背景程序仍會繼續執行。終端機的 Windows Job 原則可能限制背景程序獨立執行；若 Windows 拒絕啟動，會明確回報錯誤，可從開始選單捷徑啟動，或使用前景 `start`／正式服務模式。原生啟動錯誤會記錄操作名稱與 Windows 錯誤碼。Codex 設定若指向已刪除的版本目錄，bridge 會先查找目前註冊的桌面版本，未找到時才使用固定 CLI 安裝路徑；自訂路徑及仍存在的明確路徑不會被替換。
 
 | 設定 | 說明 |
 |---|---|

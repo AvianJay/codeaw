@@ -366,8 +366,8 @@ describe("background CLI", () => {
       expect(await cli(file, ["status"])).toContain("running");
       // The service/background log contains no interactive pairing code.
       expect(fs.readFileSync(path.join(path.dirname(file), "bridge.log"), "utf8")).not.toContain("配對碼");
-      // Native stderr in Windows PowerShell must not terminate the background
-      // wrapper. Starting this deliberately absent agent emits a real error.
+      // Native stderr must not terminate the detached bridge. Starting this
+      // deliberately absent agent emits a real error into its inherited log.
       const pairing = await requestControl(file, { command: "pair" });
       const current = await runningStatus(file);
       const response = await fetch(`http://127.0.0.1:${current.port}/api/pair`, { method: "POST", headers: { "Content-Type": "application/json" },
@@ -382,8 +382,8 @@ describe("background CLI", () => {
       } finally { client.close(); }
     } finally {
       await cli(file, ["stop"]);
-      // The control pipe closes before Node and its Windows log wrapper exit.
-      // Wait before afterEach removes the wrapper's working directory.
+      // The control pipe closes before Node exits. Wait before afterEach removes
+      // the background process's working directory.
       for (let attempt = 0; backgroundPid && attempt < 100; attempt++) {
         try { process.kill(backgroundPid, 0); } catch { break; }
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -405,10 +405,9 @@ describe("service launch arguments", () => {
     const plist = launchdPlist("/config/a & b/config.yaml", "tw.codeaw.test", invocation);
     expect(plist).toContain("a &amp; b");
     expect(plist).toContain("<key>SuccessfulExit</key><false/>");
-    const startup = loginCommand("C:\\a'b space\\config.yaml", { executable: "C:\\node space\\node.exe", args: ["C:\\index.js"] });
-    expect(startup).toContain("-WindowStyle Hidden");
-    const script = Buffer.from(startup.split(" ").at(-1)!, "base64").toString("utf16le");
-    expect(script).toContain("'C:\\a''b space\\config.yaml'");
-    expect(script).toContain("'tray'");
+    const startup = loginCommand("C:\\a'b space\\config.yaml", { executable: "C:\\node space\\node.exe", args: ["C:\\index.js"] }, "C:\\app space\\codeaw-launcher.exe");
+    expect(startup).toContain('"C:\\app space\\codeaw-launcher.exe" "--launch"');
+    expect(startup).toContain('"C:\\node space\\node.exe" "C:\\index.js" "tray" "--config" "C:\\a\'b space\\config.yaml"');
+    expect(startup).not.toMatch(/powershell|EncodedCommand/);
   });
 });
