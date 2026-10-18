@@ -310,10 +310,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot build private HTTP smoke test' }
           & $smokeExe (Resolve-Path dist/bin/codeaw-desktop.exe).Path
           if ($LASTEXITCODE -ne 0) { throw 'Windows private HTTP relay smoke test failed' }
+      # The portable NSIS release, pinned by hash. Chocolatey's package downloads the same files from
+      # SourceForge, but `choco install` reports success when its community feed is down.
       - name: Install NSIS
         if: startsWith(matrix.platform, 'windows-')
         shell: pwsh
-        run: choco install nsis --yes --no-progress
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'nsis-3.13.zip'
+          curl.exe -fsSL --retry 5 --retry-all-errors -o $zip 'https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip'
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download NSIS' }
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8') { throw 'NSIS download does not match its pinned hash' }
+          Expand-Archive $zip -DestinationPath $env:RUNNER_TEMP
+          "MAKENSIS=$(Join-Path $env:RUNNER_TEMP 'nsis-3.13\makensis.exe')" >> $env:GITHUB_ENV
       - name: Build Windows installer
         if: startsWith(matrix.platform, 'windows-')
         env:
