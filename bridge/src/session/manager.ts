@@ -15,6 +15,7 @@ import { historyOptions, olderPage, preferFullReplay, projectEntry, tailPage, ty
 import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
+import type { CpaUsageService } from "../server/cpa.js";
 import { newEpoch, type SessionStore } from "./store.js";
 import {
   codeawMeta,
@@ -160,6 +161,26 @@ function modeOf(meta: SessionMeta): string | undefined {
   return meta.modes?.currentModeId ?? undefined;
 }
 
+function quotaError(message: string): boolean {
+  return /quota|rate[ -]?limit|429|too many requests|resource exhausted|insufficient (?:credit|quota)|usage limit|capacity|配額|額度|限流|用量|超過上限/i.test(message);
+}
+
+function cpaProvider(meta: SessionMeta): string | undefined {
+  switch (meta.agentId.toLowerCase()) {
+    case "codex": case "codex-acp": return "codex";
+    case "claude": case "claude-acp": case "claude-code": return "claude";
+    case "antigravity": case "antigravity-acp": case "agy": return "antigravity";
+    case "grok": return "grok";
+  }
+  const option = meta.configOptions?.find((item: any) => item.category === "model" || item.id === "model");
+  const model = `${(option as any)?.currentValue ?? ""} ${(option as any)?.currentLabel ?? ""}`.toLowerCase();
+  if (/gpt|codex|chatgpt|(?:^|[^a-z])o[1-9](?:[^a-z]|$)/.test(model)) return "codex";
+  if (/claude/.test(model)) return "claude";
+  if (/gemini/.test(model)) return "antigravity";
+  if (/grok/.test(model)) return "grok";
+  return undefined;
+}
+
 export class SessionManager implements AgentHandlers {
   private readonly sessions = new Map<string, BridgeSession>();
   private readonly deleting = new Set<string>();
@@ -170,10 +191,13 @@ export class SessionManager implements AgentHandlers {
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
   private readonly forking = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly quotaContinuations = new Map<string, Promise<void>>();
+  private readonly quotaAvailable = new Set<string>();
   private sweepTimer?: NodeJS.Timeout;
   private shuttingDown = false;
   notifier?: PushNotifier;
   liveActivity?: LiveActivityPush;
+  cpa?: CpaUsageService;
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -184,6 +208,44 @@ export class SessionManager implements AgentHandlers {
   start(): void {
     this.sweepTimer = setInterval(() => void this.sweep(), 60_000);
     this.sweepTimer.unref();
+  }
+
+  /** Called by the bridge-owned CPA watcher whenever a provider recovers. */
+  async continueQuotaBlocked(provider: string): Promise<void> {
+    if (this.shuttingDown) return;
+    this.quotaAvailable.add(provider);
+    const metas = new Map<string, SessionMeta>();
+    for (const meta of this.store.listMetas()) metas.set(meta.id, meta);
+    for (const session of this.sessions.values()) metas.set(session.id, session.meta);
+    let found = false;
+    for (const meta of metas.values()) {
+      if (meta.quotaBlocked?.provider !== provider || meta.connection === "desktop") continue;
+      found = true;
+      const s = this.sessions.get(meta.id) ?? this.fromDisk(meta.id);
+      if (!s || s.turn || s.pending.size > 0 || s.queue.length > 0 || s.desktop?.connected) continue;
+      const running = this.quotaContinuations.get(s.id);
+      if (running) continue;
+      const operation = this.autoContinue(s).finally(() => this.quotaContinuations.delete(s.id));
+      this.quotaContinuations.set(s.id, operation);
+      await operation;
+    }
+    if (!found) this.quotaAvailable.delete(provider);
+  }
+
+  private async autoContinue(s: BridgeSession): Promise<void> {
+    const blocked = s.meta.quotaBlocked;
+    if (!blocked || s.turn || s.pending.size > 0 || s.queue.length > 0 || s.desktop?.connected) return;
+    const promptId = crypto.randomUUID();
+    const blocks = [{ type: "text", text: "繼續" }] as acp.ContentBlock[];
+    s.meta.quotaBlocked = undefined;
+    this.saveMeta(s, true);
+    this.logUserMessage(s, blocks, promptId, { autoContinue: true });
+    this.receipt(s, promptId, "received");
+    try {
+      await this.runTurn(s, promptId, blocks);
+    } catch {
+      // runTurn records the error and re-arms quotaBlocked when it is another quota failure.
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -354,7 +416,16 @@ export class SessionManager implements AgentHandlers {
   onSessionError(agentId: string, backendId: string, message: string): void {
     if (this.shuttingDown) return;
     const s = this.sessions.get(extId(agentId, backendId));
-    if (s) this.appendEvent(s, { type: "error", message });
+    if (s) {
+      const provider = cpaProvider(s.meta);
+      if (provider && quotaError(message)) {
+        this.quotaAvailable.delete(provider);
+        s.meta.quotaBlocked = { provider, promptId: s.turn?.promptId ?? crypto.randomUUID(), at: Date.now() };
+        this.cpa?.markProviderUnavailable(provider);
+        this.saveMeta(s, true);
+      }
+      this.appendEvent(s, { type: "error", message });
+    }
   }
 
   private ingest(s: BridgeSession, raw: acp.SessionUpdate): void {
@@ -660,6 +731,9 @@ export class SessionManager implements AgentHandlers {
       ...(stopReason && state === "idle" ? { stopReason } : {}),
     });
     this.activity(s);
+    if (state === "idle" && this.quotaAvailable.size) {
+      for (const provider of this.quotaAvailable) setImmediate(() => void this.continueQuotaBlocked(provider));
+    }
   }
 
   activitySnapshot(sessionId: string): ActivitySnapshot | undefined {
@@ -1144,6 +1218,11 @@ export class SessionManager implements AgentHandlers {
       return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
     }
     const blocks = params.prompt;
+    // A deliberate user prompt replaces a pending automatic continuation.
+    if (s.meta.quotaBlocked) {
+      s.meta.quotaBlocked = undefined;
+      this.saveMeta(s);
+    }
 
     const busy = s.turn !== undefined || (s.desktop?.connected && s.desktop.state !== "idle");
     this.logUserMessage(s, blocks, promptId, { queued: busy, steered: busy && delivery !== "queue" && agent.supportsSteering });
@@ -1213,9 +1292,17 @@ export class SessionManager implements AgentHandlers {
       } else {
         this.receipt(s, promptId, "failed");
         const e = toRequestError(error);
-        this.appendEvent(s, { type: "error", message: errorMessage(error), code: e.code });
+        const message = errorMessage(error);
+        const provider = cpaProvider(s.meta);
+        if (provider && quotaError(message)) {
+          this.quotaAvailable.delete(provider);
+          s.meta.quotaBlocked = { provider, promptId, at: Date.now() };
+          this.cpa?.markProviderUnavailable(provider);
+          this.saveMeta(s, true);
+        }
+        this.appendEvent(s, { type: "error", message, code: e.code });
         this.emitState(s, "error", completedTurn);
-        this.push(s, "error", errorMessage(error), () => true);
+        this.push(s, "error", message, () => true);
         rejectDone(e);
       }
       this.startNext(s);

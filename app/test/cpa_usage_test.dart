@@ -510,6 +510,32 @@ void main() {
     c.dispose();
   });
 
+  test('moves CPA credentials to a bridge that advertises remote storage', () async {
+    final calls = <String>[];
+    final store = CpaStore();
+    final c = CpaController(
+      store: store,
+      request: (method, params) async {
+        calls.add(method);
+        if (method == '_codeaw/cpa/status') {
+          return {'supported': true, 'configured': false};
+        }
+        if (method == '_codeaw/cpa/configure') {
+          expect(params['managementKey'], 'private-test-key');
+          return {'supported': true, 'configured': true, 'endpoint': settings.endpoint};
+        }
+        if (method == '_codeaw/cpa/accounts') return {'accounts': []};
+        return {};
+      },
+    );
+    await c.initialize();
+    await c.configure(settings);
+    expect(c.bridgeManaged, isTrue);
+    expect(await store.load(), isNull);
+    expect(calls, contains('_codeaw/cpa/configure'));
+    c.dispose();
+  });
+
   test(
     'refreshes separate account quotas, and failure replaces old percentages',
     () async {

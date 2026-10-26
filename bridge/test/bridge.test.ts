@@ -86,6 +86,18 @@ describe("sessions", () => {
     expect(completed.endedAt).toBeGreaterThanOrEqual(completed.startedAt);
   });
 
+  it("continues a persisted quota-blocked session from the bridge", async () => {
+    tb = await startTestBridge();
+    const c = await client();
+    const s = await newFakeSession(c, tb.home);
+    const sessions = (tb.bridge.manager as any).sessions as Map<string, any>;
+    const internal = sessions.get(s.sessionId);
+    internal.meta.quotaBlocked = { provider: "fake", promptId: "old", at: Date.now() };
+    await tb.bridge.manager.continueQuotaBlocked("fake");
+    await c.waitFor(() => c.updates(s.sessionId).some((u) => u.update.sessionUpdate === "user_message_chunk" && u.update.content.text === "繼續"));
+    expect(internal.meta.quotaBlocked).toBeUndefined();
+  });
+
   it("preserves turn start time while waiting, queueing and replaying to another device", async () => {
     tb = await startTestBridge();
     const a = await client("A");

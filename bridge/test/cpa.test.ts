@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { CpaUsageService, codexWindows, claudeWindows, resetCount, grokWindows, cpaConnection } from "../src/server/cpa.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CpaUsageService, FileCpaSettingsStore, codexWindows, claudeWindows, resetCount, grokWindows, cpaConnection } from "../src/server/cpa.js";
 import { startTestBridge, TestClient } from "./helpers.js";
 
 const params = { endpoint: "https://cpa.example.com/proxy", managementKey: "test-management-secret" };
@@ -10,6 +13,34 @@ const usage = { plan_type: "team", rate_limit: {
 } };
 
 describe("CPA read-only management adapter", () => {
+  it("stores bridge-owned settings without returning the management key", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-cpa-"));
+    try {
+      const store = new FileCpaSettingsStore(root);
+      store.save({ endpoint: "https://cpa.example.com", managementKey: "private" });
+      expect(store.load()).toEqual({ endpoint: "https://cpa.example.com", managementKey: "private" });
+      const service = new CpaUsageService(fetch, Date.now, store);
+      expect(service.status()).toEqual({ supported: true, configured: true, endpoint: "https://cpa.example.com" });
+      expect(JSON.stringify(service.status())).not.toContain("private");
+      service.forget();
+      expect(store.load()).toBeUndefined();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses bridge-owned settings when account and quota requests omit credentials", async () => {
+    const calls: string[] = [];
+    const service = new CpaUsageService(async (input) => {
+      calls.push(String(input));
+      return Response.json({ files: [{ name: "grok", type: "xai", email: "grok@example.com" }] });
+    });
+    service.configure(params);
+    const list = await service.accounts();
+    expect(list.accounts[0].provider).toBe("grok");
+    expect(calls[0]).toContain("/auth-files");
+  });
+
   it("normalizes roots, prefixes, and explicit v8 URLs without embedding credentials", () => {
     expect(cpaConnection(params).base.href).toBe("https://cpa.example.com/proxy/v0/management");
     expect(cpaConnection({ ...params, endpoint: "https://cpa.example.com/v8/management/" }).base.href).toBe("https://cpa.example.com/v8/management");
@@ -104,6 +135,29 @@ describe("CPA read-only management adapter", () => {
       const list = await client.request<any>("_codeaw/cpa/accounts", params);
       expect(list.accounts[0]).toMatchObject({ provider: "grok", label: "grok@example.com" });
     } finally { client.close(); await bridge.stop(); }
+  });
+
+  it("configures CPA on the bridge and serves later queries without app credentials", async () => {
+    const bridge = await startTestBridge({
+      fetchImpl: async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/auth-files")) return Response.json({ files: [{ name: "grok.json", type: "xai", email: "grok@example.com" }] });
+        const body = JSON.parse(String(init?.body));
+        return Response.json({ status_code: 200, body: body.url.includes("billing") ? { config: { creditUsagePercent: 25, currentPeriod: { type: "weekly", end: "2026-10-09T12:00:00Z" } } } : {} });
+      },
+    });
+    const client = await TestClient.connect(bridge.url, bridge.tokenFor("cpa-config"));
+    try {
+      await expect(client.request("_codeaw/cpa/status", {})).resolves.toMatchObject({ supported: true, configured: false });
+      await expect(client.request("_codeaw/cpa/configure", params)).resolves.toMatchObject({ supported: true, configured: true });
+      await expect(client.request("_codeaw/cpa/status", {})).resolves.toMatchObject({ configured: true, endpoint: params.endpoint });
+      const list = await client.request<any>("_codeaw/cpa/accounts", {});
+      expect(list.accounts[0]).toMatchObject({ provider: "grok" });
+      await client.request("_codeaw/cpa/forget", {});
+      await expect(client.request("_codeaw/cpa/status", {})).resolves.toMatchObject({ configured: false });
+    } finally {
+      client.close(); await bridge.stop();
+    }
   });
 
   it("shares concurrent account and Claude quota requests and limits profile/usage polling", async () => {

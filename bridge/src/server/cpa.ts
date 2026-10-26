@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { readJson, writeFileAtomic } from "../util/paths.js";
 
 type Json = Record<string, any>;
 const object = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
@@ -36,6 +39,44 @@ interface ScopeCache {
   at: number; usedAt: number; credentials: Credential[]; pending?: Promise<void>;
   quotas: Map<string, QuotaCache>; cooldowns: Map<string, number>; claudeStart: number;
   managementRetryAt: number; managementFailures: number;
+}
+
+export interface CpaSettings {
+  endpoint: string;
+  managementKey: string;
+}
+
+export interface CpaSettingsStore {
+  load(): CpaSettings | undefined;
+  save(settings: CpaSettings): void;
+  clear(): void;
+}
+
+/** Bridge-owned CPA credentials. Unix files are private; Windows inherits the user profile ACL. */
+export class FileCpaSettingsStore implements CpaSettingsStore {
+  private readonly file: string;
+  constructor(dataDir: string) {
+    this.file = path.join(dataDir, "cpa.json");
+  }
+
+  load(): CpaSettings | undefined {
+    const value = readJson<unknown>(this.file, undefined);
+    const data = object(value);
+    return typeof data.endpoint === "string" && typeof data.managementKey === "string"
+      ? { endpoint: data.endpoint, managementKey: data.managementKey }
+      : undefined;
+  }
+
+  save(settings: CpaSettings): void {
+    writeFileAtomic(this.file, JSON.stringify(settings, null, 1));
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(this.file, 0o600); } catch { /* profile permissions remain the fallback */ }
+    }
+  }
+
+  clear(): void {
+    try { fs.rmSync(this.file, { force: true }); } catch { /* already absent */ }
+  }
 }
 class RateLimited extends Error {
   constructor(readonly retryAt?: number) { super("配額查詢暫停（HTTP 429）：服務商限制查詢頻率"); }
@@ -151,10 +192,107 @@ export function grokWindows(payload: Json): CpaWindow[] {
   return [{ id: weekly ? "weekly" : "monthly", label: weekly ? "每週 credits" : "每月額度", remainingPercent: remaining(usedPercent), resetAt: end, periodSeconds: duration }];
 }
 
+function quotaAvailable(provider: string, quota: CpaQuota): boolean {
+  if (quota.status !== "ok") return false;
+  const windows = provider === "codex" || provider === "claude"
+    ? quota.windows.filter((window) => window.id === "weekly" || window.id === "five-hour")
+    : quota.windows.filter((window) => window.periodSeconds === 604800 || window.periodSeconds === 18000 || window.id === "weekly");
+  return windows.length > 0 && windows.every((window) => window.remainingPercent !== null && Number.isFinite(window.remainingPercent) && window.remainingPercent > 0);
+}
+
 /** Read-only CPA adapter. No credential downloads, token exposure, reset redemption, or model calls. */
 export class CpaUsageService {
   private readonly scopes = new Map<string, ScopeCache>();
-  constructor(private readonly fetchImpl: typeof fetch = fetch, private readonly now = Date.now) {}
+  private settings?: CpaSettings;
+  private refreshTimer?: NodeJS.Timeout;
+  private refreshPending?: Promise<void>;
+  private readonly availability = new Map<string, boolean>();
+  onQuotaRecovered?: (provider: string) => void;
+
+  constructor(
+    private readonly fetchImpl: typeof fetch = fetch,
+    private readonly now = Date.now,
+    private readonly settingsStore?: CpaSettingsStore,
+  ) {
+    this.settings = settingsStore?.load();
+  }
+
+  status(): { supported: true; configured: boolean; endpoint?: string } {
+    return { supported: true, configured: !!this.settings, ...(this.settings ? { endpoint: this.settings.endpoint } : {}) };
+  }
+
+  configure(params: Json): { supported: true; configured: true; endpoint: string } {
+    const endpoint = typeof params.endpoint === "string" ? params.endpoint.trim().replace(/\/+$/, "") : "";
+    const existing = this.settings;
+    const managementKey = typeof params.managementKey === "string" ? params.managementKey.trim() : "";
+    const connection = cpaConnection({ endpoint: endpoint || existing?.endpoint || "", managementKey: managementKey || existing?.managementKey || "" });
+    if (!managementKey && !existing?.managementKey) throw new Error("CPA Management Key required");
+    this.settings = { endpoint: endpoint || connection.base.href.replace(/\/v[08]\/management$/, ""), managementKey: managementKey || existing!.managementKey };
+    this.settingsStore?.save(this.settings);
+    this.scopes.clear();
+    this.availability.clear();
+    this.startAutoRefresh();
+    void this.poll();
+    return { supported: true, configured: true, endpoint: this.settings.endpoint };
+  }
+
+  forget(): { supported: true; configured: false } {
+    this.settings = undefined;
+    this.settingsStore?.clear();
+    this.scopes.clear();
+    this.availability.clear();
+    return { supported: true, configured: false };
+  }
+
+  startAutoRefresh(): void {
+    if (this.refreshTimer) return;
+    this.refreshTimer = setInterval(() => void this.poll(), 30_000);
+    this.refreshTimer.unref();
+    void this.poll();
+  }
+
+  stop(): void {
+    if (this.refreshTimer) clearInterval(this.refreshTimer);
+    this.refreshTimer = undefined;
+  }
+
+  markProviderUnavailable(provider: string): void {
+    if (provider) this.availability.set(provider, false);
+  }
+
+  private params(): Json | undefined {
+    return this.settings ? { endpoint: this.settings.endpoint, managementKey: this.settings.managementKey } : undefined;
+  }
+
+  private connection(params: Json): Connection {
+    if (typeof params.endpoint === "string" || typeof params.managementKey === "string") return cpaConnection(params);
+    const configured = this.params();
+    if (!configured) throw new Error("CPA 尚未在 bridge 設定");
+    return cpaConnection(configured);
+  }
+
+  private async poll(): Promise<void> {
+    if (!this.settings || this.refreshPending) return;
+    const params = this.params();
+    if (!params) return;
+    this.refreshPending = (async () => {
+      try {
+        const list = await this.accounts(params);
+        const active = list.accounts.filter((account) => !account.disabled && !account.unavailable);
+        const quotas = await Promise.all(active.map(async (account) => [account, await this.quota({ ...params, accountId: account.id })] as const));
+        const providers = new Set(active.map((account) => account.provider));
+        for (const provider of providers) {
+          const before = this.availability.get(provider);
+          const after = quotas.some(([account, quota]) => account.provider === provider && quotaAvailable(provider, quota));
+          this.availability.set(provider, after);
+          if (after && (before === false || before === undefined)) this.onQuotaRecovered?.(provider);
+        }
+      } catch {
+        // A later poll retries; the regular app query still reports the error.
+      }
+    })().finally(() => { this.refreshPending = undefined; });
+    await this.refreshPending;
+  }
 
   private scope(connection: Connection): ScopeCache {
     const now = this.now();
@@ -203,8 +341,8 @@ export class CpaUsageService {
     try { return object(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { throw new Error("CPA 回應不是 JSON，請確認網址指向管理 API"); }
   }
 
-  async accounts(params: Json) {
-    const connection = cpaConnection(params);
+  async accounts(params: Json = {}) {
+    const connection = this.connection(params);
     const scope = this.scope(connection);
     if (this.now() - scope.at >= 30_000) {
       scope.pending ??= (async () => {
@@ -240,8 +378,8 @@ export class CpaUsageService {
     return object(response.body);
   }
 
-  async quota(params: Json): Promise<CpaQuota> {
-    const connection = cpaConnection(params);
+  async quota(params: Json = {}): Promise<CpaQuota> {
+    const connection = this.connection(params);
     const scope = this.scope(connection);
     if (this.now() - scope.at >= 300_000) await this.accounts(params);
     const c = scope.credentials.find(c => c.account.id === params.accountId);

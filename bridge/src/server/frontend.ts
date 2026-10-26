@@ -100,6 +100,9 @@ export class FrontendConnection implements ClientHandle {
       })
       .onRequest("_codeaw/cpa/accounts", passthrough, (ctx) => cpaResult(cpa.accounts(ctx.params)))
       .onRequest("_codeaw/cpa/quota", passthrough, (ctx) => cpaResult(cpa.quota(ctx.params)))
+      .onRequest("_codeaw/cpa/status", passthrough, () => cpa.status())
+      .onRequest("_codeaw/cpa/configure", passthrough, (ctx) => cpaResult(Promise.resolve(cpa.configure(ctx.params))))
+      .onRequest("_codeaw/cpa/forget", passthrough, () => cpa.forget())
       .onRequest("_codeaw/agents/restart", passthrough, async (ctx) => {
         const agent = deps.registry.get(String(ctx.params.agentId));
         await agent.stop("restart requested");

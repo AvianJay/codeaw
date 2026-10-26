@@ -684,8 +684,11 @@ out on the bridge.
 | `_codeaw/history/page` | `{sessionId, epoch, before, pageBytes?}` | `{}` after the `_codeaw/history/page` notification (see paged history) |
 | `_codeaw/notify/info` | – | `{enabled, server?, topic?}` |
 | `_codeaw/notify/test` | – | `{sent}` |
-| `_codeaw/cpa/accounts` | `{endpoint, managementKey}` | `{accounts: CpaAccount[], checkedAt}` |
-| `_codeaw/cpa/quota` | `{endpoint, managementKey, accountId}` | `CpaQuota` |
+| `_codeaw/cpa/status` | `{}` | `{supported: true, configured, endpoint?}` (the key is never returned) |
+| `_codeaw/cpa/configure` | `{endpoint, managementKey?, keepExisting?}` | `{supported: true, configured: true, endpoint}` |
+| `_codeaw/cpa/forget` | `{}` | `{supported: true, configured: false}` |
+| `_codeaw/cpa/accounts` | `{endpoint?, managementKey?}` | `{accounts: CpaAccount[], checkedAt}`; omitted credentials use bridge settings |
+| `_codeaw/cpa/quota` | `{accountId, endpoint?, managementKey?}` | `CpaQuota`; omitted credentials use bridge settings |
 
 File-system methods and project-based `session/new` only accept paths inside the configured
 workspaces or a known session `cwd`, unless the PC administrator opts into
@@ -707,7 +710,7 @@ characters); traversal, separators, control characters and reserved Windows
 names are rejected. It never creates missing ancestors or overwrites an
 existing file/directory. The result is the canonical created directory path.
 
-### CPA usage (paired clients only)
+### CPA usage
 
 The bridge calls CLIProxyAPI's management API with a Bearer Management Key,
 not a model API key. `endpoint` accepts an HTTP(S) root/prefix, management page,
@@ -721,9 +724,11 @@ an 8 MiB response limit. Connection failures expose no upstream response body.
 status, requests, subscriptionUntil}`. `id` is opaque; `requests` is the CPA
 success/failure count if supplied, not an allowance. The bridge discards raw
 credentials and only caches minimal query metadata and normalized quotas in
-bounded, endpoint/key-isolated memory scopes (evicted after 30 idle minutes). Neither
-service-provider tokens nor CPA's potentially secret `account` field are
-returned to clients. The Management Key is not persisted by the bridge.
+bounded, endpoint/key-isolated memory scopes (evicted after 30 idle minutes). When
+configured through `_codeaw/cpa/configure`, the bridge keeps the Management Key in
+its private data directory and the app no longer needs to send it on each query.
+Neither service-provider tokens nor CPA's potentially secret `account` field are
+returned to clients.
 
 `CpaQuota` is `{accountId, windows, resetsRemaining, plan, subscriptionUntil,
 checkedAt, status, message?, retryAt?}`, where `status` is `ok`, `stale`, `error`, `unsupported`,
@@ -747,14 +752,18 @@ During cooldown, a previous successful result has `status: stale`,
 its original `checkedAt` and a `retryAt`; without a prior result it stays `error`
 with no percentages. Stale averages are marked `*`, with times in account details.
 
-The app persists the endpoint/key in its device secure storage and sends them
-over the paired connection. Network access occurs from the PC, so localhost
-refers to the bridge machine. Protect remote management connections with
+The bridge-owned configuration is preferred; older clients fall back to persisting
+the endpoint/key in device secure storage. Network access occurs from the PC, so
+localhost refers to the bridge machine. Protect remote management connections with
 HTTPS or a trusted private network. A past reset timestamp does not prove
 replenishment: clients keep the received percentage until refreshed.
 
-The app shares one CPA controller between chat and usage screens. It polls
-every 30 seconds in the foreground, refreshes on resume/reconnect and skips
+The bridge polls its saved CPA configuration every 30 seconds, including when no
+client is connected. If a session ends with a recognizable provider quota error,
+the bridge records that session and sends a `繼續` prompt after the provider's
+reported main windows recover. A deliberate user prompt replaces the pending
+automatic continuation. The app still shares one CPA controller between chat and
+usage screens; its foreground polling remains as a display refresh and skips
 overlapping automatic requests. Each provider/window is averaged independently,
 with one vote per account and one decimal display. Marked stale values retain
 their previous weight while rate-limited. Unknown, invalid, failed,

@@ -16,7 +16,7 @@ import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
 import { tailscaleIPv4 } from "./util/tailscale.js";
 import { TerminalManager } from "./terminal/manager.js";
-import { CpaUsageService } from "./server/cpa.js";
+import { CpaUsageService, FileCpaSettingsStore } from "./server/cpa.js";
 import { findWebRoot } from "./server/web.js";
 import { UPLOAD_TIMEOUT_MS } from "./server/uploads.js";
 import { DesktopManager } from "./remote-desktop/manager.js";
@@ -85,6 +85,10 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     idleAgentStopMs: config.idleAgentStopMinutes * 60_000,
     hostName: os.hostname(),
   });
+  const cpa = new CpaUsageService(opts.fetchImpl, Date.now, new FileCpaSettingsStore(dataDir));
+  manager.cpa = cpa;
+  cpa.onQuotaRecovered = (provider) => { void manager.continueQuotaBlocked(provider); };
+  cpa.startAutoRefresh();
   const notifier = new PushNotifier(config.notifications.ntfy, () => manager.clientCount > 0, opts.fetchImpl);
   manager.notifier = notifier;
   const liveConfig = config.notifications.liveActivity;
@@ -99,7 +103,6 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   pruneUploads.unref();
   const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths, () => [uploads.dir]);
   const terminals = new TerminalManager(guard);
-  const cpa = new CpaUsageService(opts.fetchImpl);
   const desktop = new DesktopManager({ devices, enabled: () => config.remoteDesktop.enabled,
     backendFactory: opts.desktopBackendFactory, ...(opts.desktopBackendFactory ? { available: () => true } : {}) });
   const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop });
@@ -140,6 +143,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     if (retry) clearInterval(retry);
     clearInterval(pruneUploads);
     notifier.dispose();
+    cpa.stop();
     liveActivity.dispose();
     await desktop.dispose();
     await terminals.dispose();

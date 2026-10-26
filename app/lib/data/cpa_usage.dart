@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../acp/jsonrpc.dart';
+
 typedef CpaRequest =
     Future<dynamic> Function(String method, Map<String, dynamic> params);
 
@@ -220,6 +222,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   final CpaStore store;
   final void Function(String provider)? onQuotaRecovered;
   CpaSettings? settings;
+  bool bridgeManaged = false;
   List<CpaAccount> accounts = [];
   final Map<String, CpaQuota> quotas = {};
   final Set<String> ignoredAccounts = {};
@@ -234,6 +237,8 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void>? _initializing;
   Future<void> _ignoredWrite = Future.value();
   final _providerAvailable = <String, bool>{};
+  bool _bridgeSupported = false;
+  bool _bridgeStatusAttempted = false;
 
   /// Shared by the chat header and usage page; mounting both never adds a poller.
   void startAutoRefresh() {
@@ -257,6 +262,10 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void refreshIfActive() {
+    if (!_disposed && !_bridgeStatusAttempted) {
+      unawaited(_retryBridgeStatus());
+      if (settings == null) return;
+    }
     if (_disposed ||
         WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed ||
         settings == null ||
@@ -278,12 +287,71 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> initialize() => _initializing ??= _initialize();
 
+  Future<Map<String, dynamic>?> _bridgeStatus() async {
+    try {
+      final result = await request('_codeaw/cpa/status', const {});
+      _bridgeStatusAttempted = true;
+      final map = Map<String, dynamic>.from(result as Map);
+      if (map['supported'] == true) {
+        _bridgeSupported = true;
+        return map;
+      }
+      return null;
+    } on RpcError catch (error) {
+      if (error.code == RpcError.methodNotFound) {
+        _bridgeStatusAttempted = true;
+        return null;
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _retryBridgeStatus() async {
+    try {
+      final remote = await _bridgeStatus();
+      if (remote?['configured'] != true || remote?['endpoint'] is! String || _disposed) return;
+      bridgeManaged = true;
+      settings = CpaSettings(endpoint: remote!['endpoint'] as String, managementKey: '');
+      _scheduleAutoRefresh();
+      _changed();
+      await refresh();
+    } catch (_) {
+      // The reconnect listener will retry once the bridge is available.
+    }
+  }
+
   Future<void> _initialize() async {
     try {
       final saved = await store.load();
       final ignored = await store.loadIgnoredAccounts();
       if (_disposed) return;
-      settings = saved;
+      Map<String, dynamic>? remote;
+      try {
+        remote = await _bridgeStatus();
+      } catch (_) {
+        // The local fallback keeps the usage page usable while the bridge reconnects.
+      }
+      if (remote != null) {
+        bridgeManaged = remote['configured'] == true;
+        final endpoint = remote['endpoint'] as String?;
+        settings = bridgeManaged && endpoint != null
+            ? CpaSettings(endpoint: endpoint, managementKey: '')
+            : null;
+        if (bridgeManaged && saved != null) await store.clear();
+        if (!bridgeManaged && saved != null) {
+          try {
+            await request('_codeaw/cpa/configure', saved.toJson());
+            bridgeManaged = true;
+            settings = CpaSettings(endpoint: saved.endpoint, managementKey: '');
+            await store.clear();
+          } catch (_) {
+            _bridgeSupported = false;
+            settings = saved;
+          }
+        }
+      } else {
+        settings = saved;
+      }
       ignoredAccounts
         ..clear()
         ..addAll(ignored);
@@ -306,17 +374,33 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
         uri.hasFragment) {
       throw const FormatException('請輸入有效的 HTTP(S) CPA 網址');
     }
-    if (value.managementKey.trim().isEmpty) {
+    if (value.managementKey.trim().isEmpty && !bridgeManaged) {
       throw const FormatException('請輸入 Management Key');
     }
     final next = CpaSettings(
       endpoint: value.endpoint.trim().replaceFirst(RegExp(r'/+$'), ''),
       managementKey: value.managementKey.trim(),
     );
-    await store.save(next);
+    if (_bridgeSupported) {
+      final result = Map<String, dynamic>.from(
+        await request('_codeaw/cpa/configure', {
+          'endpoint': next.endpoint,
+          if (next.managementKey.isNotEmpty) 'managementKey': next.managementKey,
+        }) as Map,
+      );
+      if (result['supported'] != true) {
+        _bridgeSupported = false;
+      } else {
+        await store.clear();
+        bridgeManaged = true;
+      }
+    }
+    if (!_bridgeSupported) await store.save(next);
     if (_disposed) return;
     _generation++;
-    settings = next;
+    settings = bridgeManaged
+        ? CpaSettings(endpoint: next.endpoint, managementKey: '')
+        : next;
     _scheduleAutoRefresh();
     _providerAvailable.clear();
     accounts = [];
@@ -326,10 +410,18 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> forget() async {
+    if (_bridgeSupported) {
+      try {
+        await request('_codeaw/cpa/forget', const {});
+      } on RpcError catch (error) {
+        if (error.code != RpcError.methodNotFound) rethrow;
+      }
+    }
     await store.clear();
     if (_disposed) return;
     _generation++;
     settings = null;
+    bridgeManaged = false;
     _refreshTimer?.cancel();
     _refreshTimer = null;
     accounts = [];
@@ -375,6 +467,11 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
     _providerAvailable[provider] = false;
   }
 
+  Map<String, dynamic> _requestParams(CpaSettings connection, {String? accountId}) => {
+    if (!bridgeManaged) ...connection.toJson(),
+    ...?accountId == null ? null : {'accountId': accountId},
+  };
+
   Future<void> refresh() async {
     final connection = settings;
     if (connection == null || _disposed) return;
@@ -388,7 +485,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
       final result = Map<String, dynamic>.from(
         await request(
               '_codeaw/cpa/accounts',
-              connection.toJson(),
+              _requestParams(connection),
             ).timeout(const Duration(seconds: 20))
             as Map,
       );
@@ -436,7 +533,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
       final recovered = _updateProviderAvailability(previousAccounts);
       _changed();
       for (final provider in recovered) {
-        onQuotaRecovered?.call(provider);
+        if (!bridgeManaged) onQuotaRecovered?.call(provider);
       }
     } catch (e) {
       if (_disposed || generation != _generation) return;
@@ -472,7 +569,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
     if (provider != null) {
       final after = _hasAvailableQuota(provider, accounts, quotas);
       _providerAvailable[provider] = after;
-      if (before == false && after) onQuotaRecovered?.call(provider);
+      if (before == false && after && !bridgeManaged) onQuotaRecovered?.call(provider);
     }
     _changed();
   }
@@ -543,8 +640,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
     CpaQuota quota;
     try {
       final result = await request('_codeaw/cpa/quota', {
-        ...connection.toJson(),
-        'accountId': id,
+        ..._requestParams(connection, accountId: id),
       }).timeout(const Duration(seconds: 30));
       quota = CpaQuota.fromJson(Map<String, dynamic>.from(result as Map));
     } catch (e) {

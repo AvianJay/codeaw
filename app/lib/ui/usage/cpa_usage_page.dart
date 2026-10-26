@@ -52,7 +52,10 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
       context: context,
       isScrollControlled: true,
       requestFocus: false,
-      builder: (_) => _ConnectionSheet(settings: _controller.settings),
+      builder: (_) => _ConnectionSheet(
+        settings: _controller.settings,
+        bridgeManaged: _controller.bridgeManaged,
+      ),
     );
     if (value == null || !mounted) return;
     if (value.endpoint.isEmpty) {
@@ -758,8 +761,9 @@ class _QuotaLine extends StatelessWidget {
 }
 
 class _ConnectionSheet extends StatefulWidget {
-  const _ConnectionSheet({this.settings});
+  const _ConnectionSheet({this.settings, this.bridgeManaged = false});
   final CpaSettings? settings;
+  final bool bridgeManaged;
   @override
   State<_ConnectionSheet> createState() => _ConnectionSheetState();
 }
@@ -834,7 +838,9 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
                 textInputAction: TextInputAction.done,
                 decoration: InputDecoration(
                   labelText: 'Management Key',
-                  helperText: '管理密鑰，不是給模型使用的 API key',
+                  helperText: widget.bridgeManaged
+                      ? '留空以保留 bridge 上已保存的 Management Key'
+                      : '管理密鑰，不是給模型使用的 API key',
                   suffixIcon: IconButton(
                     tooltip: _showKey ? '隱藏密鑰' : '顯示密鑰',
                     onPressed: () => setState(() => _showKey = !_showKey),
@@ -845,12 +851,15 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
                     ),
                   ),
                 ),
-                validator: (v) =>
-                    v?.trim().isNotEmpty == true ? null : '請輸入 Management Key',
+                validator: (v) => widget.bridgeManaged || v?.trim().isNotEmpty == true
+                    ? null
+                    : '請輸入 Management Key',
               ),
               const SizedBox(height: 18),
               Text(
-                '密鑰儲存在此裝置，查詢時傳給已配對的 bridge，再由電腦連線 CPA。只讀取帳號與額度，不兌換重置次數。Web 版請只在可信任的瀏覽器使用。',
+                widget.bridgeManaged
+                    ? 'Management Key 由 bridge 保存在這台電腦；App 只透過配對連線查詢帳號與額度。'
+                    : '密鑰儲存在此裝置，查詢時傳給已配對的 bridge，再由電腦連線 CPA。只讀取帳號與額度，不兌換重置次數。Web 版請只在可信任的瀏覽器使用。',
                 style: TextStyle(
                   fontSize: 12,
                   color: Theme.of(context).colorScheme.onSurfaceVariant,

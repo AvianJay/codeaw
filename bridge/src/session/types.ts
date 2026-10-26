@@ -58,6 +58,8 @@ export interface SessionMeta {
   modes?: acp.SessionModeState | null;
   /** Created by editing `messageId` of another chat; `promptId` deduplicates retried edits. */
   forkedFrom?: { sessionId: string; messageId: string; promptId: string };
+  /** A provider quota error stopped this prompt; bridge can continue it after recovery. */
+  quotaBlocked?: { provider: string; promptId: string; at: number };
 }
 
 export function isChunk(u: acp.SessionUpdate): u is Extract<acp.SessionUpdate, { sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk" }> {

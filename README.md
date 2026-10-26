@@ -397,9 +397,9 @@ App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://impor
 
 ### CLI Proxy API 用量
 
-從首頁的用量圖示或「設定 → CPA 用量」開啟「用量與額度」，按「連接 CPA」填入 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的網址與 **Management Key**。這是 CPA 管理金鑰，不是模型呼叫用的 API key。網址可填伺服器根目錄（例如 `http://127.0.0.1:8317`）、`management.html`、反向代理前綴，或明確的 `/v0/management`、`/v8/management`；根目錄預設使用仍受支援的 v0 API。設定與金鑰保存在目前裝置的加密儲存，Web 則使用瀏覽器的加密儲存機制。
+從首頁的用量圖示或「設定 → CPA 用量」開啟「用量與額度」，按「連接 CPA」填入 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 的網址與 **Management Key**。這是 CPA 管理金鑰，不是模型呼叫用的 API key。網址可填伺服器根目錄（例如 `http://127.0.0.1:8317`）、`management.html`、反向代理前綴，或明確的 `/v0/management`、`/v8/management`；根目錄預設使用仍受支援的 v0 API。新版會把設定保存在 bridge 的私有資料目錄，舊版 bridge 才使用目前裝置的加密儲存；Web 版請只在可信任的瀏覽器使用。
 
-由**已配對的 Windows bridge**連到 CPA，因此 `127.0.0.1` 指的是電腦，不是 iPhone；CPA 不必為手機額外開放 CORS。若 CPA 在其他電腦，需允許 bridge 存取其管理 API，依 [CPA 管理 API 文件](https://help.router-for.me/management/api) 設定遠端管理權限，並使用 HTTPS 或可信任的私有網路。Management Key 會經配對連線送到 bridge，再作為認證送到你指定的 CPA；bridge 不將金鑰寫入設定或日誌。
+由**已配對的 Windows bridge**連到 CPA，因此 `127.0.0.1` 指的是電腦，不是 iPhone；CPA 不必為手機額外開放 CORS。若 CPA 在其他電腦，需允許 bridge 存取其管理 API，依 [CPA 管理 API 文件](https://help.router-for.me/management/api) 設定遠端管理權限，並使用 HTTPS 或可信任的私有網路。新版會由 bridge 保存 Management Key 並直接作為認證送到你指定的 CPA，不回傳給 App 或寫入一般日誌。
 
 帳號以精簡列表顯示 Codex、Claude、Grok、Antigravity 等類型、方案、剩餘百分比與本地時間的重置倒數。Codex／Claude 可顯示 5 小時、每週及服務商提供的其他視窗；Grok 顯示其每週 credits／每月額度，Antigravity 顯示模型群組。可搜尋、依類型篩選、下拉或逐帳號重新整理，也可以將不想納入統計的帳號設為忽略；忽略設定保存在目前裝置。剩餘重置次數只顯示 Codex 回傳的實際可用 reset credits，不以週內時間估算；重置時間已到也需重新整理確認額度。API key 帳號或其他服務商未提供配額時會顯示未知／不支援，不會假設 100%。
 
@@ -407,7 +407,7 @@ App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://impor
 
 設定 CPA 後，聊天標題旁也會顯示目前代理對應的精簡額度條；代理本身沒有對應類型（如 Oh My Pi）時，改依目前模型名稱判斷：GPT／Codex→Codex、Claude→Claude、Gemini→Antigravity、Grok→Grok。額度條只標「一週／5小時」及一位小數百分比；點擊可查看用量頁。供應商未回傳的視窗會隱藏，帳號詳情仍可查看錯誤／不支援原因。剩餘 ≥50% 為綠色、20–49.9% 為黃色、<20% 為紅色。手機狹窄版面將部分操作移到選單，保留聊天標題及額度條。App 在前景每 30 秒查詢一次，回到前景或重新連線立即更新；聊天與用量頁共用資料及計時器，正在查詢時不重疊發送，背景暫停。每輪會等全部帳號查詢及平均計算完成後一次更新，期間保留上一輪數值；一般失敗帳號在完成時標示未知並排除，限流則保留上次成功額度並標示，不逐帳號改動平均額度條。
 
-CPA 額度畫面每 30 秒更新；bridge 會合併多台裝置的重複查詢。Claude 的實際額度查詢至少間隔五分鐘，同類帳號會錯開查詢，方案資料最多每小時查一次。遇到 HTTP 429 會遵守 `Retry-After` 或漸增冷卻時間，手動刷新也不會繞過限流；有上次成功資料時保留額度並以 `*` 標示，帳號詳情顯示上次成功及預計重試時間。若聊天因額度錯誤中斷，偵測到相同供應商額度恢復後，App 會自動送出「繼續」；手動送出其他訊息會取消這次自動接續。這些數字是先前查詢結果，不能當作目前仍可用的保證。
+CPA 額度畫面每 30 秒更新；bridge 會合併多台裝置的重複查詢，並在已保存 CPA 設定時即使沒有 App 連線也持續輪詢。Claude 的實際額度查詢至少間隔五分鐘，同類帳號會錯開查詢，方案資料最多每小時查一次。遇到 HTTP 429 會遵守 `Retry-After` 或漸增冷卻時間，手動刷新也不會繞過限流；有上次成功資料時保留額度並以 `*` 標示，帳號詳情顯示上次成功及預計重試時間。若聊天因額度錯誤中斷，bridge 偵測到相同供應商額度恢復後會自動送出「繼續」；手動送出其他訊息會取消這次自動接續。這些數字是先前查詢結果，不能當作目前仍可用的保證。
 
 用量查詢只讀取管理端帳號清單及固定的服務商用量／方案介面，不下載認證檔、不回傳服務商 token、不呼叫模型，也不兌換 reset credits。金鑰可在「CPA 連線設定」移除。App 另提供「設定 → 外觀」的跟隨系統／淺色／深色選擇。
 
