@@ -131,6 +131,24 @@ void main() {
     expect(values[2].weekly.accountCount, 2);
   });
 
+  test('ignores selected accounts from provider averages', () {
+    final accounts = [
+      CpaAccount.fromJson(account('included', 'codex')),
+      CpaAccount.fromJson(account('ignored', 'codex')),
+    ];
+    final values = cpaProviderAverages(
+      accounts,
+      {
+        'included': allowance(80, 40),
+        'ignored': allowance(0, 0),
+      },
+      ignoredAccounts: {'ignored'},
+    );
+    expect(values.single.totalAccounts, 1);
+    expect(values.single.weekly.remainingPercent, 80);
+    expect(values.single.fiveHour.remainingPercent, 40);
+  });
+
   test('excludes unknown, failed, disabled and invalid values per window', () {
     final accounts = [
       for (final id in [
@@ -460,6 +478,37 @@ void main() {
       expect(await store.load(), isNull);
     },
   );
+
+  test('persists ignored accounts and detects quota recovery', () async {
+    final store = CpaStore();
+    await store.saveIgnoredAccounts({'ignored', 'other'});
+    expect(await store.loadIgnoredAccounts(), {'ignored', 'other'});
+
+    var available = false;
+    final recovered = <String>[];
+    final c = CpaController(
+      store: store,
+      onQuotaRecovered: recovered.add,
+      request: (method, params) async {
+        if (method == '_codeaw/cpa/accounts') {
+          return {'accounts': [account('codex', 'codex')]};
+        }
+        return {
+          ...quota('codex'),
+          'windows': [
+            {'id': 'weekly', 'remainingPercent': available ? 20 : 0},
+            {'id': 'five-hour', 'remainingPercent': available ? 10 : 0},
+          ],
+        };
+      },
+    );
+    await c.configure(settings);
+    expect(recovered, isEmpty);
+    available = true;
+    await c.refresh();
+    expect(recovered, ['codex']);
+    c.dispose();
+  });
 
   test(
     'refreshes separate account quotas, and failure replaces old percentages',

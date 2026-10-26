@@ -144,6 +144,14 @@ class SessionController extends ChangeNotifier {
   final _toasts = StreamController<String>.broadcast();
   Stream<String> get toasts => _toasts.stream;
 
+  /// Set when the agent stopped a turn because its provider had no quota.
+  /// The CpaController clears it by sending a continuation prompt after that
+  /// provider becomes available again.
+  bool _quotaContinuationPending = false;
+  bool _quotaRecoveryReady = false;
+  bool get quotaContinuationPending => _quotaContinuationPending;
+  void Function(String provider)? onQuotaBlocked;
+
   bool _wantAttached = false;
   bool _replayingFull = false;
   Timeline? _incoming;
@@ -179,6 +187,33 @@ class SessionController extends ChangeNotifier {
     return modelFamilyOf(value is String ? value : null, label: option.currentLabel);
   }
 
+  /// The CPA provider used by this session, when it can be identified from
+  /// the agent or its selected model.
+  String? get quotaProvider {
+    switch (agentId.toLowerCase()) {
+      case 'codex':
+      case 'codex-acp':
+        return 'codex';
+      case 'claude':
+      case 'claude-acp':
+      case 'claude-code':
+        return 'claude';
+      case 'antigravity':
+      case 'antigravity-acp':
+      case 'agy':
+        return 'antigravity';
+      case 'grok':
+        return 'grok';
+    }
+    return switch (modelFamily) {
+      ModelFamily.openai => 'codex',
+      ModelFamily.claude => 'claude',
+      ModelFamily.gemini => 'antigravity',
+      ModelFamily.grok => 'grok',
+      null => null,
+    };
+  }
+
   /// Codex and GPT models fold their Markdown thought summaries into the turn.
   bool get thoughtSummary => thoughtSummaryFor(agentId, modelFamily);
 
@@ -199,6 +234,9 @@ class SessionController extends ChangeNotifier {
       }
       pending.clear();
       _notify();
+    }
+    if (client.isOnline && _quotaContinuationPending && _quotaRecoveryReady) {
+      unawaited(_attemptQuotaContinuation());
     }
   }
 
@@ -377,6 +415,9 @@ class SessionController extends ChangeNotifier {
     }
     if (msg.method == '_codeaw/event') {
       final event = msg.params['event'] as Map?;
+      if (event?['type'] == 'error' && _isQuotaError(event?['message'])) {
+        _markQuotaBlocked();
+      }
       if (event?['type'] == 'prompt_receipt' &&
           ['received', 'read'].contains(event?['status'])) {
         final receipt = _promptReceipts[event?['promptId']];
@@ -389,6 +430,12 @@ class SessionController extends ChangeNotifier {
       if (event?['type'] == 'state' && event?['connection'] == 'desktop') {
         desktopSync = true;
         desktopConnected = event?['desktopConnected'] == true;
+      }
+      if (event?['type'] == 'state' &&
+          event?['state'] == 'idle' &&
+          _quotaContinuationPending &&
+          _quotaRecoveryReady) {
+        unawaited(_attemptQuotaContinuation());
       }
     }
     (_incoming ?? timeline).apply(msg.method, msg.params);
@@ -600,14 +647,62 @@ class SessionController extends ChangeNotifier {
     });
   }
 
+  static bool _isQuotaError(Object? value) {
+    final text = '$value'.toLowerCase();
+    return RegExp(
+      r'quota|rate[ -]?limit|429|too many requests|resource exhausted|insufficient (?:credit|quota)|usage limit|capacity|配額|額度|限流|用量|超過上限',
+    ).hasMatch(text);
+  }
+
+  void _markQuotaBlocked() {
+    if (_disposed) return;
+    _quotaContinuationPending = true;
+    _quotaRecoveryReady = false;
+    final provider = quotaProvider;
+    if (provider != null) onQuotaBlocked?.call(provider);
+    _notify();
+  }
+
+  /// Called by the shared CPA poller when this session's provider becomes
+  /// available after a quota error. A normal user send clears the pending
+  /// marker, so this never adds an unsolicited continuation to a new prompt.
+  Future<bool> continueAfterQuota() async {
+    _quotaRecoveryReady = true;
+    return _attemptQuotaContinuation();
+  }
+
+  Future<bool> _attemptQuotaContinuation() async {
+    if (!_quotaContinuationPending ||
+        _disposed ||
+        !client.isOnline ||
+        waitingForDesktop ||
+        running ||
+        pending.isNotEmpty ||
+        timeline.queued > 0) {
+      return false;
+    }
+    _quotaContinuationPending = false;
+    _quotaRecoveryReady = false;
+    _notify();
+    _toast('額度已恢復，正在自動傳送「繼續」');
+    return send([
+      {'type': 'text', 'text': '繼續'},
+    ], autoContinue: true);
+  }
+
   /// Sends a prompt. While a turn runs it is steered into it (agents that support it) or queued.
   Future<bool> send(
     List<Map<String, dynamic>> blocks, {
     bool queue = false,
+    bool autoContinue = false,
   }) async {
     if (waitingForDesktop) {
       _toast('等待 Codex 桌面恢復連線；草稿已保留');
       return false;
+    }
+    if (!autoContinue) {
+      _quotaContinuationPending = false;
+      _quotaRecoveryReady = false;
     }
     final promptId = _uuid();
     final receipt = Completer<bool>();
@@ -628,6 +723,7 @@ class SessionController extends ChangeNotifier {
         return true;
       } on RpcError catch (e) {
         if (_disposed) return true;
+        if (_isQuotaError(e.detail)) _markQuotaBlocked();
         if (e.code == RpcError.connectionClosed) {
           if (!receipt.isCompleted) {
             _toast('連線中斷，送出結果待確認；請先查看聊天紀錄，避免重複傳送');
@@ -647,6 +743,7 @@ class SessionController extends ChangeNotifier {
         _toast(e.detail);
       } catch (e) {
         if (_disposed) return true;
+        if (_isQuotaError(e)) _markQuotaBlocked();
         _toast('$e');
       }
       timeline.apply('_codeaw/event', {
@@ -947,6 +1044,14 @@ class SessionHub {
   static const _keep = 4;
   final _held = <String>{};
   final _deletedWhileHeld = <String>{};
+  void Function(String provider)? _onQuotaBlocked;
+
+  set onQuotaBlocked(void Function(String provider)? callback) {
+    _onQuotaBlocked = callback;
+    for (final controller in _controllers.values) {
+      controller.onQuotaBlocked = callback;
+    }
+  }
 
   /// Keeps a chat's controller alive while its page navigates away after the chat was
   /// replaced by an edited branch; [release] (from the page's dispose) forgets it then.
@@ -957,10 +1062,22 @@ class SessionHub {
     if (_deletedWhileHeld.remove(sessionId)) unawaited(forget(sessionId));
   }
 
+  /// Gives every open chat a chance to continue after its provider's quota
+  /// recovered. Each controller keeps its own pending marker and provider
+  /// mapping, so unrelated chats are left alone.
+  void continueAfterQuota(String provider) {
+    for (final controller in _controllers.values) {
+      if (controller.quotaProvider == provider) {
+        unawaited(controller.continueAfterQuota());
+      }
+    }
+  }
+
   SessionController open(String sessionId, {String? cwd, bool? projectless}) {
     var c = _controllers[sessionId];
     if (c == null) {
       c = SessionController(client, sessionId, cwd: cwd, projectless: projectless ?? false, cache: cache, dataSaver: _dataSaver);
+      c.onQuotaBlocked = _onQuotaBlocked;
       _controllers[sessionId] = c;
       unawaited(c.attach());
     } else {
@@ -997,6 +1114,7 @@ class SessionHub {
     Map<String, dynamic> newSessionResponse,
   ) {
     final c = SessionController(client, sessionId, cwd: cwd, cache: cache, dataSaver: _dataSaver);
+    c.onQuotaBlocked = _onQuotaBlocked;
     final m =
         (newSessionResponse['_meta'] as Map?)?['codeaw'] as Map? ?? const {};
     if (m['cwd'] is String) c.cwd = m['cwd'] as String;

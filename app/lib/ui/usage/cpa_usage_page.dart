@@ -98,13 +98,18 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
       final providers = c.accounts.map((a) => a.provider).toSet().toList()
         ..sort();
       final endpoint = Uri.tryParse(c.settings?.endpoint ?? '');
-      final averages = cpaProviderAverages(c.accounts, c.quotas)
-          .where(
-            (a) =>
-                a.weekly.remainingPercent != null ||
-                a.fiveHour.remainingPercent != null,
-          )
-          .toList();
+      final averages =
+          cpaProviderAverages(
+                c.accounts,
+                c.quotas,
+                ignoredAccounts: c.ignoredAccounts,
+              )
+              .where(
+                (a) =>
+                    a.weekly.remainingPercent != null ||
+                    a.fiveHour.remainingPercent != null,
+              )
+              .toList();
       return Scaffold(
         appBar: AppBar(
           title: const Text('用量與額度'),
@@ -206,6 +211,14 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         '${c.accounts.length} 個帳號',
                         style: Theme.of(context).textTheme.labelMedium,
                       ),
+                      if (c.ignoredAccounts.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Text(
+                          '忽略 ${c.ignoredAccounts.length}',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(color: scheme.outline),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 6),
@@ -305,7 +318,14 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                       account: account,
                       quota: c.quotas[account.id],
                       loading: c.loadingQuotas.contains(account.id),
+                      ignored: c.ignoredAccounts.contains(account.id),
                       onRefresh: () => c.refreshAccount(account.id),
+                      onToggleIgnored: () => unawaited(
+                        c.setAccountIgnored(
+                          account.id,
+                          !c.ignoredAccounts.contains(account.id),
+                        ),
+                      ),
                     ),
                     const Divider(),
                   ],
@@ -510,17 +530,23 @@ class _AccountRow extends StatelessWidget {
     required this.account,
     required this.quota,
     required this.loading,
+    required this.ignored,
     required this.onRefresh,
+    required this.onToggleIgnored,
   });
   final CpaAccount account;
   final CpaQuota? quota;
   final bool loading;
+  final bool ignored;
   final VoidCallback onRefresh;
+  final VoidCallback onToggleIgnored;
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final plan = quota?.plan ?? account.plan;
-    final status = account.disabled
+    final status = ignored
+        ? '已忽略'
+        : account.disabled
         ? '停用'
         : account.unavailable
         ? '不可用'
@@ -573,26 +599,39 @@ class _AccountRow extends StatelessWidget {
                 status,
                 style: TextStyle(
                   fontSize: 11,
-                  color: account.disabled
+                  color: ignored || account.disabled
                       ? scheme.outline
                       : account.unavailable
                       ? scheme.error
                       : scheme.primary,
                 ),
               ),
-              SizedBox(
-                width: 36,
-                height: 36,
-                child: loading
-                    ? const Padding(
-                        padding: EdgeInsets.all(10),
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : IconButton(
-                        tooltip: '更新 ${account.label} 額度',
-                        onPressed: account.disabled ? null : onRefresh,
-                        icon: const Icon(Icons.refresh_rounded, size: 18),
-                      ),
+              if (!ignored)
+                SizedBox(
+                  width: 36,
+                  height: 36,
+                  child: loading
+                      ? const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : IconButton(
+                          tooltip: '更新 ${account.label} 額度',
+                          onPressed: account.disabled ? null : onRefresh,
+                          icon: const Icon(Icons.refresh_rounded, size: 18),
+                        ),
+                ),
+              PopupMenuButton<String>(
+                tooltip: ignored
+                    ? '恢復 ${account.label}'
+                    : '忽略 ${account.label}',
+                onSelected: (_) => onToggleIgnored(),
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'toggle',
+                    child: Text(ignored ? '恢復計入額度' : '忽略帳號'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -618,7 +657,9 @@ class _AccountRow extends StatelessWidget {
             )
           else
             Text(
-              account.disabled
+              ignored
+                  ? '帳號已忽略'
+                  : account.disabled
                   ? '帳號已停用'
                   : loading
                   ? '正在查詢服務商額度…'

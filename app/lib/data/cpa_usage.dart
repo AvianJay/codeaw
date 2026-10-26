@@ -26,6 +26,7 @@ class CpaStore {
     : _storage = storage ?? const FlutterSecureStorage();
   final FlutterSecureStorage _storage;
   static const _key = 'codeaw.cpa.connection.v1';
+  static const _ignoredAccountsKey = 'codeaw.cpa.ignored-accounts.v1';
   Future<CpaSettings?> load() async {
     final value = await _storage.read(key: _key);
     if (value == null) return null;
@@ -35,6 +36,23 @@ class CpaStore {
   Future<void> save(CpaSettings settings) =>
       _storage.write(key: _key, value: jsonEncode(settings.toJson()));
   Future<void> clear() => _storage.delete(key: _key);
+
+  Future<Set<String>> loadIgnoredAccounts() async {
+    final value = await _storage.read(key: _ignoredAccountsKey);
+    if (value == null) return {};
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is! List) return {};
+      return decoded.whereType<String>().where((id) => id.isNotEmpty).toSet();
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> saveIgnoredAccounts(Iterable<String> ids) {
+    final sorted = ids.where((id) => id.isNotEmpty).toSet().toList()..sort();
+    return _storage.write(key: _ignoredAccountsKey, value: jsonEncode(sorted));
+  }
 }
 
 class CpaWindow {
@@ -127,10 +145,12 @@ class CpaProviderAverage {
 /// AGY averages model groups within an account before averaging accounts.
 List<CpaProviderAverage> cpaProviderAverages(
   List<CpaAccount> accounts,
-  Map<String, CpaQuota> quotas,
-) {
+  Map<String, CpaQuota> quotas, {
+  Set<String> ignoredAccounts = const {},
+}) {
   final groups = <String, List<CpaAccount>>{};
   for (final account in accounts) {
+    if (ignoredAccounts.contains(account.id)) continue;
     groups.putIfAbsent(account.provider, () => []).add(account);
   }
   CpaUsageAverage average(List<CpaAccount> group, String id, int seconds) {
@@ -194,13 +214,15 @@ List<CpaProviderAverage> cpaProviderAverages(
 }
 
 class CpaController extends ChangeNotifier with WidgetsBindingObserver {
-  CpaController({required this.request, CpaStore? store})
+  CpaController({required this.request, CpaStore? store, this.onQuotaRecovered})
     : store = store ?? CpaStore();
   final CpaRequest request;
   final CpaStore store;
+  final void Function(String provider)? onQuotaRecovered;
   CpaSettings? settings;
   List<CpaAccount> accounts = [];
   final Map<String, CpaQuota> quotas = {};
+  final Set<String> ignoredAccounts = {};
   final Set<String> loadingQuotas = {};
   bool initialized = false, loading = false;
   String? error;
@@ -210,6 +232,8 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   Timer? _refreshTimer;
   bool _autoRefresh = false;
   Future<void>? _initializing;
+  Future<void> _ignoredWrite = Future.value();
+  final _providerAvailable = <String, bool>{};
 
   /// Shared by the chat header and usage page; mounting both never adds a poller.
   void startAutoRefresh() {
@@ -257,8 +281,12 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _initialize() async {
     try {
       final saved = await store.load();
+      final ignored = await store.loadIgnoredAccounts();
       if (_disposed) return;
       settings = saved;
+      ignoredAccounts
+        ..clear()
+        ..addAll(ignored);
     } catch (_) {
       error = '無法讀取 CPA 設定，請重新設定連線';
     }
@@ -290,6 +318,7 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
     _generation++;
     settings = next;
     _scheduleAutoRefresh();
+    _providerAvailable.clear();
     accounts = [];
     quotas.clear();
     loadingQuotas.clear();
@@ -309,13 +338,48 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
     loading = false;
     error = null;
     updatedAt = null;
+    _providerAvailable.clear();
     _changed();
+  }
+
+  /// Excludes an account from provider averages and quota polling without
+  /// changing the account in CPA. The choice is kept on this device.
+  Future<void> setAccountIgnored(String id, bool ignored) async {
+    if (id.isEmpty || ignoredAccounts.contains(id) == ignored) return;
+    if (ignored) {
+      ignoredAccounts.add(id);
+      quotas.remove(id);
+      loadingQuotas.remove(id);
+    } else {
+      ignoredAccounts.remove(id);
+    }
+    _recomputeProviderAvailability();
+    _changed();
+    final next = Set<String>.of(ignoredAccounts);
+    _ignoredWrite = _ignoredWrite
+        .catchError((_) {})
+        .then((_) => store.saveIgnoredAccounts(next));
+    await _ignoredWrite;
+    if (!ignored &&
+        settings != null &&
+        accounts.any((account) => account.id == id)) {
+      await refreshAccount(id);
+    }
+  }
+
+  /// Marks a provider unavailable after a chat receives a quota error. The
+  /// next successful quota poll can then be recognized as a recovery even if
+  /// the previous poll still showed a positive cached value.
+  void markProviderUnavailable(String provider) {
+    if (provider.isEmpty || _disposed) return;
+    _providerAvailable[provider] = false;
   }
 
   Future<void> refresh() async {
     final connection = settings;
     if (connection == null || _disposed) return;
     final generation = ++_generation;
+    final previousAccounts = List<CpaAccount>.of(accounts);
     loading = true;
     error = null;
     loadingQuotas.clear();
@@ -335,7 +399,9 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
       final nextQuotas = <String, CpaQuota>{};
       // Keep the last complete snapshot visible until every account has settled.
       loadingQuotas.addAll(
-        nextAccounts.where((a) => !a.disabled).map((a) => a.id),
+        nextAccounts
+            .where((a) => !a.disabled && !ignoredAccounts.contains(a.id))
+            .map((a) => a.id),
       );
       _changed();
       var index = 0;
@@ -344,7 +410,9 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
             generation == _generation &&
             !_disposed) {
           final account = nextAccounts[index++];
-          if (account.disabled) continue;
+          if (account.disabled || ignoredAccounts.contains(account.id)) {
+            continue;
+          }
           final quota = await _fetchQuota(account.id, connection);
           if (_disposed || generation != _generation) return;
           nextQuotas[account.id] = quota;
@@ -358,11 +426,18 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
       accounts = nextAccounts;
       quotas
         ..clear()
-        ..addAll(nextQuotas);
+        ..addAll({
+          for (final entry in nextQuotas.entries)
+            if (!ignoredAccounts.contains(entry.key)) entry.key: entry.value,
+        });
       updatedAt = DateTime.now();
       loadingQuotas.clear();
       loading = false;
+      final recovered = _updateProviderAvailability(previousAccounts);
       _changed();
+      for (final provider in recovered) {
+        onQuotaRecovered?.call(provider);
+      }
     } catch (e) {
       if (_disposed || generation != _generation) return;
       loading = false;
@@ -373,7 +448,12 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> refreshAccount(String id) async {
-    if (settings == null || loading || loadingQuotas.contains(id)) return;
+    if (settings == null ||
+        loading ||
+        ignoredAccounts.contains(id) ||
+        loadingQuotas.contains(id)) {
+      return;
+    }
     loadingQuotas.add(id);
     _changed();
     await _quota(id, _generation, settings!);
@@ -382,9 +462,81 @@ class CpaController extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _quota(String id, int generation, CpaSettings connection) async {
     final quota = await _fetchQuota(id, connection);
     if (_disposed || generation != _generation) return;
+    final provider = accounts
+        .where((account) => account.id == id)
+        .firstOrNull
+        ?.provider;
+    final before = provider == null ? null : _providerAvailable[provider];
     quotas[id] = quota;
     loadingQuotas.remove(id);
+    if (provider != null) {
+      final after = _hasAvailableQuota(provider, accounts, quotas);
+      _providerAvailable[provider] = after;
+      if (before == false && after) onQuotaRecovered?.call(provider);
+    }
     _changed();
+  }
+
+  Set<String> _updateProviderAvailability(List<CpaAccount> previousAccounts) {
+    final providers = {
+      for (final account in previousAccounts) account.provider,
+      for (final account in accounts) account.provider,
+    };
+    final recovered = <String>{};
+    for (final provider in providers) {
+      final before = _providerAvailable[provider];
+      final after = _hasAvailableQuota(provider, accounts, quotas);
+      _providerAvailable[provider] = after;
+      if (before == false && after) recovered.add(provider);
+    }
+    return recovered;
+  }
+
+  void _recomputeProviderAvailability() {
+    final providers = {for (final account in accounts) account.provider};
+    for (final provider in providers) {
+      _providerAvailable[provider] = _hasAvailableQuota(
+        provider,
+        accounts,
+        quotas,
+      );
+    }
+  }
+
+  bool _hasAvailableQuota(
+    String provider,
+    List<CpaAccount> sourceAccounts,
+    Map<String, CpaQuota> sourceQuotas,
+  ) {
+    for (final account in sourceAccounts) {
+      if (account.provider != provider ||
+          account.disabled ||
+          account.unavailable ||
+          ignoredAccounts.contains(account.id)) {
+        continue;
+      }
+      final quota = sourceQuotas[account.id];
+      if (quota?.status != 'ok') continue;
+      final windows = provider == 'codex' || provider == 'claude'
+          ? quota!.windows.where(
+              (window) => window.id == 'weekly' || window.id == 'five-hour',
+            )
+          : quota!.windows.where(
+              (window) =>
+                  window.periodSeconds == 604800 ||
+                  window.periodSeconds == 18000 ||
+                  window.id == 'weekly',
+            );
+      if (windows.isNotEmpty && windows.every(
+        (window) =>
+            window.remainingPercent != null &&
+            window.remainingPercent!.isFinite &&
+            window.remainingPercent! > 0,
+      )) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<CpaQuota> _fetchQuota(String id, CpaSettings connection) async {

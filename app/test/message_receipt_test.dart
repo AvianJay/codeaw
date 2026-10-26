@@ -73,6 +73,32 @@ void main() {
     },
   );
 
+  test('continues a quota-blocked turn after the provider recovers', () async {
+    final client = ReceiptClient()..status = ConnStatus.online;
+    final c = SessionController(client, 'codex:test');
+    addTearDown(() {
+      c.dispose();
+      client.dispose();
+    });
+    String? blockedProvider;
+    c.onQuotaBlocked = (provider) => blockedProvider = provider;
+    c.onMessage(
+      SessionMessage('_codeaw/event', {
+        'event': {'type': 'error', 'message': 'usage limit reached'},
+      }),
+    );
+    expect(c.quotaContinuationPending, isTrue);
+    expect(blockedProvider, 'codex');
+    final continued = c.continueAfterQuota();
+    await Future<void>.delayed(Duration.zero);
+    expect(client.prompt!['prompt'], [
+      {'type': 'text', 'text': '繼續'},
+    ]);
+    client.reply.complete({'stopReason': 'end_turn'});
+    expect(await continued, isTrue);
+    expect(c.quotaContinuationPending, isFalse);
+  });
+
   test(
     'full replay keeps authoritative order and unconfirmed sends at the bottom',
     () {

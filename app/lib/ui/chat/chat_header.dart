@@ -52,6 +52,7 @@ class ChatHeaderTitle extends StatelessWidget {
             ? cpaProviderAverages(
                 controller!.accounts,
                 controller.quotas,
+                ignoredAccounts: controller.ignoredAccounts,
               ).where((a) => a.provider == provider).firstOrNull
             : null;
         // Windows the provider never reports stay hidden instead of showing —.

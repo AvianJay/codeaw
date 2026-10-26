@@ -144,12 +144,29 @@ The response is a normal `InitializeResponse` with
   "error": "spawn failed ...",          // when status = error
   "agentInfo": { "name": "...", "version": "..." },  // from the agent, once started
   "capabilities": { /* the agent's agentCapabilities, once started */ },
+  "authMethods": [{ "id": "oauth-personal", "name": "Log in with Google", "description": "..." }],
   "steering": true,                      // agent supports mid-turn steering
   "forkAtMessage": true                  // session/fork honours a fork point (once started)
 }
 ```
 
 ## Session lifecycle
+
+### Agent authentication
+
+Device pairing authenticates the app to the bridge. An upstream ACP agent can
+separately require sign-in. On ACP `auth_required` (`-32000`), the bridge returns
+`data.codeaw: {agentId, authMethods}` instead of upstream provider diagnostics.
+Methods contain only `id`, `name`, and optional `description`; terminal methods,
+launch environment and agent metadata are omitted.
+
+Call `_codeaw/agents/authenticate` with `{agentId, methodId}` to run the selected
+advertised protocol method on that agent. The bridge forwards only `{methodId}`
+to ACP `authenticate`. Browser login happens on the bridge computer; API keys
+remain in its environment/settings. On success, retry the original `session/new`.
+Failed login returns `-32000` with the same methods and `authFailed: true`, so the
+app can retry or choose another method. Already authenticated agents continue
+creating sessions without an extra sign-in request.
 
 ### `session/new`
 
@@ -645,6 +662,7 @@ out on the bridge.
 | method | params | result |
 |---|---|---|
 | `_codeaw/agents/list` | – | `{agents: AgentInfo[]}` |
+| `_codeaw/agents/authenticate` | `{agentId, methodId}` | `{agent: AgentInfo}` |
 | `_codeaw/agents/restart` | `{agentId}` | `{}` |
 | `_codeaw/workspaces/list` | – | `{allowAllPaths, roots: [{path, name, source: "config"\|"session"\|"filesystem"}]}` |
 | `_codeaw/fs/list` | `{path}` | `{path, parent?, entries: [{name, path, type: "file"\|"dir"\|"link", size, mtime}]}` |

@@ -151,11 +151,13 @@ class AppState extends ChangeNotifier {
     terminals = TerminalHub(c);
     desktop = RemoteDesktopController(h, store, dataSaver: () => dataSaver);
     final usage = CpaController(
+      onQuotaRecovered: hub!.continueAfterQuota,
       request: (method, params) async {
         if (!c.isOnline) throw StateError('請先連上電腦 bridge');
         return c.request(method, params);
       },
     )..startAutoRefresh();
+    hub!.onQuotaBlocked = usage.markProviderUnavailable;
     cpa = usage;
     unawaited(usage.initialize());
     _cpaReconnect = c.connected.listen((_) => usage.refreshIfActive());

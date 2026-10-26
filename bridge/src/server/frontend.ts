@@ -8,6 +8,7 @@ import { createDirectory, gitDiff, gitStatus, listDir, readFile, searchFiles, ty
 import type { TerminalManager } from "../terminal/manager.js";
 import { CpaUsageService } from "./cpa.js";
 import { codeawMeta } from "../session/types.js";
+import { agentAuthRequired } from "../backend/authentication.js";
 
 const log = logger("client");
 
@@ -78,6 +79,25 @@ export class FrontendConnection implements ClientHandle {
       .onNotification("_codeaw/client/state", passthrough, (ctx) => manager.setClientState(this, ctx.params))
       .onNotification("_codeaw/session/detach", passthrough, (ctx) => manager.detach(this, ctx.params.sessionId))
       .onRequest("_codeaw/agents/list", passthrough, () => ({ agents: deps.registry.describe() }))
+      .onRequest("_codeaw/agents/authenticate", passthrough, async (ctx) => {
+        const { agentId, methodId } = ctx.params;
+        if (typeof agentId !== "string" || typeof methodId !== "string") {
+          throw acp.RequestError.invalidParams(undefined, "agentId and methodId are required");
+        }
+        const agent = deps.registry.get(agentId);
+        await agent.ensureStarted();
+        const methods = agent.describe().authMethods ?? [];
+        if (!methods.some((method) => method.id === methodId)) {
+          throw acp.RequestError.invalidParams(undefined, "Choose an advertised protocol authentication method");
+        }
+        try {
+          await agent.request("authenticate", { methodId }, { cancellationSignal: ctx.signal });
+        } catch {
+          if (ctx.signal.aborted) throw acp.RequestError.requestCancelled();
+          throw agentAuthRequired(agentId, methods, true);
+        }
+        return { agent: agent.describe() };
+      })
       .onRequest("_codeaw/cpa/accounts", passthrough, (ctx) => cpaResult(cpa.accounts(ctx.params)))
       .onRequest("_codeaw/cpa/quota", passthrough, (ctx) => cpaResult(cpa.quota(ctx.params)))
       .onRequest("_codeaw/agents/restart", passthrough, async (ctx) => {

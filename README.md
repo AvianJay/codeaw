@@ -246,7 +246,7 @@ AGY 本身不讀 `.env`。要沿用 CC Switch 的 Gemini provider 切換，可�
 
 從 [ACP registry 的官方 Antigravity 項目](https://github.com/agentclientprotocol/registry/blob/main/antigravity-acp/agent.json) 下載符合作業系統與 CPU 架構的 `distribution.binary` 壓縮檔並解壓縮。將解壓縮目錄加入 PATH；macOS／Linux 也需讓 `agy_acp_server.par` 有執行權限（`chmod +x agy_acp_server.par`）。這是獨立的 ACP server，無須安裝 `agy` CLI。
 
-bridge 建立設定時會偵測 Windows 上的 `agy_acp_server.exe`，或 macOS／Linux 上的 `agy_acp_server.par`；Linux 會依 registry 設定傳入 `--uid=`。第一次使用前，先透過官方支援的 ACP 客戶端完成登入，例如 [Zed 的 Antigravity 登入流程](https://antigravity.google/docs/ide/extensions/zed)；之後 bridge 沿用儲存的認證。尚未登入時，建立對話會回報需要認證。
+bridge 建立設定時會偵測 Windows 上的 `agy_acp_server.exe`，或 macOS／Linux 上的 `agy_acp_server.par`；Linux 會依 registry 設定傳入 `--uid=`。尚未登入時，「新對話」會列出 agent 支援的登入方式：選擇 Google 帳號、Gemini API 金鑰等方式後按「登入並開始」。Google 登入須在執行 bridge 的電腦上完成；API 金鑰沿用電腦上的環境設定。登入成功後自動建立原本選擇的對話，之後沿用儲存的認證。App 與 bridge 都需更新才支援這個流程。
 
 如果已經有 `~/.codeaw/config.yaml`，在既有的 `agents` 區塊加入以下 Windows 設定，再執行 `codeaw-bridge restart`：
 
@@ -401,13 +401,13 @@ App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://impor
 
 由**已配對的 Windows bridge**連到 CPA，因此 `127.0.0.1` 指的是電腦，不是 iPhone；CPA 不必為手機額外開放 CORS。若 CPA 在其他電腦，需允許 bridge 存取其管理 API，依 [CPA 管理 API 文件](https://help.router-for.me/management/api) 設定遠端管理權限，並使用 HTTPS 或可信任的私有網路。Management Key 會經配對連線送到 bridge，再作為認證送到你指定的 CPA；bridge 不將金鑰寫入設定或日誌。
 
-帳號以精簡列表顯示 Codex、Claude、Grok、Antigravity 等類型、方案、剩餘百分比與本地時間的重置倒數。Codex／Claude 可顯示 5 小時、每週及服務商提供的其他視窗；Grok 顯示其每週 credits／每月額度，Antigravity 顯示模型群組。可搜尋、依類型篩選、下拉或逐帳號重新整理。剩餘重置次數只顯示 Codex 回傳的實際可用 reset credits，不以週內時間估算；重置時間已到也需重新整理確認額度。API key 帳號或其他服務商未提供配額時會顯示未知／不支援，不會假設 100%。
+帳號以精簡列表顯示 Codex、Claude、Grok、Antigravity 等類型、方案、剩餘百分比與本地時間的重置倒數。Codex／Claude 可顯示 5 小時、每週及服務商提供的其他視窗；Grok 顯示其每週 credits／每月額度，Antigravity 顯示模型群組。可搜尋、依類型篩選、下拉或逐帳號重新整理，也可以將不想納入統計的帳號設為忽略；忽略設定保存在目前裝置。剩餘重置次數只顯示 Codex 回傳的實際可用 reset credits，不以週內時間估算；重置時間已到也需重新整理確認額度。API key 帳號或其他服務商未提供配額時會顯示未知／不支援，不會假設 100%。
 
-用量頁頂部保留各類型的「一週／5小時」平均額度，分別計算、不混合 Codex／Claude／AGY。各帳號等權，例如三個 Codex 帳號剩餘 97%、23%、20%，平均顯示 46.7%；未知、失敗、停用或不可用帳號不納入，零額度仍納入。AGY 先平均帳號內相同週期的模型群組，再平均帳號；Codex review 和 Claude 特定模型額度不混入主要額度。搜尋與篩選不改變平均。
+用量頁頂部保留各類型的「一週／5小時」平均額度，分別計算、不混合 Codex／Claude／AGY。各帳號等權，例如三個 Codex 帳號剩餘 97%、23%、20%，平均顯示 46.7%；未知、失敗、停用、不可用或已忽略帳號不納入，零額度仍納入。AGY 先平均帳號內相同週期的模型群組，再平均帳號；Codex review 和 Claude 特定模型額度不混入主要額度。搜尋與篩選不改變平均。
 
 設定 CPA 後，聊天標題旁也會顯示目前代理對應的精簡額度條；代理本身沒有對應類型（如 Oh My Pi）時，改依目前模型名稱判斷：GPT／Codex→Codex、Claude→Claude、Gemini→Antigravity、Grok→Grok。額度條只標「一週／5小時」及一位小數百分比；點擊可查看用量頁。供應商未回傳的視窗會隱藏，帳號詳情仍可查看錯誤／不支援原因。剩餘 ≥50% 為綠色、20–49.9% 為黃色、<20% 為紅色。手機狹窄版面將部分操作移到選單，保留聊天標題及額度條。App 在前景每 30 秒查詢一次，回到前景或重新連線立即更新；聊天與用量頁共用資料及計時器，正在查詢時不重疊發送，背景暫停。每輪會等全部帳號查詢及平均計算完成後一次更新，期間保留上一輪數值；一般失敗帳號在完成時標示未知並排除，限流則保留上次成功額度並標示，不逐帳號改動平均額度條。
 
-CPA 額度畫面每 30 秒更新；bridge 會合併多台裝置的重複查詢。Claude 的實際額度查詢至少間隔五分鐘，同類帳號會錯開查詢，方案資料最多每小時查一次。遇到 HTTP 429 會遵守 `Retry-After` 或漸增冷卻時間，手動刷新也不會繞過限流；有上次成功資料時保留額度並以 `*` 標示，帳號詳情顯示上次成功及預計重試時間。這些數字是先前查詢結果，不能當作目前仍可用的保證。
+CPA 額度畫面每 30 秒更新；bridge 會合併多台裝置的重複查詢。Claude 的實際額度查詢至少間隔五分鐘，同類帳號會錯開查詢，方案資料最多每小時查一次。遇到 HTTP 429 會遵守 `Retry-After` 或漸增冷卻時間，手動刷新也不會繞過限流；有上次成功資料時保留額度並以 `*` 標示，帳號詳情顯示上次成功及預計重試時間。若聊天因額度錯誤中斷，偵測到相同供應商額度恢復後，App 會自動送出「繼續」；手動送出其他訊息會取消這次自動接續。這些數字是先前查詢結果，不能當作目前仍可用的保證。
 
 用量查詢只讀取管理端帳號清單及固定的服務商用量／方案介面，不下載認證檔、不回傳服務商 token、不呼叫模型，也不兌換 reset credits。金鑰可在「CPA 連線設定」移除。App 另提供「設定 → 外觀」的跟隨系統／淺色／深色選擇。
 

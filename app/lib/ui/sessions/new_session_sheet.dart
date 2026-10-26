@@ -30,6 +30,8 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
   List<({String path, String source})> _roots = [];
   bool _busy = false;
   String? _error;
+  List<({String id, String name})> _authMethods = [];
+  String? _authMethodId;
 
   @override
   void initState() {
@@ -108,9 +110,12 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
   Future<void> _start() async {
     final state = AppScope.read(context);
     final client = state.client!;
+    final agentId = _agentId;
+    final authMethodId = _authMethodId;
     final projectless = _projectless;
     final cwd = projectless ? '' : _cwd;
-    if (_agentId == null ||
+    if (_busy ||
+        agentId == null ||
         cwd == null ||
         (projectless && !client.supportsProjectless)) {
       return;
@@ -120,13 +125,20 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
       _error = null;
     });
     try {
+      if (authMethodId != null) {
+        await client.request('_codeaw/agents/authenticate', {
+          'agentId': agentId,
+          'methodId': authMethodId,
+        });
+        if (!mounted) return;
+      }
       final resp =
           await client.request('session/new', {
                 'cwd': cwd,
                 'mcpServers': const [],
                 '_meta': {
                   'codeaw': {
-                    'agentId': _agentId,
+                    'agentId': agentId,
                     if (projectless) 'projectless': true,
                   },
                 },
@@ -147,7 +159,36 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
         router.push(route);
       }
     } on RpcError catch (e) {
-      if (mounted) setState(() => _error = e.detail);
+      if (!mounted) return;
+      setState(() {
+        if (e.code == RpcError.authRequired) {
+          final data = e.data;
+          final meta = data is Map ? data['codeaw'] : null;
+          final methods = meta is Map && meta['agentId'] == agentId
+              ? meta['authMethods']
+              : null;
+          _authMethods = [
+            if (methods is List)
+              for (final method in methods.whereType<Map>())
+                if (method['id'] is String &&
+                    method['name'] is String &&
+                    (method['type'] == null || method['type'] == 'agent'))
+                  (id: method['id'] as String, name: method['name'] as String),
+          ];
+          if (!_authMethods.any((m) => m.id == _authMethodId)) {
+            _authMethodId = _authMethods.firstOrNull?.id;
+          }
+          _error = meta is Map && meta['authFailed'] == true
+              ? '登入未完成。請在電腦上確認登入或 API 金鑰設定後重試。'
+              : _authMethods.isEmpty
+              ? '此 Agent 需要登入。請在電腦上完成登入後重試。'
+              : '請選擇登入方式，再開始對話。';
+        } else if (authMethodId != null && e.code == RpcError.methodNotFound) {
+          _error = '請先更新電腦上的 bridge，才能在這裡登入 Agent。';
+        } else {
+          _error = e.detail;
+        }
+      });
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -183,7 +224,14 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                     showCheckmark: false,
                     label: Text(a.name),
                     selected: _agentId == a.id,
-                    onSelected: (_) => setState(() => _agentId = a.id),
+                    onSelected: _busy
+                        ? null
+                        : (_) => setState(() {
+                            _agentId = a.id;
+                            _error = null;
+                            _authMethods = [];
+                            _authMethodId = null;
+                          }),
                   ),
               ],
             ),
@@ -245,6 +293,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                     children: [
                       for (final r in _roots)
                         RadioListTile<String>(
+                          enabled: !_busy,
                           contentPadding: EdgeInsets.zero,
                           dense: true,
                           value: r.path,
@@ -264,6 +313,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                         ),
                       if (_cwd != null && !_roots.any((r) => r.path == _cwd))
                         RadioListTile<String>(
+                          enabled: !_busy,
                           contentPadding: EdgeInsets.zero,
                           dense: true,
                           value: _cwd!,
@@ -280,12 +330,12 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
               Row(
                 children: [
                   TextButton.icon(
-                    onPressed: _browse,
+                    onPressed: _busy ? null : _browse,
                     icon: const Icon(Icons.folder_open_rounded, size: 18),
                     label: const Text('瀏覽…'),
                   ),
                   TextButton.icon(
-                    onPressed: _manual,
+                    onPressed: _busy ? null : _manual,
                     icon: const Icon(Icons.edit_outlined, size: 18),
                     label: const Text('輸入路徑'),
                   ),
@@ -297,6 +347,38 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(_error!, style: TextStyle(color: scheme.error)),
               ),
+            if (_authMethods.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final method in _authMethods)
+                    ChoiceChip(
+                      label: Text(switch (method.id) {
+                        'oauth-personal' => 'Google 帳號',
+                        'oauth-business' => 'Gemini Enterprise',
+                        'gemini-api-key' => 'Gemini API 金鑰',
+                        'agent-platform' => 'Agent Platform',
+                        _ => method.name,
+                      }),
+                      selected: _authMethodId == method.id,
+                      onSelected: _busy
+                          ? null
+                          : (_) => setState(() => _authMethodId = method.id),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                switch (_authMethodId) {
+                  'gemini-api-key' => '使用電腦上的 GEMINI_API_KEY 設定。',
+                  'agent-platform' => '使用電腦上的 API 金鑰或 Google Cloud 認證設定。',
+                  _ => '請在電腦上完成登入，完成後會自動開始對話。',
+                },
+                style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
+              ),
+            ],
             const SizedBox(height: 12),
             FilledButton(
               onPressed:
@@ -317,7 +399,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Text('開始'),
+                  : Text(_authMethodId == null ? '開始' : '登入並開始'),
             ),
           ],
         ),

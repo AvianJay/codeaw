@@ -14,6 +14,7 @@ import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/en
 import { AcpSubagents } from "./acp-subagents.js";
 import { AgentTempDirectory } from "./agent-temp.js";
 import { ClaudeWorkflows } from "./claude-workflows.js";
+import { agentAuthMethods, agentAuthRequired, type AgentAuthMethod } from "./authentication.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -24,7 +25,7 @@ export interface AgentInfo {
   error?: string;
   agentInfo?: unknown;
   capabilities?: acp.AgentCapabilities;
-  authMethods?: unknown[];
+  authMethods?: AgentAuthMethod[];
   steering: boolean;
   /** `session/fork` honours a fork point, so a sent message can be edited (see docs/protocol.md). */
   forkAtMessage?: boolean;
@@ -105,6 +106,7 @@ export class AgentProcess implements AgentBackend {
   private stoppedGeneration = 0;
   private goneGeneration = 0;
   private stderrTail = "";
+  private authenticating = 0;
   private readonly log: Logger;
   private readonly logFile: string;
   private readonly subagents = new AcpSubagents();
@@ -157,7 +159,7 @@ export class AgentProcess implements AgentBackend {
       error: this.status === "error" ? this.lastError : undefined,
       agentInfo: this.init?.agentInfo ?? undefined,
       capabilities: this.init?.agentCapabilities ?? undefined,
-      authMethods: this.init?.authMethods ?? undefined,
+      authMethods: this.init ? agentAuthMethods(this.init.authMethods) : undefined,
       steering: this.supportsSteering,
       forkAtMessage: this.supportsForkAtMessage,
     };
@@ -290,6 +292,8 @@ export class AgentProcess implements AgentBackend {
   }
 
   private onStderr(chunk: Buffer): void {
+    // Login output may contain authorization URLs or codes. Keep it out of persistent logs.
+    if (this.authenticating) return;
     const text = chunk.toString("utf8");
     this.stderrTail = (this.stderrTail + text).slice(-4000);
     try {
@@ -337,6 +341,8 @@ export class AgentProcess implements AgentBackend {
     this.lastUsed = Date.now();
     const sessionId = (params as { sessionId?: string } | undefined)?.sessionId;
     const loading = method === "session/load" && typeof sessionId === "string" && !this.loading.has(sessionId);
+    const authenticating = method === "authenticate";
+    if (authenticating) this.authenticating++;
     try {
       if (method === "session/load") this.subagents.clear(sessionId);
       if (loading) this.loading.add(sessionId);
@@ -346,7 +352,13 @@ export class AgentProcess implements AgentBackend {
         this.workflows.stop(sessionId);
       }
       return result;
+    } catch (error) {
+      if (error instanceof acp.RequestError && error.code === -32000) {
+        throw agentAuthRequired(this.id, agentAuthMethods(this.init?.authMethods));
+      }
+      throw error;
     } finally {
+      if (authenticating) this.authenticating--;
       if (loading) this.loading.delete(sessionId);
       this.inflight--;
       this.lastUsed = Date.now();
