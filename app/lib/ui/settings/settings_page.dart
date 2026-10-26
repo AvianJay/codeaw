@@ -144,12 +144,17 @@ class _SettingsPageState extends State<SettingsPage> {
                           child: const Icon(Icons.system_update_rounded),
                         ),
                         title: Text(
-                          state.updater.updateAvailable
+                          state.updater.installing
+                              ? 'App 更新中'
+                              : state.updater.updateAvailable
                               ? '有可用的 App 更新'
                               : '檢查 App 更新',
                         ),
                         subtitle: Text(
-                          '${state.updater.installedVersion} · ${state.updater.channel.name}',
+                          state.updater.installing &&
+                                  state.updater.progress != null
+                              ? '下載 ${(state.updater.progress! * 100).round()}%'
+                              : '${state.updater.installedVersion} · ${state.updater.channel.name}',
                         ),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: () => context.push('/updates'),
