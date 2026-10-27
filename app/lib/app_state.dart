@@ -25,10 +25,7 @@ class AppState extends ChangeNotifier {
     LiveActivityController? liveActivity,
     LiveActivityTracker? androidLiveActivity,
   }) : notifier = LocalNotifier(openSession),
-       // Phone installs should start as soon as the manifest reports a
-       // compatible release. Tests and embedders can still inject a manual
-       // AppUpdater when they need explicit control.
-       updater = updater ?? AppUpdater(autoUpdate: true),
+       updater = updater ?? AppUpdater(),
        liveActivity = liveActivity ?? LiveActivityController(),
        androidLiveActivity = androidLiveActivity ?? LiveActivityTracker(),
        _createClient = createClient ?? BridgeClient.new;

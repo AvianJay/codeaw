@@ -64,7 +64,6 @@ AppUpdater _updater({
   Future<PackageInfo> Function()? loadPackage,
   ApkInstall? installApk,
   UpdateUrlLauncher? openUrl,
-  bool autoUpdate = false,
   bool isWeb = false,
   DateTime Function()? now,
 }) => AppUpdater(
@@ -86,7 +85,6 @@ AppUpdater _updater({
   loadPackage: loadPackage ?? _package,
   platform: platform,
   isWeb: isWeb,
-  autoUpdate: autoUpdate,
   installApk: installApk,
   openUrl: openUrl,
   now: now,
@@ -206,27 +204,6 @@ void main() {
       expect(updater.message, contains('APK 安裝器'));
     },
   );
-
-  test('automatic mode starts one install after a compatible check', () async {
-    final started = Completer<void>();
-    final release = Completer<void>();
-    final updater = _updater(
-      autoUpdate: true,
-      installApk: (_, _) async {
-        started.complete();
-        await release.future;
-      },
-    );
-    addTearDown(updater.dispose);
-    await updater.initialize();
-    await started.future;
-    expect(updater.installing, isTrue);
-    expect(updater.updateAvailable, isTrue);
-    release.complete();
-    await Future<void>.delayed(Duration.zero);
-    expect(updater.installing, isFalse);
-    expect(updater.error, isNull);
-  });
 
   test(
     'channel mismatches and malformed responses cannot become installable',

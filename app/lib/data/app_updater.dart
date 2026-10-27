@@ -160,9 +160,7 @@ typedef ApkInstall =
       void Function(double progress) onProgress,
     );
 
-/// Independent of bridge connectivity. By default it runs a complete
-/// check/download/install flow; pass `autoUpdate: false` to retain a manual
-/// flow for an embedder or a settings-only screen.
+/// Independent of bridge connectivity; never installs without a user action.
 class AppUpdater extends ChangeNotifier {
   AppUpdater({
     http.Client? client,
@@ -176,7 +174,6 @@ class AppUpdater extends ChangeNotifier {
     UpdateUrlLauncher? openUrl,
     TargetPlatform? platform,
     bool? isWeb,
-    this.autoUpdate = true,
     DateTime Function()? now,
   }) : _client = client ?? http.Client(),
        buildChannel = buildChannel ?? UpdateChannel.forBuild,
@@ -197,10 +194,6 @@ class AppUpdater extends ChangeNotifier {
   final UpdateUrlLauncher _openUrl;
   final TargetPlatform platform;
   final bool isWeb;
-
-  /// Starts installation as soon as a compatible release is found. Set this
-  /// to false for a manual update flow.
-  final bool autoUpdate;
   final DateTime Function() _now;
   late UpdateChannel channel;
   IosInstaller iosInstaller = IosInstaller.browser;
@@ -216,7 +209,6 @@ class AppUpdater extends ChangeNotifier {
   SharedPreferences? _preferences;
   Future<void>? _initializing;
   DateTime? _lastCheckAttempt;
-  String? _automaticAttemptedId;
   bool _disposed = false;
 
   bool get supported =>
@@ -227,7 +219,6 @@ class AppUpdater extends ChangeNotifier {
       ? '讀取中…'
       : '${installed!.version}+${installed!.buildNumber}';
   bool get switchingChannel => channel != buildChannel;
-  bool get automatic => autoUpdate;
   bool get updateAvailable =>
       release != null &&
       installed != null &&
@@ -316,7 +307,6 @@ class AppUpdater extends ChangeNotifier {
     if (_disposed) return;
     channel = value;
     release = null;
-    _automaticAttemptedId = null;
     checkedAt = null;
     message = null;
     error = null;
@@ -410,24 +400,7 @@ class AppUpdater extends ChangeNotifier {
     } finally {
       checking = false;
       _emit();
-      _startAutomaticUpdate();
     }
-  }
-
-  /// Starts one automatic install attempt for each release/build pair.
-  ///
-  /// Android and iOS still enforce their own package-install/signing rules;
-  /// this method removes the app's intermediate confirmation page while
-  /// keeping those platform safeguards intact. A failed attempt remains
-  /// retryable from the update page and is not retried in a tight loop on
-  /// every rebuild or lifecycle callback.
-  void _startAutomaticUpdate() {
-    if (!autoUpdate || _disposed || !supported || !updateAvailable) return;
-    final id = availableUpdateId;
-    final download = asset;
-    if (id == null || download == null || _automaticAttemptedId == id) return;
-    _automaticAttemptedId = id;
-    unawaited(install());
   }
 
   Future<void> install() async {

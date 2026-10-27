@@ -4,8 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/app_updater.dart';
 
-/// Starts automatic updates through [AppUpdater] and keeps a manual prompt for
-/// callers that opt out of that flow.
+/// Shows an update once per version, after the root navigator is ready.
 class AppUpdatePrompt extends StatefulWidget {
   const AppUpdatePrompt({
     super.key,
@@ -85,10 +84,6 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
 
   Future<void> _showIfAvailable() async {
     final updater = widget.updater;
-    // The phone app starts the install itself. Do not put a confirmation
-    // dialog in front of that flow; the status banner below is enough to make
-    // the operation visible without blocking the current screen.
-    if (updater.autoUpdate) return;
     final id = updater.availableUpdateId;
     final context = widget.navigatorKey.currentContext;
     if (!_foreground ||
@@ -141,92 +136,5 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.updater,
-    builder: (context, _) => Stack(
-      fit: StackFit.expand,
-      children: [
-        widget.child,
-        if (widget.updater.autoUpdate && widget.updater.supported)
-          _AutomaticUpdateStatus(updater: widget.updater),
-      ],
-    ),
-  );
-}
-
-/// A small, non-blocking mobile status surface for an update started at app
-/// launch or when the app returns to the foreground.
-class _AutomaticUpdateStatus extends StatelessWidget {
-  const _AutomaticUpdateStatus({required this.updater});
-
-  final AppUpdater updater;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!updater.checking && !updater.installing) {
-      return const SizedBox.shrink();
-    }
-    final progress = updater.progress;
-    final installing = updater.installing;
-    final title = installing
-        ? progress == null
-              ? '更新中…'
-              : '更新中 ${(progress * 100).round()}%'
-        : '檢查更新中…';
-    final subtitle = installing ? '更新完成後會由系統接續安裝' : '正在準備手機更新';
-    return Positioned(
-      top: 0,
-      left: 12,
-      right: 12,
-      child: IgnorePointer(
-        child: SafeArea(
-          bottom: false,
-          child: Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 640),
-              child: Card(
-                margin: const EdgeInsets.only(top: 8),
-                elevation: 4,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Row(
-                        children: [
-                          SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: installing && progress != null
-                                ? CircularProgressIndicator(value: progress)
-                                : const CircularProgressIndicator(),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Text(
-                              title,
-                              style: Theme.of(context).textTheme.titleSmall,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      LinearProgressIndicator(value: progress),
-                      const SizedBox(height: 5),
-                      Text(
-                        subtitle,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => widget.child;
 }
