@@ -346,14 +346,14 @@ function Show-Devices {
 
 function Refresh-Updater {
     $script:update = Invoke-Control 'updaterStatus'
-    $busy = $script:update.state -in @('checking', 'downloading')
+    $busy = $script:update.state -in @('checking', 'downloading', 'installing')
     $script:updateChannel.Enabled = -not $busy
     $script:updateCheck.Enabled = -not $busy
     $script:updateDownload.Enabled = (-not $busy) -and $script:update.updateAvailable
     $script:updateInstall.Enabled = (-not $busy) -and $script:update.canInstall -and $script:update.updateAvailable
     $script:updateInstalled.Text = '目前版本：' + $script:update.installedVersion + ' · ' + $script:update.buildChannel + ' · ' + $script:update.target
     $script:updateMessage.Text = $script:update.message
-    $script:updateProgress.Visible = $script:update.state -eq 'downloading'
+    $script:updateProgress.Visible = $script:update.state -in @('downloading', 'installing')
     if ($script:update.progress) { $script:updateProgress.Value = [Math]::Min(100, [int]($script:update.progress * 100)) }
     $script:updateInstall.Text = if ($script:update.state -eq 'ready' -and $script:update.kind -eq 'installer') { '執行安裝程式' } else { '下載更新並驗證' }
 }

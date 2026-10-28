@@ -13,7 +13,7 @@ import { BridgeRuntime, type DesktopPage } from "./desktop/runtime.js";
 import { manageService } from "./desktop/service.js";
 import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
 import { AgentInstaller, type InstallStatus } from "./agents/install.js";
-import { BridgeUpdater, installBridgeUpdate, type BridgeUpdateStatus } from "./updater.js";
+import { BridgeUpdater, type BridgeUpdateStatus } from "./updater.js";
 import fs from "node:fs";
 import YAML from "yaml";
 import { writeFileAtomic } from "./util/paths.js";
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
       const wait = async (requireSuccess = true) => {
         let found = await status();
         let message = "";
-        while (["checking", "downloading"].includes(found.state)) {
+        while (["checking", "downloading", "installing"].includes(found.state)) {
           if (found.message !== message) { message = found.message; process.stdout.write(message + "\n"); }
           if (!running) found = await updater.wait();
           else { await new Promise((resolve) => setTimeout(resolve, 500)); found = await status(); }
@@ -135,8 +135,11 @@ async function main(): Promise<void> {
         found = await wait();
       }
       if (action === "install") {
-        await installBridgeUpdate(file, found);
-        process.stdout.write("Verified bridge installer opened. Complete the installer to update and restart the tray.\n");
+        const installed = running
+          ? await requestControl<BridgeUpdateStatus>(file, { command: "installBridgeUpdate" })
+          : await updater.install();
+        if (installed.state === "error") throw new Error(installed.message);
+        process.stdout.write("Verified bridge installer started. The bridge will restart automatically after the update.\n");
       } else process.stdout.write(found.message + "\n");
       return;
     }

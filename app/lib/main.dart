@@ -214,6 +214,7 @@ class _CodeawAppState extends State<CodeawApp> {
       routerConfig: widget.router,
       builder: (context, child) => AppUpdatePrompt(
         updater: widget.state.updater,
+        bridge: widget.state.client,
         navigatorKey: widget.router.routerDelegate.navigatorKey,
         routes: widget.router.routerDelegate,
         isUpdatePage: () => widget.router.state.uri.path == '/updates',

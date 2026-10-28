@@ -24,6 +24,56 @@ export 'upload_progress.dart';
 
 enum ConnStatus { offline, connecting, online }
 
+/// Live status of the bridge's unattended update pipeline.
+class BridgeUpdateInfo {
+  const BridgeUpdateInfo({
+    required this.state,
+    required this.installedVersion,
+    required this.updateAvailable,
+    required this.message,
+    this.progress,
+    this.releaseVersion,
+  });
+
+  final String state;
+  final String installedVersion;
+  final bool updateAvailable;
+  final String message;
+  final double? progress;
+  final String? releaseVersion;
+
+  bool get active =>
+      state == 'checking' || state == 'downloading' || state == 'installing';
+
+  static BridgeUpdateInfo? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final state = value['state'];
+    final installed = value['installedVersion'];
+    final available = value['updateAvailable'];
+    final message = value['message'];
+    if (state is! String ||
+        installed is! String ||
+        available is! bool ||
+        message is! String) {
+      return null;
+    }
+    final rawProgress = value['progress'];
+    final progress = rawProgress is num
+        ? rawProgress.toDouble().clamp(0, 1).toDouble()
+        : null;
+    return BridgeUpdateInfo(
+      state: state,
+      installedVersion: installed,
+      updateAvailable: available,
+      message: message,
+      progress: progress,
+      releaseVersion: value['releaseVersion'] is String
+          ? value['releaseVersion'] as String
+          : null,
+    );
+  }
+}
+
 /// A message addressed to one session (`session/update`, `_codeaw/event`, `_codeaw/replay`).
 class SessionMessage {
   SessionMessage(this.method, this.params);
@@ -55,6 +105,7 @@ class BridgeClient extends ChangeNotifier {
   /// The bridge can branch a chat from an edited, already sent message.
   bool supportsPromptEditing = false;
   bool supportsFileArchives = false;
+  BridgeUpdateInfo? bridgeUpdate;
 
   // Synchronous on purpose: a replayed entry must reach its SessionController before the
   // `session/load` response does, or the response's lastSeq would mark it as a duplicate.
@@ -198,6 +249,7 @@ class BridgeClient extends ChangeNotifier {
         supportsProjectless = meta?['projectless'] == true;
         supportsPromptEditing = meta?['editPrompts'] == true;
         supportsFileArchives = meta?['fileArchives'] == true;
+        _setBridgeUpdate(BridgeUpdateInfo.fromJson(meta?['bridgeUpdate']));
         activeUrl = url;
         lastError = null;
         if (host.urls.first != url) {
@@ -254,7 +306,15 @@ class BridgeClient extends ChangeNotifier {
         _activity.add(params);
       case '_codeaw/terminal/event':
         _terminalEvents.add(params);
+      case '_codeaw/bridge/update':
+        final update = BridgeUpdateInfo.fromJson(params);
+        if (update != null) _setBridgeUpdate(update);
     }
+  }
+
+  void _setBridgeUpdate(BridgeUpdateInfo? value) {
+    bridgeUpdate = value;
+    if (!_disposed) notifyListeners();
   }
 
   void _setStatus(ConnStatus s) {

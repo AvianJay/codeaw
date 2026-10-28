@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BridgeUpdater, downloadBridgeUpdate, newerBridgeRelease, parseBridgeRelease, updateTarget, verifiedBridgeInstaller } from "../src/updater.js";
+import { BridgeUpdater, bridgeUpdateClientStatus, downloadBridgeUpdate, newerBridgeRelease, parseBridgeRelease, updateTarget, verifiedBridgeInstaller } from "../src/updater.js";
 import { defaultConfigFile } from "../src/config.js";
 import { serviceName } from "../src/desktop/service.js";
 
@@ -74,6 +74,21 @@ describe("bridge update manifests", () => {
 });
 
 describe("bridge updater", () => {
+  it("keeps non-installable source builds on the explicit portable flow", async () => {
+    const fetch = mockDownloads();
+    const update = updater(home(), { target: "linux-arm64-musl", installation: () => undefined });
+    const states: string[] = [];
+    update.subscribe((status) => states.push(status.state));
+    const status = await update.autoInstall();
+    expect(status).toMatchObject({ state: "idle", updateAvailable: false, canInstall: false });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(states).toEqual([]);
+    const client = bridgeUpdateClientStatus(status);
+    expect(client).toMatchObject({ state: "idle", updateAvailable: false });
+    expect(client).not.toHaveProperty("file");
+    await update.stop();
+  });
+
   it("checks without installing and prepares a verified installer only on request", async () => {
     const fetch = mockDownloads();
     const update = updater();

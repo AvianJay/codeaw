@@ -9,6 +9,7 @@ import type { TerminalManager } from "../terminal/manager.js";
 import { CpaUsageService } from "./cpa.js";
 import { codeawMeta } from "../session/types.js";
 import { agentAuthRequired } from "../backend/authentication.js";
+import { bridgeUpdateClientStatus, type BridgeUpdater } from "../updater.js";
 
 const log = logger("client");
 
@@ -19,6 +20,7 @@ export interface FrontendDeps {
   notifier: PushNotifier;
   terminals: TerminalManager;
   cpa?: CpaUsageService;
+  bridgeUpdater?: BridgeUpdater;
 }
 
 const passthrough = (params: unknown) => (params ?? {}) as Record<string, any>;
@@ -34,6 +36,7 @@ export class FrontendConnection implements ClientHandle {
   readonly app: acp.AgentApp;
   private ctx?: acp.AgentContext;
   private chain: Promise<void> = Promise.resolve();
+  private readonly unsubscribeBridgeUpdate?: () => void;
   private disposed = false;
 
   constructor(
@@ -51,6 +54,11 @@ export class FrontendConnection implements ClientHandle {
       this.ctx ??= ctx.client;
       return ctx;
     };
+    if (deps.bridgeUpdater) {
+      this.unsubscribeBridgeUpdate = deps.bridgeUpdater.subscribe((status) => {
+        void this.notify("_codeaw/bridge/update", bridgeUpdateClientStatus(status));
+      });
+    }
     this.app = acp
       .agent({ name: "codeaw-bridge" })
       .onConnect((conn) => {
@@ -60,7 +68,18 @@ export class FrontendConnection implements ClientHandle {
       })
       .onRequest("initialize", (ctx) => {
         bind(ctx);
-        return manager.initializeResponse();
+        const response = manager.initializeResponse() as acp.InitializeResponse & {
+          _meta?: Record<string, unknown>;
+        };
+        if (deps.bridgeUpdater) {
+          const meta = (response._meta ?? {}) as Record<string, unknown>;
+          const codeaw = (meta.codeaw ?? {}) as Record<string, unknown>;
+          response._meta = { ...meta, codeaw: {
+            ...codeaw,
+            bridgeUpdate: bridgeUpdateClientStatus(deps.bridgeUpdater.getStatus()),
+          } };
+        }
+        return response;
       })
       .onRequest("authenticate", () => ({}))
       .onRequest("session/new", (ctx) => this.flushed(manager.newSession(this, {
@@ -182,6 +201,7 @@ export class FrontendConnection implements ClientHandle {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubscribeBridgeUpdate?.();
     this.deps.manager.removeClient(this);
     this.deps.terminals.removeClient(this);
     log.info(`${this.deviceName} disconnected`);

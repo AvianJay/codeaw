@@ -322,11 +322,11 @@ Windows 系統匣的「Bridge 更新…」可檢查版本、切換 `release`／`
 ```powershell
 codeaw-bridge update check
 codeaw-bridge update check --channel nightly
-codeaw-bridge update install     # 已安裝的 Windows 版：驗證後開啟 NSIS 安裝程式
+codeaw-bridge update install     # 已安裝的 Windows 版：驗證後靜默安裝並自動重啟
 codeaw-bridge update download    # 下載目前平台的可攜版並驗證
 ```
 
-更新只會在使用者操作後下載或安裝。下載會檢查檔案大小及 SHA-256；nightly 會比較建置編號。頻道選擇保存在設定資料夾，不修改 agent 設定。安裝更新會中止執行中的回合，保留設定與配對裝置；已註冊 Windows 服務時需先移除服務再更新。可攜版、Linux、macOS 或從原始碼執行時，使用 `update download` 取得已驗證的壓縮檔，停止 bridge 後解壓並替換執行檔與 `web/`。下載保存在設定資料夾的 `updates/`，更新完成後可刪除。
+bridge 啟動後會自動檢查所選頻道；已安裝的 Windows 版本發現新版後會自動下載、驗證並以靜默安裝器更新，再重新啟動 bridge，不需要點擊。下載會檢查檔案大小及 SHA-256；nightly 會比較建置編號。頻道選擇保存在設定資料夾，不修改 agent 設定。安裝更新會中止執行中的回合，保留設定與配對裝置；已註冊 Windows 服務時仍需先移除服務再更新。可攜版、Linux、macOS 或從原始碼執行時，使用 `update download` 取得已驗證的壓縮檔，停止 bridge 後解壓並替換執行檔與 `web/`。下載保存在設定資料夾的 `updates/`，更新完成後可刪除。
 
 CI 發布 `bridge-update.json`，包含各平台安裝包與可攜版的網址、大小及 SHA-256，並將版本、建置編號、頻道與目標平台寫入執行檔。首次發布更新 manifest 前，檢查會提示該頻道尚未提供更新資料。
 
@@ -381,7 +381,7 @@ Android 使用下列 APK 安裝方式。iPhone／iPad（iOS 13+）可從 nightly
 
 App「設定 → 更新」選擇 **LCSign** 時會開啟 `loadcontroller://import?url=<percent-encoded HTTPS IPA URL>`，直接讓 LCSign 下載並匯入 IPA，無須先在 Safari 下載再手動分享。此格式已由 [LCSign 官方安裝包](https://www.sign.lc/install) 的 URL scheme 與繁體中文說明確認。匯入後仍需在 LCSign 的「專案／檔案」頁面用原本的憑證與 bundle identifier 簽名並安裝，以保留資料；scheme 不會自動簽名。若未安裝 LCSign 或無法開啟，App 會提供瀏覽器下載備援。
 
-手機 App 啟動時自動檢查所選頻道，回到前景時最多每 15 分鐘再檢查一次。發現新版會彈出提示，點「開啟檢查更新」進入更新頁，再自行選擇安裝方式；不會自動下載或安裝。相同版本的提示只顯示一次，「稍後」或關閉後仍可從設定手動更新。iOS 可選 LCSign、AltStore、SideStore、LiveContainer、瀏覽器下載，或「自訂安裝工具」並貼上工具提供的 URL Scheme，例如 `mysigner://import?url={url}`；`{url}` 會代入編碼後的 IPA 下載網址，設定會保留。憑證側載仍由你自己的工具簽署並安裝。
+手機 App 啟動時自動檢查所選頻道，回到前景時最多每 15 分鐘再檢查一次。bridge 自動更新時，手機會另外顯示「Bridge 更新中」及下載進度；更新完成後會自動重新連線。手機 App 本身仍可從設定頁手動更新。iOS 可選 LCSign、AltStore、SideStore、LiveContainer、瀏覽器下載，或「自訂安裝工具」並貼上工具提供的 URL Scheme，例如 `mysigner://import?url={url}`；`{url}` 會代入編碼後的 IPA 下載網址，設定會保留。憑證側載仍由你自己的工具簽署並安裝。
 
 1. 安裝 Tailscale App，並登入同一個 tailnet。
 2. 安裝 codeaw App：[nightly release](https://github.com/AvianJay/codeaw/releases/tag/nightly) 的 `codeaw-arm64-v8a.apk` 或 `codeaw-universal.apk`（或用 `cd app && flutter build apk --release --target-platform=android-arm64` 自己建置）。

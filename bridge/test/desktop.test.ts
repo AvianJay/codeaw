@@ -41,7 +41,7 @@ function configFile() {
 }
 
 async function start(file = configFile(), options: BridgeOptions = {}) {
-  const runtime = new BridgeRuntime(loadConfig(file), options);
+  const runtime = new BridgeRuntime(loadConfig(file), { autoUpdate: false, ...options });
   runtimes.push(runtime);
   await runtime.start();
   return runtime;

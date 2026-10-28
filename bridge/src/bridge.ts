@@ -26,10 +26,13 @@ import { desktopHelper } from "./remote-desktop/native.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listenPrivateHttp, type PrivateHttpListener } from "./remote-desktop/private-http.js";
+import type { BridgeUpdater } from "./updater.js";
 
 const log = logger("bridge");
 
 export interface BridgeOptions {
+  /** Automatically check and install a verified bridge update after startup. */
+  autoUpdate?: boolean;
   /** Override `listen.hosts` (tests use 127.0.0.1). */
   hosts?: string[];
   /** Override `listen.port` (0 = random). */
@@ -41,6 +44,8 @@ export interface BridgeOptions {
   desktopBackendFactory?: BackendFactory;
   /** Private user bridge endpoint when the system gateway owns the public port. */
   gatewayPipe?: string;
+  /** Runtime-owned updater used to report automatic bridge updates to clients. */
+  updater?: BridgeUpdater;
 }
 
 export interface Bridge {
@@ -105,7 +110,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
   const terminals = new TerminalManager(guard);
   const desktop = new DesktopManager({ devices, enabled: () => config.remoteDesktop.enabled,
     backendFactory: opts.desktopBackendFactory, ...(opts.desktopBackendFactory ? { available: () => true } : {}) });
-  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop });
+  const handlers = createHttpHandlers({ manager, registry, guard, notifier, terminals, cpa, devices, store, uploads, hostName: os.hostname(), webRoot, desktop, bridgeUpdater: opts.updater });
 
   const servers = new Map<string, PrivateHttpListener>();
   const draining = new Set<PrivateHttpListener>();

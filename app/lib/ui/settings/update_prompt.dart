@@ -1,7 +1,9 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../data/bridge_client.dart';
 import '../../data/app_updater.dart';
 
 /// Shows an update once per version, after the root navigator is ready.
@@ -12,6 +14,7 @@ class AppUpdatePrompt extends StatefulWidget {
     required this.navigatorKey,
     required this.openUpdates,
     required this.child,
+    this.bridge,
     this.routes,
     this.isUpdatePage,
   });
@@ -20,6 +23,7 @@ class AppUpdatePrompt extends StatefulWidget {
   final GlobalKey<NavigatorState> navigatorKey;
   final VoidCallback openUpdates;
   final Widget child;
+  final BridgeClient? bridge;
   final Listenable? routes;
   final bool Function()? isUpdatePage;
 
@@ -42,6 +46,7 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
         WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
     WidgetsBinding.instance.addObserver(this);
     widget.updater.addListener(_schedule);
+    widget.bridge?.addListener(_onBridgeChanged);
     widget.routes?.addListener(_schedule);
     unawaited(widget.updater.initialize());
     _schedule();
@@ -55,6 +60,10 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
       widget.updater.addListener(_schedule);
       _shown.clear();
       unawaited(widget.updater.initialize());
+    }
+    if (oldWidget.bridge != widget.bridge) {
+      oldWidget.bridge?.removeListener(_onBridgeChanged);
+      widget.bridge?.addListener(_onBridgeChanged);
     }
     if (oldWidget.routes != widget.routes) {
       oldWidget.routes?.removeListener(_schedule);
@@ -80,6 +89,10 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
       if (mounted) unawaited(_showIfAvailable());
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  void _onBridgeChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _showIfAvailable() async {
@@ -131,10 +144,98 @@ class _AppUpdatePromptState extends State<AppUpdatePrompt>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     widget.updater.removeListener(_schedule);
+    widget.bridge?.removeListener(_onBridgeChanged);
     widget.routes?.removeListener(_schedule);
     super.dispose();
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) {
+    final bridge = !kIsWeb ? widget.bridge?.bridgeUpdate : null;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        widget.child,
+        if (bridge?.active == true) _BridgeUpdateStatus(update: bridge!),
+      ],
+    );
+  }
+}
+
+/// A non-blocking mobile status surface for a bridge update started at launch.
+class _BridgeUpdateStatus extends StatelessWidget {
+  const _BridgeUpdateStatus({required this.update});
+
+  final BridgeUpdateInfo update;
+
+  @override
+  Widget build(BuildContext context) {
+    final downloading = update.state == 'downloading';
+    final installing = update.state == 'installing';
+    final progress = update.progress;
+    final title = downloading && progress != null
+        ? 'Bridge 更新中 ${(progress * 100).round()}%'
+        : installing
+        ? 'Bridge 更新中…'
+        : '正在檢查 Bridge 更新…';
+    final subtitle = installing
+        ? '更新完成後會自動重新啟動'
+        : downloading
+        ? '正在下載並驗證更新'
+        : '正在準備更新';
+    return Positioned(
+      top: 0,
+      left: 12,
+      right: 12,
+      child: IgnorePointer(
+        child: SafeArea(
+          bottom: false,
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 640),
+              child: Card(
+                margin: const EdgeInsets.only(top: 8),
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: installing && progress != null
+                                ? CircularProgressIndicator(value: progress)
+                                : const CircularProgressIndicator(),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      LinearProgressIndicator(value: progress),
+                      const SizedBox(height: 5),
+                      Text(
+                        subtitle,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

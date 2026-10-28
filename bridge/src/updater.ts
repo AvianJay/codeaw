@@ -84,10 +84,27 @@ export interface UpdaterOptions {
   installation?: () => string | undefined;
 }
 export interface BridgeUpdateStatus {
-  state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "error";
+  state: "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "installing" | "error";
   channel: UpdateChannel; buildChannel: UpdateChannel; installedVersion: string; target: string;
   canInstall: boolean; releaseUrl: string; release?: BridgeRelease; updateAvailable: boolean;
   checkedAt?: string; progress?: number; file?: string; kind?: UpdateKind; message: string;
+}
+
+/** The update information safe to expose to an authenticated phone client. */
+export function bridgeUpdateClientStatus(status: BridgeUpdateStatus): Record<string, unknown> {
+  return {
+    state: status.state,
+    channel: status.channel,
+    buildChannel: status.buildChannel,
+    installedVersion: status.installedVersion,
+    target: status.target,
+    updateAvailable: status.updateAvailable,
+    checkedAt: status.checkedAt,
+    progress: status.progress,
+    kind: status.kind,
+    releaseVersion: status.release ? `${status.release.version}+${status.release.buildNumber}` : undefined,
+    message: status.message,
+  };
 }
 
 /** Only an installed standalone Windows bridge can invoke NSIS against its current directory. */
@@ -111,6 +128,8 @@ export class BridgeUpdater {
   private status: Pick<BridgeUpdateStatus, "state" | "message" | "release" | "checkedAt" | "progress" | "file" | "kind"> = { state: "idle", message: "Check for bridge updates." };
   private pending?: Promise<void>;
   private controller?: AbortController;
+  private readonly listeners = new Set<(status: BridgeUpdateStatus) => void>();
+  private lastProgressNotification = -1;
   private stopped = false;
 
   constructor(readonly file: string, options: UpdaterOptions = {}) {
@@ -135,7 +154,22 @@ export class BridgeUpdater {
       updateAvailable: !!release && (this.channel !== this.buildChannel || newerBridgeRelease(release, this.version, this.buildNumber)) };
   }
 
-  private busy(): boolean { return this.status.state === "checking" || this.status.state === "downloading"; }
+  /** Subscribe to state changes so connected clients can render live progress. */
+  subscribe(listener: (status: BridgeUpdateStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private emit(): void {
+    const snapshot = this.getStatus();
+    for (const listener of this.listeners) {
+      try { listener(snapshot); } catch { /* client rendering must not break updates */ }
+    }
+  }
+
+  private busy(): boolean {
+    return this.status.state === "checking" || this.status.state === "downloading" || this.status.state === "installing";
+  }
 
   setChannel(value: unknown): BridgeUpdateStatus {
     if (value !== "release" && value !== "nightly") throw new Error("Unknown bridge update channel");
@@ -144,6 +178,7 @@ export class BridgeUpdater {
       writeFileAtomic(this.preferences, JSON.stringify({ channel: value }));
       this.channel = value;
       this.status = { state: "idle", message: "Channel changed. Check for updates." };
+      this.emit();
     }
     return this.getStatus();
   }
@@ -151,6 +186,7 @@ export class BridgeUpdater {
   check(): BridgeUpdateStatus {
     if (this.busy() || this.stopped) return this.getStatus();
     this.status = { state: "checking", message: "Checking for bridge updates…" };
+    this.emit();
     this.controller = new AbortController();
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(20_000)]);
     const route = this.channel === "nightly" ? "download/nightly" : "latest/download";
@@ -171,6 +207,7 @@ export class BridgeUpdater {
         const available = this.channel !== this.buildChannel || newerBridgeRelease(release, this.version, this.buildNumber);
         this.status = { state: available ? "available" : "current", release, checkedAt: new Date().toISOString(),
           message: available ? `Bridge ${release.version}+${release.buildNumber} is available.` : "Bridge is up to date." };
+        this.emit();
       } catch (error) { this.fail(error, "Cannot check for bridge updates. Check your connection and retry."); }
     })();
     return this.getStatus();
@@ -185,6 +222,8 @@ export class BridgeUpdater {
     const asset = status.release.assets[this.target + (kind === "installer" ? "-setup" : "")];
     if (!asset) throw new Error(`No ${kind} update is published for ${this.target}`);
     this.status = { state: "downloading", message: "Downloading and verifying the bridge update…", release: status.release, checkedAt: status.checkedAt, progress: 0, kind };
+    this.lastProgressNotification = 0;
+    this.emit();
     this.controller = new AbortController();
     const signal = this.controller.signal;
     this.pending = (async () => {
@@ -194,9 +233,16 @@ export class BridgeUpdater {
         fs.mkdirSync(root, { recursive: true, mode: 0o700 });
         directory = fs.mkdtempSync(path.join(root, "bridge-"));
         const file = path.join(directory, path.posix.basename(new URL(asset.url).pathname));
-        await downloadBridgeUpdate(asset, file, signal, (progress) => { this.status.progress = progress; });
+        await downloadBridgeUpdate(asset, file, signal, (progress) => {
+          this.status.progress = progress;
+          if (progress >= 1 || progress - this.lastProgressNotification >= 0.01) {
+            this.lastProgressNotification = progress;
+            this.emit();
+          }
+        });
         this.status = { ...this.status, state: "ready", file, progress: 1,
           message: kind === "installer" ? "Update verified. Run the installer to finish updating; active turns will stop." : `Update verified. Extract ${file} and replace the bridge and web folder after stopping the bridge.` };
+        this.emit();
       } catch (error) {
         // Only the private directory returned by mkdtemp is removed on failure.
         if (directory && path.dirname(path.resolve(directory)) === root && isInside(realPath(root), realPath(directory))) {
@@ -212,9 +258,53 @@ export class BridgeUpdater {
     // Network/runtime errors may contain credentials or URLs from proxy settings.
     const message = error instanceof Error && /^(Invalid bridge|Bridge update|Cannot (check|download)|No bridge)/.test(error.message) ? error.message : fallback;
     this.status = { ...this.status, state: "error", progress: undefined, file: undefined, message };
+    this.emit();
   }
 
   async wait(): Promise<BridgeUpdateStatus> { await this.pending; return this.getStatus(); }
+
+  /** Check, download, verify and hand off an installed Windows update. */
+  async autoInstall(): Promise<BridgeUpdateStatus> {
+    if (this.stopped) return this.getStatus();
+    try {
+      // Portable/source builds cannot replace the running executable. Keep
+      // those builds manual instead of downloading an archive that cannot be
+      // applied unattended.
+      const initial = this.getStatus();
+      if (!initial.canInstall) return initial;
+      if (this.busy()) await this.wait();
+      if (this.stopped) return this.getStatus();
+      this.check();
+      let status = await this.wait();
+      if (status.state === "error" || !status.updateAvailable || !status.canInstall) return status;
+      this.prepare("installer");
+      status = await this.wait();
+      if (status.state !== "ready") return status;
+      return await this.install();
+    } catch (error) {
+      this.fail(error, "Bridge update failed. Check for updates again and retry.");
+      return this.getStatus();
+    }
+  }
+
+  /** Start the verified installer without another desktop confirmation. */
+  async install(): Promise<BridgeUpdateStatus> {
+    if (this.busy() || this.stopped) throw new Error("Wait for the current bridge update operation to finish");
+    const status = this.getStatus();
+    if (status.state !== "ready" || status.kind !== "installer" || !status.file) throw new Error("No verified bridge installer is ready");
+    try {
+      // Verify immediately before changing state so a tampered staged file is
+      // rejected while the bridge is still serving clients.
+      await verifiedBridgeInstaller(this.file, status);
+      this.status = { ...this.status, state: "installing", message: "Installing the verified bridge update…" };
+      this.emit();
+      await installBridgeUpdate(this.file, status);
+    } catch (error) {
+      this.fail(error, "Bridge update installation failed. Check for updates again and retry.");
+    }
+    return this.getStatus();
+  }
+
   async stop(): Promise<void> { this.stopped = true; this.controller?.abort(); await this.pending; }
 }
 
@@ -253,8 +343,12 @@ export async function verifiedBridgeInstaller(file: string, status: BridgeUpdate
 export async function installBridgeUpdate(file: string, status: BridgeUpdateStatus): Promise<void> {
   const installer = await verifiedBridgeInstaller(file, status);
   const quote = (value: string) => "'" + value.replace(/'/g, "''") + "'";
-  const script = `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quote(installer.file)} -ArgumentList ${quote(`/D=${installer.directory}`)}`;
-  // Start-Process escapes Bun's child job so the installer survives the old bridge's exit.
+  // Silent mode keeps the complete update flow unattended. The watcher is a
+  // detached PowerShell process so it survives the old bridge's exit, waits
+  // for NSIS to finish replacing files, and starts the updated tray again.
+  const watcher = `$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath ${quote(installer.file)} -ArgumentList @(${quote("/S")}, ${quote(`/D=${installer.directory}`)}) -PassThru; Wait-Process -Id $p.Id; $bridge = Join-Path ${quote(installer.directory)} 'codeaw-bridge.exe'; if ([IO.File]::Exists($bridge)) { Start-Process -FilePath $bridge -ArgumentList @('tray', '--config', ${quote(path.resolve(file))}) -WorkingDirectory ${quote(installer.directory)} -WindowStyle Hidden }`;
+  const encodedWatcher = Buffer.from(watcher, "utf16le").toString("base64");
+  const script = `Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', '${encodedWatcher}')`;
   await promisify(execFile)("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-EncodedCommand",
     Buffer.from(script, "utf16le").toString("base64")], { windowsHide: true, timeout: 15_000 });
   // NSIS stops the default profile when installation begins. Custom profiles need a local stop too.

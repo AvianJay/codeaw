@@ -11,7 +11,10 @@ import { AgentInstaller, registerDetectedAgents, registerInstalledAgent } from "
 import { BridgeUpdater, verifiedBridgeInstaller } from "../updater.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../version.js";
 import { manageDesktopService } from "../remote-desktop/service.js";
+import { logger } from "../util/log.js";
 export type DesktopPage = "pair" | "settings" | "devices" | "agents" | "updates";
+
+const log = logger("runtime");
 
 export class BridgeRuntime {
   bridge?: Bridge;
@@ -20,18 +23,35 @@ export class BridgeRuntime {
   private page?: DesktopPage;
   private queue: Promise<unknown> = Promise.resolve();
   private stopping?: Promise<void>;
+  private automaticUpdate?: Promise<void>;
+  private readonly autoUpdate: boolean;
   readonly installer: AgentInstaller;
   readonly updater: BridgeUpdater;
 
   constructor(public loaded: LoadedConfig, private options: BridgeOptions = {}, private onQuit: () => void = () => undefined) {
     this.installer = new AgentInstaller(loaded.file, (agent) => this.serialize(async () => registerInstalledAgent(loaded.file, agent)));
     this.updater = new BridgeUpdater(loaded.file);
+    this.autoUpdate = options.autoUpdate ?? true;
+    this.options = { ...options, updater: this.updater };
   }
 
   async start(): Promise<void> {
     this.server = await serveControl(this.loaded.file, (request) => this.handle(request));
-    try { this.bridge = await startBridge(this.loaded, this.options); this.state = "running"; }
+    try {
+      this.bridge = await startBridge(this.loaded, this.options);
+      this.state = "running";
+      if (this.autoUpdate) this.automaticUpdate = this.runAutomaticUpdate();
+    }
     catch (err) { await this.stop(); throw err; }
+  }
+
+  private async runAutomaticUpdate(): Promise<void> {
+    try {
+      const status = await this.updater.autoInstall();
+      if (status.state === "error") log.warn(status.message);
+    } catch (error) {
+      log.warn(`automatic bridge update failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   status() {
@@ -99,6 +119,7 @@ export class BridgeRuntime {
       case "setUpdateChannel": return this.updater.setChannel(request.channel);
       case "prepareBridgeUpdate": return this.updater.prepare(request.kind);
       case "bridgeUpdateInstaller": return verifiedBridgeInstaller(this.loaded.file, this.updater.getStatus());
+      case "installBridgeUpdate": return this.updater.install();
       case "autostart": return { enabled: await loginStartupEnabled(this.loaded.file) };
       case "setAutostart": {
         if (typeof request.enabled !== "boolean") throw new Error("Missing startup preference");
@@ -142,6 +163,7 @@ export class BridgeRuntime {
     return this.stopping ??= (async () => {
       await this.installer.stop();
       await this.updater.stop();
+      await this.automaticUpdate?.catch(() => undefined);
       await this.serialize(async () => {
         this.state = "stopping";
         await this.bridge?.stop();

@@ -132,9 +132,22 @@ The response is a normal `InitializeResponse` with
   "projectless": true,                // supports managed no-project conversations
   "editPrompts": true,                // supports _codeaw/session/fork (editing sent messages)
   "fileArchives": true,               // supports authenticated POST /api/fs/archive
+  "bridgeUpdate": {                   // automatic bridge update status
+    "state": "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "installing" | "error",
+    "installedVersion": "0.1.0+1",
+    "updateAvailable": false,
+    "progress": 0.5,
+    "releaseVersion": "0.1.1+2",
+    "message": "..."
+  },
   "agents": [ AgentInfo, ... ]
 }}
 ```
+
+While an automatic update is running, the bridge sends the same object as the
+`_codeaw/bridge/update` notification. The authenticated app can show progress
+without blocking the current screen; the bridge keeps the update verification
+and installer checks local to the desktop process.
 
 ```jsonc
 // AgentInfo
@@ -893,6 +906,7 @@ releases use Bun's built-in PTY support.
 | bridge → client | `_codeaw/history/page` | see paged history; only to the requesting connection |
 | bridge → client | `_codeaw/event` | see event log |
 | bridge → client | `_codeaw/terminal/event` | see interactive terminals |
+| bridge → client | `_codeaw/bridge/update` | automatic update status; same shape as `initialize._meta.codeaw.bridgeUpdate` |
 | client → bridge | `_codeaw/client/state` | `{foreground: bool, activeSessionId?}` |
 | client → bridge | `_codeaw/session/detach` | `{sessionId}` — stop pushing this session's updates/requests to this connection |
 
