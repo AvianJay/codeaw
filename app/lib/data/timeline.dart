@@ -440,12 +440,12 @@ class Timeline extends ChangeNotifier {
         _taskNotices[id] = (revision: message.activityRevision, status: status);
       }
     }
-    // Legacy Codex activity notifications have a fresh tool ID for every
-    // interaction. Preserve the log while showing one card per child thread.
+    // Codex launch calls and activity notifications can describe the same
+    // child. Preserve the log while showing one card per child thread.
     final ownersByThread = <String, ToolItem>{};
     for (final tool in items.whereType<ToolItem>()) {
-      final thread = nonEmptyString(objectMap(tool.rawInput)['agentThreadId']);
-      if (thread == null || tool.subagent == null) continue;
+      final thread = tool.subagent?.threadIds.singleOrNull;
+      if (thread == null) continue;
       final owner = ownersByThread.putIfAbsent(thread, () => tool);
       _subagentOwners[tool.toolCallId] = owner;
     }
@@ -1107,7 +1107,7 @@ class Timeline extends ChangeNotifier {
         // Hydration may arrive ahead of pending WebSocket notifications.
         if (revision <= item.hydratedThroughSeq) return;
         final oldParent = item.parentToolCallId;
-        final oldThread = objectMap(item.rawInput)['agentThreadId'];
+        final oldThreads = item.subagent?.threadIds;
         final wasSubagent = item.subagent != null;
         item.merge(u);
         if (wasSubagent != (item.subagent != null)) _snapshotChanged = true;
@@ -1118,7 +1118,7 @@ class Timeline extends ChangeNotifier {
           item.lifecycleRevision = (codeaw['toolLifecycleSeq'] as num?)?.toInt() ?? revision;
         }
         if (oldParent != item.parentToolCallId) _hierarchyDirty = _structureChanged = true;
-        if (oldThread != objectMap(item.rawInput)['agentThreadId']) _hierarchyDirty = _structureChanged = true;
+        if (!listEquals(oldThreads, item.subagent?.threadIds)) _hierarchyDirty = _structureChanged = true;
         _dirty.add(item);
         final statesRevision = objectMap(objectMap(u['_meta'])['codeaw'])['agentStatesSeq'];
         _recordAgentStates(u, statesRevision is num ? statesRevision.toInt() : revision);

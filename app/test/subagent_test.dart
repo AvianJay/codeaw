@@ -283,6 +283,21 @@ void main() {
         isNull,
       );
       expect(
+        SubagentInfo.fromTool(
+          title: 'functions.spawn_agent',
+          input: {'agent_type': 'explorer', 'message': 'Audit the patch'},
+          output: {'agent_id': 'child'},
+        ),
+        isA<SubagentInfo>()
+            .having((info) => info.role, 'role', 'explorer')
+            .having((info) => info.task, 'task', 'Audit the patch')
+            .having((info) => info.threadIds, 'threadIds', ['child'])
+            .having((info) => info.launchOnly, 'launchOnly', isTrue),
+      );
+      for (final name in ['functions.send_message', 'functions.wait_agent', 'functions.followup_task', 'functions.list_agents']) {
+        expect(SubagentInfo.fromTool(name: name, input: {'receiverThreadIds': ['child']}), isNull);
+      }
+      expect(
         reportedSubagentStatus(null, {
           'agent_id': 'codex-child',
           'status': 'completed',
@@ -588,6 +603,38 @@ void main() {
     expect(restored.subagents.map(restored.statusOfSubagent), everyElement(SubagentStatus.running));
   });
 
+  test('Codex launch and activity share a card when the child identity arrives later', () {
+    final t = Timeline()..setTurnState('running');
+    addTearDown(t.dispose);
+    update(t, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'spawn', 'title': 'functions.spawn_agent', 'status': 'in_progress',
+      'rawInput': {'prompt': 'Audit the patch', 'model': 'gpt-6-luna'},
+    });
+    update(t, codexActivity('started', 'child', 'reviewer', 'started'));
+    expect(t.subagents, hasLength(2));
+    update(t, {
+      'sessionUpdate': 'tool_call_update', 'toolCallId': 'spawn', 'status': 'completed',
+      'rawInput': {'prompt': 'Audit the patch', 'model': 'gpt-6-luna', 'receiverThreadIds': ['child']},
+    });
+    final agent = tool(t, 'spawn');
+    expect(t.subagents, [agent]);
+    expect(agent.subagent?.task, 'Audit the patch');
+    expect(agent.subagent?.model, 'gpt-6-luna');
+    expect(t.statusOfSubagent(agent), SubagentStatus.running);
+    update(t, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'read', 'title': 'Read source', 'status': 'in_progress',
+      '_meta': {'parentToolCallId': 'started'},
+    });
+    expect(t.childrenOf(agent), [tool(t, 'read')]);
+    update(t, codexActivity('finished', 'child', 'reviewer', 'completed'));
+    expect(t.statusOfSubagent(agent), SubagentStatus.completed);
+    final restored = Timeline.fromSnapshot(t.toSnapshot());
+    addTearDown(restored.dispose);
+    expect(restored.subagents, hasLength(1));
+    expect(restored.statusOfSubagent(restored.subagents.single), SubagentStatus.completed);
+    expect(restored.childrenOf(restored.subagents.single).single.key, 'tool:read');
+  });
+
   test('child activity follows aliases and actual completion settles unfinished tools', () {
     final t = Timeline()..setTurnState('running');
     addTearDown(t.dispose);
@@ -626,6 +673,42 @@ void main() {
     update(t, codexActivity('first', 'a', 'providers', 'started'));
     update(t, codexActivity('second', 'b', 'providers', 'started'));
     expect(t.subagents, hasLength(2));
+  });
+
+  testWidgets('native Codex activity shows one agent, its model and the actual lifecycle', (tester) async {
+    final c = controller();
+    addTearDown(c.dispose);
+    c.timeline.setTurnState('running');
+    Map<String, dynamic> nativeActivity(String id, String kind) => {
+      'sessionUpdate': 'tool_call',
+      'toolCallId': 'turn:$id',
+      'title': 'subAgentActivity',
+      'kind': 'other',
+      'status': 'completed',
+      'rawInput': {
+        'agentThreadId': 'child', 'agentPath': '/root/reviewer', 'activityKind': kind,
+        'model': 'gpt-6-luna', 'reasoningEffort': 'low',
+      },
+    };
+    update(c.timeline, nativeActivity('start', 'started'));
+    update(c.timeline, nativeActivity('interaction', 'interacted'));
+    await tester.pumpWidget(conversation(c));
+    expect(find.byType(SubagentCard), findsOneWidget);
+    expect(find.text('reviewer'), findsOneWidget);
+    expect(find.text('gpt-6-luna'), findsOneWidget);
+    expect(find.text('執行中'), findsOneWidget);
+    update(c.timeline, nativeActivity('interrupt', 'interrupted'));
+    await tester.pump();
+    expect(c.timeline.statusOfSubagent(c.timeline.subagents.single), SubagentStatus.cancelled);
+    update(c.timeline, nativeActivity('resume', 'started'));
+    await tester.pump();
+    expect(find.text('執行中'), findsOneWidget);
+    update(c.timeline, nativeActivity('done', 'completed'));
+    await tester.pump();
+    expect(find.byType(SubagentCard), findsOneWidget);
+    expect(find.text('已完成'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('legacy interaction cards do not show phantom completed agents', (tester) async {

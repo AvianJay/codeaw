@@ -165,6 +165,17 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
       } else if (item.type === "reasoning") {
         const text = textOf(item.summary ?? item.text ?? item.content);
         if (text) message(key, "agent_thought_chunk", [{ type: "text", text }]);
+      } else if (item.type === "subAgentActivity") {
+        // Match codex-acp's activity shape: the marker RPC is complete, while
+        // activityKind supplies the child's lifecycle independently of the turn.
+        records.push({ key, update: {
+          sessionUpdate: "tool_call", toolCallId: key,
+          title: "subAgentActivity", kind: "other", status: "completed",
+          rawInput: {
+            agentThreadId: item.agentThreadId, agentPath: item.agentPath, activityKind: item.kind,
+            model: item.model, reasoningEffort: item.reasoningEffort,
+          },
+        } });
       } else if (["commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "collabAgentToolCall"].includes(item.type)) {
         const command = Array.isArray(item.command) ? item.command.join(" ") : item.command;
         const changes = Array.isArray(item.changes) ? item.changes : [];
@@ -177,12 +188,16 @@ export function projectDesktopConversation(conversation: any, messagePromptIds: 
         const kind: acp.ToolKind = item.type === "commandExecution" ? "execute" : item.type === "fileChange" ? "edit" : item.type === "webSearch" ? "search" : "other";
         // Same shape as codex-acp, so clients can tell the server from the tool.
         const mcp = item.type === "mcpToolCall" && typeof item.server === "string" && typeof item.tool === "string";
+        const collaboration = item.type === "collabAgentToolCall";
         records.push({ key, update: {
           sessionUpdate: "tool_call", toolCallId: key,
           title: mcp ? `mcp.${item.server}.${item.tool}` : command ?? item.title ?? item.tool ?? item.query ?? (item.type === "fileChange" ? "檔案變更" : item.type),
           kind, status: toolStatus(item, turn, itemIndex === lastActivityIndex), content,
           locations: changes.filter((change: any) => typeof change.path === "string").map((change: any) => ({ path: change.path })),
-          rawInput: mcp ? { server: item.server, tool: item.tool, arguments: item.arguments ?? {} } : item.arguments ?? (command ? { command, cwd: item.cwd ?? conversation.cwd } : item.input ?? {}),
+          rawInput: collaboration ? {
+            senderThreadId: item.senderThreadId, receiverThreadIds: item.receiverThreadIds,
+            prompt: item.prompt, model: item.model, reasoningEffort: item.reasoningEffort, agentsStates: item.agentsStates,
+          } : mcp ? { server: item.server, tool: item.tool, arguments: item.arguments ?? {} } : item.arguments ?? (command ? { command, cwd: item.cwd ?? conversation.cwd } : item.input ?? {}),
           rawOutput: item.result ?? (output ? { output, exitCode: item.exitCode } : undefined),
         } as acp.SessionUpdate });
       }
@@ -221,7 +236,11 @@ export function desktopRecordChanges(previous: DesktopRecord[] | undefined, next
       const text = after.content.text.slice(before.content.text.length);
       if (text) updates.push({ ...after, content: { type: "text", text } });
     } else if (after.sessionUpdate === "tool_call") {
-      updates.push({ ...after, sessionUpdate: "tool_call_update" });
+      const update = { ...after, sessionUpdate: "tool_call_update" };
+      // A tool status/title change must not re-date an unchanged child-state
+      // report and override a later wait/completion report during replay.
+      if (JSON.stringify(before.rawInput) === JSON.stringify(after.rawInput)) delete update.rawInput;
+      updates.push(update);
     } else return { reset: true, updates: next.map((item) => item.update) };
   }
   return { reset: false, updates };

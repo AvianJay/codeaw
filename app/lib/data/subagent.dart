@@ -57,7 +57,7 @@ class SubagentInfo {
     final response = objectMap(claude['toolResponse']);
     final air = objectMap(objectMap(meta['jetbrains'])['air']);
     final toolName = nonEmptyString(claude['toolName']) ?? name ?? title ?? '';
-    final normalized = toolName.replaceAll('_', '').toLowerCase();
+    final normalized = toolName.split('.').last.replaceAll(RegExp(r'[_-]'), '').toLowerCase();
     final spawn = normalized == 'spawnagent';
     final activity = nonEmptyString(raw['agentThreadId']) != null && nonEmptyString(raw['agentPath']) != null;
     if (!const ['agent', 'task'].contains(normalized) &&

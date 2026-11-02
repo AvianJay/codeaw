@@ -274,6 +274,48 @@ describe("Codex desktop synchronization", () => {
     expect(status(b, "stale")).toBe("completed");
   });
 
+  it("streams native child activity and collaboration lifecycle through reconnect replay", async () => {
+    const { a, desktop, bridge } = await setup(); await load(a);
+    desktop.begin();
+    const turnIndex = desktop.conversation.turns.length - 1;
+    const turnId = desktop.conversation.turns[turnIndex].turnId;
+    const activity = (id: string, kind: string) => ({ type: "subAgentActivity", id, kind,
+      agentThreadId: "native-child", agentPath: "/root/reviewer", model: "gpt-6-luna", reasoningEffort: "low" });
+    const spawn = { type: "collabAgentToolCall", id: "spawn", tool: "spawnAgent", status: "inProgress",
+      senderThreadId: desktop.id, receiverThreadIds: ["collab-child"], prompt: "Check the patch",
+      model: "gpt-6-luna", reasoningEffort: "low", agentsStates: { "collab-child": { status: "running", message: null } } };
+    const latest = (client: TestClient, id: string) => client.updates(nativeId).findLast((entry) => entry.update.toolCallId === `${turnId}:${id}`)?.update;
+    desktop.patch([
+      { op: "add", path: ["turns", turnIndex, "items", 1], value: activity("started", "started") },
+      { op: "add", path: ["turns", turnIndex, "items", 2], value: spawn },
+    ]);
+    await a.waitFor(() => latest(a, "spawn")?.rawInput?.agentsStates?.["collab-child"]?.status === "running");
+    expect(latest(a, "started")).toMatchObject({ status: "completed", rawInput: {
+      agentThreadId: "native-child", agentPath: "/root/reviewer", activityKind: "started", model: "gpt-6-luna",
+    } });
+    expect(latest(a, "spawn")).toMatchObject({ title: "spawnAgent", rawInput: { prompt: "Check the patch", receiverThreadIds: ["collab-child"] } });
+    desktop.patch([
+      { op: "add", path: ["turns", turnIndex, "items", 3], value: activity("interacted", "interacted") },
+      { op: "add", path: ["turns", turnIndex, "items", 4], value: { ...spawn, id: "wait", tool: "wait", status: "completed",
+        agentsStates: { "collab-child": { status: "completed", message: "All clear" } } } },
+      { op: "add", path: ["turns", turnIndex, "items", 5], value: activity("finished", "completed") },
+    ]);
+    await a.waitFor(() => latest(a, "finished")?.rawInput?.activityKind === "completed");
+    const spawnStateSeq = a.updates(nativeId).findLast((entry) => entry.update.toolCallId === `${turnId}:spawn`)!._meta.codeaw.seq;
+    const waitStateSeq = a.updates(nativeId).findLast((entry) => entry.update.toolCallId === `${turnId}:wait`)!._meta.codeaw.seq;
+    desktop.finish();
+    await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "idle");
+    expect(latest(a, "spawn")).toMatchObject({ sessionUpdate: "tool_call_update", status: "completed" });
+    expect(latest(a, "spawn").rawInput).toBeUndefined();
+    const b = await TestClient.connect(bridge.url, bridge.tokenFor("subagent replay")); clients.push(b); await load(b);
+    expect(latest(b, "spawn")).toMatchObject({ title: "spawnAgent", rawInput: { prompt: "Check the patch", agentsStates: spawn.agentsStates },
+      _meta: { codeaw: { agentStatesSeq: spawnStateSeq } } });
+    expect(latest(b, "wait")).toMatchObject({ rawInput: { agentsStates: { "collab-child": { status: "completed", message: "All clear" } } },
+      _meta: { codeaw: { agentStatesSeq: waitStateSeq } } });
+    expect(spawnStateSeq).toBeLessThan(waitStateSeq);
+    expect(latest(b, "finished").rawInput.activityKind).toBe("completed");
+  });
+
   it("steers desktop-started turns and honors explicit queueing after they finish", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");
@@ -748,6 +790,31 @@ describe("desktop IPC wire and state", () => {
     expect(updates.slice(0, types.length).map((u: any) => u.status)).toEqual(types.map(() => status === "failed" ? "failed" : "completed"));
     expect(updates.at(-2)).toMatchObject({ status: "failed" });
     expect(updates.at(-1)).toMatchObject({ status: "completed" });
+  });
+
+  it("projects native subagent lifecycle markers independently of the parent turn status", () => {
+    const kinds = ["started", "interacted", "interrupted", "completed"];
+    const items = kinds.map((kind) => ({ type: "subAgentActivity", id: kind, kind,
+      agentThreadId: "child", agentPath: "/root/reviewer", model: "gpt-6-luna", reasoningEffort: "low" }));
+    const { records } = projectDesktopConversation({ turns: [{ turnId: "one", status: "completed", items }] });
+    expect(records.map((record) => record.update)).toEqual(kinds.map((activityKind) => ({
+      sessionUpdate: "tool_call", toolCallId: `one:${activityKind}`, title: "subAgentActivity", kind: "other", status: "completed",
+      rawInput: { agentThreadId: "child", agentPath: "/root/reviewer", activityKind, model: "gpt-6-luna", reasoningEffort: "low" },
+    })));
+    expect(projectDesktopConversation({ turns: [{ turnId: "old", status: "completed", items: [
+      { type: "subAgentActivity", id: "activity", kind: "started", agentThreadId: "old-child", agentPath: "/root/old" },
+    ] }] }).records[0].update).toMatchObject({ rawInput: { agentThreadId: "old-child", agentPath: "/root/old", activityKind: "started" } });
+  });
+
+  it.each(["spawnAgent", "sendInput", "resumeAgent", "wait", "closeAgent", "sendMessage", "followupTask", "interruptAgent", "listAgents"])("preserves %s collaboration identities, tasks and actual child states", (tool) => {
+    const item = { type: "collabAgentToolCall", id: "collab", tool, status: "completed", senderThreadId: "root",
+      receiverThreadIds: ["child", "sibling"], prompt: "Audit the patch", model: "gpt-6-luna", reasoningEffort: "low",
+      agentsStates: { child: { status: "running", message: null }, sibling: { status: "errored", message: "Failed to start" } } };
+    const { records } = projectDesktopConversation({ turns: [{ turnId: "one", status: "completed", items: [item] }] });
+    expect(records[0].update).toMatchObject({ title: tool, status: "completed", rawInput: {
+      senderThreadId: "root", receiverThreadIds: item.receiverThreadIds, prompt: item.prompt, model: item.model,
+      reasoningEffort: item.reasoningEffort, agentsStates: item.agentsStates,
+    } });
   });
 
   it("names MCP calls by server and tool like codex-acp", () => {

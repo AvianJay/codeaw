@@ -487,6 +487,15 @@ Compaction retains `_meta.codeaw.agentStatesSeq`, the revision of the actual
 child-state report, so later cosmetic updates cannot reorder lifecycle state.
 Tool metadata and parent attribution survive full/delta replay.
 
+Codex desktop synchronization projects native `subAgentActivity` items into the
+same thread-scoped activity shape, preserving the agent path, lifecycle kind,
+model and reasoning effort. Native `collabAgentToolCall` items retain the tool
+name, sender/receiver thread IDs, prompt and `agentsStates`, so the existing
+subagent cards and browser show their tasks, state and returned messages during
+live updates and history replay. Namespaced `spawn_agent` tool names are also
+recognized as delegations. Launch calls and activity markers for the same child
+thread share one card, including when the launch receives its child ID later.
+
 The chat's subagent browser lists every delegation, including nested agents. On
 phones it opens from the right edge, a leftward swipe across the conversation,
 or the app-bar button. Chat areas at least 1000 logical pixels wide use a
