@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -10,6 +12,7 @@ import '../common/widgets.dart';
 import 'host_sheet.dart';
 import 'new_session_sheet.dart';
 import 'delete_chat.dart';
+import 'session_groups.dart';
 
 class SessionsPage extends StatefulWidget {
   const SessionsPage({
@@ -31,9 +34,20 @@ class _SessionsPageState extends State<SessionsPage> {
   String _query = '';
   BridgeClient? _client;
   final _search = TextEditingController();
+  Timer? _clock;
+
+  @override
+  void initState() {
+    super.initState();
+    // "3 分鐘前" and the day headings age even when no session changes.
+    _clock = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
+    _clock?.cancel();
     _search.dispose();
     super.dispose();
   }
@@ -288,8 +302,10 @@ class _SessionsPageState extends State<SessionsPage> {
                       ),
                     if (attention.isNotEmpty) const _Header('進行中'),
                     for (final s in attention) _tile(s),
-                    if (rest.isNotEmpty) const _Header('最近對話'),
-                    for (final s in rest) _tile(s),
+                    for (final group in groupSessionsByDate(rest, DateTime.now())) ...[
+                      _Header(group.label),
+                      for (final s in group.sessions) _tile(s),
+                    ],
                     if (model.hasMore)
                       Padding(
                         padding: const EdgeInsets.all(12),
