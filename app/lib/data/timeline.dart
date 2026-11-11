@@ -214,6 +214,9 @@ class NoticeItem extends TimelineItem {
   final String severity;
   final String title;
   final String? description;
+
+  /// What the notice says. Agents send the same warnings again on every resume.
+  String get identity => [severity, title, description ?? ''].join('\u0000');
 }
 
 class ErrorItem extends TimelineItem {
@@ -864,8 +867,12 @@ class Timeline extends ChangeNotifier {
             .._wideCharacters = (j['wide'] as num).toInt();
       timeline._byKey[t.key] = t;
     }
+    final notices = <String>{};
     for (final j in rows) {
-      timeline.items.add(timeline._byKey[j['key']]!);
+      final item = timeline._byKey[j['key']]!;
+      // Histories cached before repeats were dropped hold one copy per resume.
+      if (item is NoticeItem && !notices.add(item.identity)) continue;
+      timeline.items.add(item);
     }
     for (final e in (map(s['agentStates']) ?? const {}).entries) {
       final value = e.value as Map;
@@ -1150,7 +1157,9 @@ class Timeline extends ChangeNotifier {
         if (u.containsKey('title')) title = u['title'] as String?;
         _snapshotChanged = true;
       case 'notice':
-        _add(NoticeItem('notice:$anonScope${_anon++}', '${u['severity'] ?? 'info'}', '${u['title'] ?? ''}', u['description'] as String?));
+        final notice = NoticeItem('notice:$anonScope${_anon++}', '${u['severity'] ?? 'info'}', '${u['title'] ?? ''}', u['description'] as String?);
+        // One copy per chat: older bridges forward the warnings an agent repeats on every resume.
+        if (!items.any((item) => item is NoticeItem && item.identity == notice.identity)) _add(notice);
     }
   }
 

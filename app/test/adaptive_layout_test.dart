@@ -195,6 +195,39 @@ class _Harness {
     await tester.pumpAndSettle();
   }
 
+  /// Gives the open chat the selectors a real agent reports.
+  void showSelectors() {
+    final c = state.hub!.open(_first);
+    c.timeline.apply('session/update', {
+      'update': {
+        'sessionUpdate': 'config_option_update',
+        'configOptions': [
+          {
+            'id': 'model',
+            'name': 'Model',
+            'category': 'model',
+            'type': 'select',
+            'currentValue': 'gpt',
+            'options': [
+              {'value': 'gpt', 'name': 'GPT'},
+            ],
+          },
+          {
+            'id': 'mode',
+            'name': 'Mode',
+            'category': 'mode',
+            'type': 'select',
+            'currentValue': 'full',
+            'options': [
+              {'value': 'full', 'name': 'Full access'},
+            ],
+          },
+        ],
+      },
+    });
+    c.timeline.flush();
+  }
+
   Future<void> close(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox());
     router.dispose();
@@ -444,6 +477,66 @@ void main() {
       lessThanOrEqualTo(692),
     );
     expect(tester.widget<TextField>(_input).controller!.text, '鍵盤開啟時仍可輸入訊息');
+    expect(tester.takeException(), isNull);
+    await h.close(tester);
+  });
+
+  testWidgets('tablet keyboard keeps the model and mode selectors while typing', (
+    tester,
+  ) async {
+    final h = _Harness();
+    // iPad in landscape: its keyboard leaves about as much room as a landscape phone.
+    await h.show(tester, const Size(1210, 834), location: sessionRoute(_first));
+    h.showSelectors();
+    await tester.pumpAndSettle();
+    expect(find.text('Full access'), findsOneWidget);
+    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsOneWidget);
+
+    await tester.tap(_input);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 420);
+    await tester.pumpAndSettle();
+    await tester.enterText(_input, '這是段文字');
+    await tester.pumpAndSettle();
+    expect(find.text('Full access'), findsOneWidget);
+    expect(find.text('GPT'), findsOneWidget);
+    // A touch keyboard has no Ctrl key; the hint gives its line back to the chat.
+    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsNothing);
+    expect(
+      tester.getBottomRight(find.byType(Composer)).dy,
+      lessThanOrEqualTo(834 - 420),
+    );
+    expect(tester.widget<TextField>(_input).maxLines, 6);
+
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pumpAndSettle();
+    expect(find.text('Full access'), findsOneWidget);
+    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsOneWidget);
+    expect(tester.widget<TextField>(_input).controller!.text, '這是段文字');
+    expect(tester.takeException(), isNull);
+    await h.close(tester);
+  });
+
+  testWidgets('phone landscape selectors return once the keyboard closes', (
+    tester,
+  ) async {
+    final h = _Harness();
+    await h.show(tester, const Size(844, 390), location: sessionRoute(_first));
+    h.showSelectors();
+    await tester.pumpAndSettle();
+    expect(find.text('Full access'), findsOneWidget);
+
+    await tester.tap(_input);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 180);
+    await tester.pumpAndSettle();
+    // Nothing else changes while the keyboard slides in: the composer must notice by itself.
+    expect(find.text('Full access'), findsNothing);
+    await tester.enterText(_input, '這是段文字');
+    await tester.pumpAndSettle();
+
+    // The keyboard's own hide key closes it without touching the composer.
+    tester.view.viewInsets = const FakeViewPadding();
+    await tester.pumpAndSettle();
+    expect(find.text('Full access'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await h.close(tester);
   });

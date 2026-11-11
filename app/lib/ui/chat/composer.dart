@@ -136,7 +136,7 @@ class Composer extends StatefulWidget {
   State<Composer> createState() => _ComposerState();
 }
 
-class _ComposerState extends State<Composer> {
+class _ComposerState extends State<Composer> with WidgetsBindingObserver {
   late final _text = _ComposerTextController(() => c.draftMentions.keys);
   final _focus = FocusNode();
   final _images = <ClipboardImage>[];
@@ -168,6 +168,7 @@ class _ComposerState extends State<Composer> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _focus.addListener(_focusChanged);
     _clipboard = widget.imageClipboard ?? ImageClipboard();
     _stopPasteListener = _clipboard.listen(
@@ -182,6 +183,13 @@ class _ComposerState extends State<Composer> {
     if (mounted) setState(() {});
   }
 
+  /// The keyboard height is read from the view, which nothing above rebuilds us for:
+  /// without this the layout chosen while the keyboard was moving would stay.
+  @override
+  void didChangeMetrics() {
+    if (mounted) setState(() {});
+  }
+
   void _dismissKeyboard() {
     _focus.unfocus();
     SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
@@ -189,6 +197,7 @@ class _ComposerState extends State<Composer> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopPasteListener();
     _fileSearch?.cancel();
     _text.dispose();
@@ -828,7 +837,11 @@ class _ComposerState extends State<Composer> {
     final view = View.of(context);
     final keyboardInset = view.viewInsets.bottom / view.devicePixelRatio;
     final keyboard = keyboardInset > 0;
-    final compact = MediaQuery.sizeOf(context).height - keyboardInset < 430;
+    final screen = MediaQuery.sizeOf(context);
+    // Only a phone on its side is short of room; a tablet keeps its selectors above the keyboard.
+    final compact = screen.shortestSide < 600 && screen.height - keyboardInset < 430;
+    // A hardware keyboard's shortcut bar also reports a small inset.
+    final touchKeyboard = keyboardInset > 120;
     return Padding(
       padding: wide
           ? const EdgeInsets.fromLTRB(16, 8, 16, 16)
@@ -1089,7 +1102,7 @@ class _ComposerState extends State<Composer> {
                       ],
                     ),
                   ),
-                  if (wide)
+                  if (wide && !touchKeyboard)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 10),
                       child: Text(

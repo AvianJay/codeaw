@@ -27,6 +27,37 @@ void main() {
       expect((fixture['compacted'] as List).length, lessThan((fixture['raw'] as List).length));
     });
 
+    test('shows a warning the agent repeats on every resume once, also from an older cache', () {
+      Map<String, dynamic> notice(String title, [String? description]) => {
+        'method': 'session/update',
+        'params': {
+          'update': {'sessionUpdate': 'notice', 'severity': 'warning', 'title': title, 'description': ?description},
+        },
+      };
+      final t = reduceAll([
+        notice('`web_search_request` is deprecated', 'Set `web_search` instead.'),
+        notice('Ignoring 2 settings'),
+        notice('`web_search_request` is deprecated', 'Set `web_search` instead.'),
+        notice('`web_search_request` is deprecated', 'Set another key.'),
+        notice('Ignoring 2 settings'),
+      ]);
+      expect(t.items.whereType<NoticeItem>().map((n) => n.description ?? n.title), [
+        'Set `web_search` instead.',
+        'Ignoring 2 settings',
+        'Set another key.',
+      ]);
+
+      // A history cached by an earlier app version still holds every copy.
+      final cached = t.toSnapshot();
+      final rows = (cached['items'] as List).cast<Map<String, dynamic>>();
+      final repeated = [...rows, for (var i = 0; i < 40; i++) {...rows.first, 'key': 'notice:old$i'}];
+      final restored = Timeline.fromSnapshot(jsonDecode(jsonEncode({...cached, 'items': repeated})) as Map<String, dynamic>);
+      expect(restored.items.whereType<NoticeItem>(), hasLength(3));
+      restored.apply('session/update', notice('Ignoring 2 settings')['params'] as Map<String, dynamic>);
+      restored.flush();
+      expect(restored.items.whereType<NoticeItem>(), hasLength(3));
+    });
+
     test('folds tool calls, permissions and queued prompts', () {
       final t = reduceAll(fixture['raw'] as List);
       final tool = t.items.whereType<ToolItem>().firstWhere((i) => i.toolCallId == 't1');
