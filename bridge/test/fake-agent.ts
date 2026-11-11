@@ -31,11 +31,21 @@ const stateFile = process.env.FAKE_AGENT_STATE;
 const steering = process.env.FAKE_AGENT_STEERING === "1";
 /** Advertise a fork-point capable `session/fork`, under a name the bridge recognises. */
 const forking = process.env.FAKE_AGENT_FORK === "1";
+/** Like the real adapters: opening a session rewrites its file and repeats configuration warnings. */
+const touchOnOpen = process.env.FAKE_AGENT_TOUCH_ON_OPEN === "1";
+const CONFIG_WARNING = { sessionUpdate: "notice", severity: "warning", title: "`old_setting` is deprecated.", description: "Remove it from config." };
 const sessions: Record<string, StoredSession> = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
 const live = new Map<string, { cancelled: boolean; steer: string[]; running: boolean }>();
 
 function save(): void {
   if (stateFile) fs.writeFileSync(stateFile, JSON.stringify(sessions));
+}
+
+function opened(client: { notify(method: string, params: any): Promise<void> }, sessionId: string): void {
+  if (!touchOnOpen) return;
+  sessions[sessionId].updatedAt = new Date().toISOString();
+  save();
+  setTimeout(() => void client.notify("session/update", { sessionId, update: CONFIG_WARNING }), 0);
 }
 
 function configOptions(mode: string): acp.SessionConfigOption[] {
@@ -94,6 +104,7 @@ const app = acp
     } else {
       for (const update of s.history) await ctx.client.notify("session/update", { sessionId: ctx.params.sessionId, update });
     }
+    opened(ctx.client, ctx.params.sessionId);
     return { configOptions: configOptions(s.mode) };
   })
   .onRequest("session/resume", (ctx) => {
@@ -102,6 +113,7 @@ const app = acp
     live.set(ctx.params.sessionId, live.get(ctx.params.sessionId) ?? { cancelled: false, steer: [], running: false });
     // Like Codex: resume resets the mode.
     s.mode = "ask";
+    opened(ctx.client, ctx.params.sessionId);
     return { configOptions: configOptions(s.mode) };
   })
   .onRequest("session/fork", (ctx) => {

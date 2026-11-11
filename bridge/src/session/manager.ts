@@ -16,10 +16,13 @@ import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
+import { NativeActivity } from "./native-activity.js";
 import { newEpoch, type SessionStore } from "./store.js";
 import {
   codeawMeta,
+  isActivity,
   isChunk,
+  noticeKey,
   withCodeawMeta,
   type CodeawEvent,
   type CompletedTurn,
@@ -87,6 +90,10 @@ class BridgeSession {
   /** Agent process generation in which this session is live; 0 = not live. */
   backendGen = 0;
   suppressUpdates = false;
+  /** Above zero while saved history is being rebuilt; those entries are not new activity. */
+  replaying = 0;
+  /** Notices already in the log, so a resumed agent cannot repeat them. */
+  notices?: Set<string>;
   activating?: Promise<void>;
   midRun?: { type: string; mid: string; parent?: string };
   lastActivity = Date.now();
@@ -143,6 +150,10 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function later(a: string | undefined, b: string | undefined): string | undefined {
+  return a && b ? (Date.parse(b) > Date.parse(a) ? b : a) : (a ?? b);
+}
+
 function toRequestError(err: unknown): acp.RequestError {
   if (err instanceof acp.RequestError) return err;
   return acp.RequestError.internalError(undefined, errorMessage(err));
@@ -193,6 +204,9 @@ export class SessionManager implements AgentHandlers {
   private readonly forking = new Map<string, Promise<Record<string, unknown>>>();
   private readonly quotaContinuations = new Map<string, Promise<void>>();
   private readonly quotaAvailable = new Set<string>();
+  private readonly native = new NativeActivity();
+  /** Activity times recovered from logs saved before `activityAt` existed; null = none found. */
+  private readonly recovered = new Map<string, string | null>();
   private sweepTimer?: NodeJS.Timeout;
   private shuttingDown = false;
   notifier?: PushNotifier;
@@ -371,11 +385,13 @@ export class SessionManager implements AgentHandlers {
     s.meta.modes = null;
     s.midRun = undefined;
     s.emitted = undefined;
+    s.notices = undefined;
     s.work.reset();
     for (const c of s.subscribers) void c.notify("_codeaw/replay", { sessionId: s.id, mode: "full", epoch: s.meta.epoch, lastSeq: 0 });
     // Build the authoritative log first, then send its compact transport projection.
     const subscribers = [...s.subscribers];
     s.subscribers.clear();
+    s.replaying++;
     try {
       for (const update of updates) this.ingest(s, update);
       for (const entry of waiting) if (entry.kind === "update") this.append(s, { kind: "update", update: entry.update });
@@ -386,6 +402,7 @@ export class SessionManager implements AgentHandlers {
         else this.appendEvent(s, { type: "elicitation_request", requestId: pending.id, request: pending.params as any });
       }
     } finally {
+      s.replaying--;
       for (const c of subscribers) s.subscribers.add(c);
     }
     const groups = compactGroups(this.ensureEntries(s));
@@ -444,6 +461,14 @@ export class SessionManager implements AgentHandlers {
       case "session_info_update":
         if (typeof update.title === "string") s.meta.title = update.title;
         break;
+      case "notice": {
+        // Agents repeat configuration warnings on every resume; show each one once per chat.
+        const seen = this.noticeKeys(s);
+        const key = noticeKey(update);
+        if (seen.has(key)) return;
+        seen.add(key);
+        break;
+      }
     }
     if (isChunk(update)) {
       update = this.externalizeImages(update);
@@ -623,6 +648,7 @@ export class SessionManager implements AgentHandlers {
     entries.push(entry);
     this.store.append(s.id, entry);
     s.meta.updatedAt = new Date(entry.t).toISOString();
+    if (!s.replaying && isActivity(entry)) s.meta.activityAt = s.meta.updatedAt;
     s.lastActivity = entry.t;
     this.saveMeta(s);
     for (const c of s.subscribers) this.sendEntry(c, s, entry);
@@ -643,6 +669,16 @@ export class SessionManager implements AgentHandlers {
       }
     }
     return s.dequeues;
+  }
+
+  private noticeKeys(s: BridgeSession): Set<string> {
+    if (!s.notices) {
+      s.notices = new Set();
+      for (const entry of s.entries ?? this.store.readEntries(s.id)) {
+        if (entry.kind === "update" && (entry.update.sessionUpdate as string) === "notice") s.notices.add(noticeKey(entry.update as any));
+      }
+    }
+    return s.notices;
   }
 
   private receiptStates(s: BridgeSession): Map<string, "received" | "read" | "failed"> {
@@ -766,12 +802,49 @@ export class SessionManager implements AgentHandlers {
       pending: s.pending.size,
       queued: s.queue.length,
       title: s.meta.title,
-      updatedAt: s.meta.updatedAt,
+      updatedAt: this.activityTime(s.meta, s),
       lastSeq: s.meta.lastSeq,
       ...(s.meta.connection === "desktop" ? { connection: "desktop", desktopConnected: s.desktop?.connected === true } : {}),
     };
     for (const c of this.clients) void c.notify("_codeaw/activity", params);
     this.liveActivity?.observe(params);
+  }
+
+  /**
+   * When the conversation last moved, for session lists. The log's own `updatedAt` and the
+   * agent's file times also change when a chat is merely reopened, so they are last resorts.
+   */
+  private activityTime(meta: SessionMeta, s?: BridgeSession, native?: string | null): string {
+    // A running turn is writing its transcript; the bridge's own clock is exact and cheaper.
+    if (s && meta.activityAt && s.state !== "idle") return meta.activityAt;
+    const transcript = this.transcriptTime(meta.agentId, meta.backendId, meta.cwd);
+    let own = meta.activityAt;
+    if (!own && !transcript && meta.origin === "bridge") {
+      // Bridge-created chats were never replayed, so their saved entry times are real.
+      let found = this.recovered.get(meta.id);
+      if (found === undefined) this.recovered.set(meta.id, found = this.store.lastActivityAt(meta.id) ?? null);
+      own = found ?? undefined;
+    }
+    if (transcript) return later(transcript, own)!;
+    // With no transcript to read, the agent's time counts only once it moved well after our last contact.
+    const external = native && (!own || Date.parse(native) > Date.parse(meta.updatedAt) + 60_000) ? native : undefined;
+    return later(own, external) ?? meta.updatedAt;
+  }
+
+  /** Time of the last real message in the agent's own transcript, where its format is known. */
+  private transcriptTime(agentId: string, backendId: string, cwd?: string): string | undefined {
+    if (!this.registry.has(agentId)) return undefined;
+    const agent = this.registry.get(agentId);
+    return this.native.lastMessageAt(agent.id, agent.config, backendId, cwd);
+  }
+
+  /**
+   * Records that our own request (open, settings, close) made the agent rewrite its session
+   * file, so the next list does not read the new file time as a turn taken elsewhere.
+   */
+  private contacted(s: BridgeSession): void {
+    s.meta.updatedAt = new Date().toISOString();
+    this.saveMeta(s);
   }
 
   private saveMeta(s: BridgeSession, now = false): void {
@@ -920,6 +993,7 @@ export class SessionManager implements AgentHandlers {
     this.applySetup(s, resp);
     // The owner's next snapshot supplies its current settings. Saved bridge
     // settings must not overwrite changes made on desktop while disconnected.
+    this.contacted(s);
     if (s.meta.connection === "desktop") { s.backendGen = agent.generation; return; }
     try {
       const wanted = structuredClone(saved);
@@ -931,6 +1005,7 @@ export class SessionManager implements AgentHandlers {
       }
       await this.restoreSettings(s, agent, wanted);
       s.backendGen = agent.generation;
+      s.meta.updatedAt = new Date().toISOString();
       this.saveMeta(s, true);
     } catch (error) {
       // Retain the desired settings for retries/restarts. Never mark the session
@@ -955,15 +1030,25 @@ export class SessionManager implements AgentHandlers {
       this.createSession({ id, agentId, backendId, cwd: sessionCwd, origin: "native", title: info?.title ?? undefined });
     s.entries = [];
     s.midRun = undefined;
+    s.notices = undefined;
+    // Loading rewrites the agent's file; keep the time it had before we touched it.
+    const before = this.transcriptTime(agentId, backendId, sessionCwd) ?? info?.updatedAt;
+    if (before && !Number.isNaN(Date.parse(before))) s.meta.activityAt = later(s.meta.activityAt, new Date(before).toISOString());
     const caps = agent.capabilities;
     const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
-    if (caps?.loadSession) resp = await agent.request("session/load", base);
-    else if (caps?.sessionCapabilities?.resume) resp = await agent.request("session/resume", base);
-    else throw acp.RequestError.invalidRequest(undefined, `${agent.config.name} cannot open existing sessions`);
+    s.replaying++;
+    try {
+      if (caps?.loadSession) resp = await agent.request("session/load", base);
+      else if (caps?.sessionCapabilities?.resume) resp = await agent.request("session/resume", base);
+      else throw acp.RequestError.invalidRequest(undefined, `${agent.config.name} cannot open existing sessions`);
+    } finally {
+      s.replaying--;
+    }
     s.backendGen = agent.generation;
     s.stale = false;
     this.applySetup(s, resp);
+    s.meta.updatedAt = new Date().toISOString();
     this.saveMeta(s, true);
     log.info(`imported ${id} (${s.meta.lastSeq} events)`);
     return s;
@@ -1007,6 +1092,7 @@ export class SessionManager implements AgentHandlers {
     s.meta = { ...s.meta, lastSeq: 0, epoch: newEpoch() };
     s.emitted = undefined;
     s.midRun = undefined;
+    s.notices = undefined;
   }
 
   private attach(c: ClientHandle, s: BridgeSession, replay?: { mode: "full" } | { mode: "delta"; afterSeq: number }): Promise<void> {
@@ -1153,14 +1239,17 @@ export class SessionManager implements AgentHandlers {
         if (this.store.isDeleted(meta.id) || this.deleting.has(meta.id)) continue;
         if (out.has(meta.id) || (filter && meta.agentId !== filter) || !this.registry.has(meta.agentId)) continue;
         if (params.cwd && meta.cwd !== params.cwd) continue;
-        out.set(meta.id, { sessionId: meta.id, cwd: meta.cwd, title: meta.title ?? null, updatedAt: meta.updatedAt });
+        out.set(meta.id, { sessionId: meta.id, cwd: meta.cwd, title: meta.title ?? null });
       }
     }
 
     const sessions = [...out.values()].map((info) => {
       const s = this.sessions.get(info.sessionId);
       const meta = s?.meta ?? this.store.readMeta(info.sessionId);
-      if (s && meta && info.updatedAt && Date.parse(info.updatedAt) > Date.parse(meta.updatedAt) + 60_000 && !s.turn) {
+      const { agentId, backendId } = parseExtId(info.sessionId);
+      // The agent's own time moves when anything loads the session; prefer its last real message.
+      const changed = this.transcriptTime(agentId, backendId, info.cwd) ?? info.updatedAt;
+      if (s && meta && changed && Date.parse(changed) > Date.parse(meta.updatedAt) + 60_000 && !s.turn) {
         s.stale = true; // continued elsewhere (e.g. in a terminal); re-import on next open
       }
       const title = info.title ?? meta?.title ?? null;
@@ -1169,14 +1258,21 @@ export class SessionManager implements AgentHandlers {
         this.saveMeta(s);
         this.activity(s); // Native list titles must reach unopened chats' Live Activities too.
       }
+      let updatedAt = meta ? this.activityTime(meta, s, info.updatedAt) : changed;
+      if (updatedAt && !Number.isNaN(Date.parse(updatedAt))) updatedAt = new Date(updatedAt).toISOString();
+      if (meta && !meta.activityAt && updatedAt) {
+        // Saved before activity was tracked: keep this answer, so our own later contact cannot move it.
+        meta.activityAt = updatedAt;
+        if (s) this.saveMeta(s); else this.store.writeMeta(meta);
+      }
       return {
         ...info,
         title,
-        updatedAt: meta && (!info.updatedAt || meta.updatedAt > info.updatedAt) ? meta.updatedAt : info.updatedAt,
+        updatedAt,
         _meta: {
           ...(info._meta ?? {}),
           codeaw: {
-            agentId: parseExtId(info.sessionId).agentId,
+            agentId,
             state: s?.state ?? "idle",
             pending: s?.pending.size ?? 0,
             queued: s?.queue.length ?? 0,
@@ -1513,6 +1609,7 @@ export class SessionManager implements AgentHandlers {
       ...(typeof value === "boolean" ? { type: "boolean" } : {}),
     });
     this.applySetup(s, r);
+    this.contacted(s);
     return r;
   }
 
@@ -1558,6 +1655,7 @@ export class SessionManager implements AgentHandlers {
     } catch (err) {
       log.debug(`close ${s.id}: ${errorMessage(err)}`);
     }
+    this.contacted(s);
     s.backendGen = 0;
   }
 

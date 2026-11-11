@@ -32,6 +32,8 @@ export interface TestBridgeOptions {
   keepHome?: boolean;
   webRoot?: string;
   desktopSync?: AgentConfig["desktopSync"];
+  /** The fake agent rewrites a session and repeats a warning whenever it is opened, like real adapters. */
+  touchOnOpen?: boolean;
 }
 
 export interface TestBridge {
@@ -54,7 +56,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
         command: process.execPath,
         args: ["--import", "tsx", FAKE_AGENT],
         cwd: BRIDGE_DIR,
-        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0" },
+        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0", FAKE_AGENT_TOUCH_ON_OPEN: opts.touchOnOpen ? "1" : "0" },
         ...(opts.desktopSync !== undefined ? { desktopSync: opts.desktopSync } : {}),
       },
     },

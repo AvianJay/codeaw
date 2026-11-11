@@ -45,7 +45,10 @@ export interface SessionMeta {
   projectless?: boolean;
   title?: string;
   createdAt: string;
+  /** When the log was last written, including reloads; detects sessions continued elsewhere. */
   updatedAt: string;
+  /** When the conversation last moved. Reopening, replaying or refreshing a chat keeps it. */
+  activityAt?: string;
   /** `bridge` = created through codeaw; `native` = imported from the agent's own history. */
   origin: "bridge" | "native";
   /** Persist desktop affinity so reconnecting never silently creates a second runtime. */
@@ -64,6 +67,19 @@ export interface SessionMeta {
 
 export function isChunk(u: acp.SessionUpdate): u is Extract<acp.SessionUpdate, { sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk" }> {
   return u.sessionUpdate === "user_message_chunk" || u.sessionUpdate === "agent_message_chunk" || u.sessionUpdate === "agent_thought_chunk";
+}
+
+const ACTIVITY_UPDATES = new Set(["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"]);
+const ACTIVITY_EVENTS = new Set(["permission_request", "elicitation_request", "error"]);
+
+/** True for entries that are the conversation itself rather than bookkeeping written when a chat is reopened. */
+export function isActivity(entry: { kind: "update"; update: { sessionUpdate: string } } | { kind: "event"; event: { type: string } }): boolean {
+  return entry.kind === "update" ? ACTIVITY_UPDATES.has(entry.update.sessionUpdate) : ACTIVITY_EVENTS.has(entry.event.type);
+}
+
+/** Identifies an advisory notice by what it says; agents repeat the same ones on every resume. */
+export function noticeKey(update: { severity?: unknown; title?: unknown; description?: unknown }): string {
+  return JSON.stringify([update.severity ?? null, update.title ?? null, update.description ?? null]);
 }
 
 export function codeawMeta(obj: { _meta?: Record<string, unknown> | null } | undefined): Record<string, any> {

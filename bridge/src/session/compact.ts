@@ -1,5 +1,5 @@
 import type { LogEntry, UpdateEntry } from "./types.js";
-import { codeawMeta, isChunk } from "./types.js";
+import { codeawMeta, isChunk, noticeKey } from "./types.js";
 import { parentToolCallId } from "./subagent.js";
 import { emptyToolCall, mergeToolCall, toolCallToUpdate, type ToolCallState } from "./toolcall.js";
 
@@ -26,6 +26,7 @@ export interface CompactGroup {
  * - a tool call and all its updates become one `tool_call` at its first position
  * - snapshot updates keep only their last occurrence; `session_info_update`s merge into one
  * - `state` events keep turn boundaries and the last state, so clients retain turn footers
+ * - a `notice` repeating an earlier one is dropped; older logs hold one copy per resume
  * Output entries keep the highest `seq` they absorbed, so seqs are not monotonic.
  */
 export function compactLog(entries: LogEntry[]): LogEntry[] {
@@ -44,6 +45,7 @@ export function compactGroups(entries: LogEntry[]): CompactGroup[] {
   const messages = new Map<string, Extract<Slot, { kind: "message" }>>();
   const tools = new Map<string, Extract<Slot, { kind: "tool" }>>();
   let info: Extract<Slot, { kind: "info" }> | undefined;
+  const notices = new Set<string>();
   let inTurn = false;
   let turnStartedAt: number | undefined;
 
@@ -115,6 +117,11 @@ export function compactGroups(entries: LogEntry[]): CompactGroup[] {
       return;
     }
     if (KEEP_LAST.has(u.sessionUpdate) && lastIndex.get(u.sessionUpdate) !== i) return;
+    if (u.sessionUpdate === "notice") {
+      const key = noticeKey(u);
+      if (notices.has(key)) return;
+      notices.add(key);
+    }
     slots.push({ kind: "entry", entry: e });
   });
 

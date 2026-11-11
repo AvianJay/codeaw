@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readJson, safeName, writeFileAtomic } from "../util/paths.js";
 import { logger } from "../util/log.js";
-import type { LogEntry, SessionMeta } from "./types.js";
+import { isActivity, type LogEntry, type SessionMeta } from "./types.js";
 
 const log = logger("store");
 
@@ -91,6 +91,30 @@ export class SessionStore {
       }
     }
     return out;
+  }
+
+  /** Time of the newest conversation entry, for sessions saved before `activityAt` existed. */
+  lastActivityAt(id: string): string | undefined {
+    if (this.isDeleted(id)) return undefined;
+    let text: string;
+    try {
+      text = fs.readFileSync(path.join(this.dir(id), "events.jsonl"), "utf8");
+    } catch {
+      return undefined;
+    }
+    for (let end = text.length; end > 0;) {
+      const start = text.lastIndexOf("\n", end - 1);
+      const line = text.slice(start + 1, end);
+      end = start;
+      if (!line) continue;
+      try {
+        const entry = JSON.parse(line) as LogEntry;
+        if (isActivity(entry) && Number.isFinite(entry.t)) return new Date(entry.t).toISOString();
+      } catch {
+        // torn line
+      }
+    }
+    return undefined;
   }
 
   append(id: string, entry: LogEntry): void {
