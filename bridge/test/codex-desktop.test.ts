@@ -318,6 +318,51 @@ describe("Codex desktop synchronization", () => {
     expect(latest(b, "finished").rawInput.activityKind).toBe("completed");
   });
 
+  it("shows what a spawned agent is doing from its own transcript, live and on replay", async () => {
+    desktop = new DesktopPeer(); await desktop.start();
+    const codexHome = path.join(desktop.home, "codex");
+    const child = "01a1b8a3-065d-7df1-9eaa-6da736c25eab";
+    const day = path.join(codexHome, "sessions", "2026", "11", "08"); fs.mkdirSync(day, { recursive: true });
+    const rollout = path.join(day, `rollout-2026-11-08T08-50-54-${child}.jsonl`);
+    const line = (type: string, payload: any) => JSON.stringify({ timestamp: new Date().toISOString(), type, payload }) + "\n";
+    const done = (item: any) => line("event_msg", { type: "item_completed", thread_id: child, item });
+    fs.writeFileSync(rollout, line("session_meta", { id: child, parent_thread_id: desktop.id, agent_nickname: "Volta", agent_role: "worker" }) +
+      line("event_msg", { type: "task_started" }) +
+      done({ type: "UserMessage", id: "task", content: [{ type: "text", text: "Check the patch" }] }) +
+      done({ type: "AgentMessage", id: "m1", content: [{ type: "Text", text: "Reading the protocol first." }] }) +
+      done({ type: "CommandExecution", id: "exec-1", command: ["pwsh.exe", "-Command", "flutter test"], parsed_cmd: [{ type: "unknown", cmd: "flutter test" }], status: "completed", aggregated_output: "All tests passed", exit_code: 0 }) +
+      '{"timestamp":"torn');
+    bridge = await startTestBridge({ desktopSync: { pipe: desktop.pipe, archivePath: desktop.archivePath, timeoutMs: 1000, codexHome } });
+    const a = await TestClient.connect(bridge.url, bridge.tokenFor("phone")); clients.push(a);
+    await load(a);
+    desktop.begin();
+    const turnIndex = desktop.conversation.turns.length - 1, turnId = desktop.conversation.turns[turnIndex].turnId;
+    desktop.patch([{ op: "add", path: ["turns", turnIndex, "items", 1], value: { type: "collabAgentToolCall", id: "spawn", tool: "spawnAgent", status: "completed",
+      senderThreadId: desktop.id, receiverThreadIds: [child], prompt: "Check the patch", agentsStates: { [child]: { status: "pendingInit", message: null } } } }]);
+    const parent = `${turnId}:spawn`;
+    const children = (client: TestClient) => client.updates(nativeId).map((entry) => entry.update).filter((update) => update._meta?.parentToolCallId === parent);
+    const find = (client: TestClient, id: string) => client.updates(nativeId).findLast((entry) => (entry.update.toolCallId ?? entry.update.messageId) === id)?.update;
+    await a.waitFor(() => children(a).length >= 3);
+    // The card is named after the agent, and its work is attributed to it.
+    expect(find(a, parent)).toMatchObject({ title: "spawnAgent", rawInput: { name: "Volta", agent_type: "worker", receiverThreadIds: [child] } });
+    expect(find(a, `child:${child}:m1`)).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { text: "Reading the protocol first." } });
+    expect(find(a, `child:${child}:exec-1`)).toMatchObject({ sessionUpdate: "tool_call", title: "flutter test", kind: "execute", status: "completed" });
+    // The child reports that it is working although its parent last saw it pending.
+    expect(find(a, `child:${child}:lifecycle`)).toMatchObject({ rawInput: { agentThreadId: child, agentPath: "Volta", agentsStates: { [child]: { status: "running" } } } });
+    expect(children(a).some((update) => JSON.stringify(update).includes("Check the patch"))).toBe(false);
+    // Work the child does later appears without any new snapshot from its parent.
+    const resets = a.received.filter((r) => r.method === "_codeaw/replay").length;
+    fs.appendFileSync(rollout, "\n" + done({ type: "AgentMessage", id: "m2", content: [{ type: "Text", text: "Everything passes." }] }) + line("event_msg", { type: "task_complete" }));
+    await a.waitFor(() => find(a, `child:${child}:lifecycle`)?.rawInput?.agentsStates?.[child]?.status === "completed", 6000);
+    expect(find(a, `child:${child}:m2`)).toMatchObject({ content: { text: "Everything passes." } });
+    expect(find(a, `child:${child}:lifecycle`).rawInput.agentsStates[child].message).toBe("Everything passes.");
+    expect(a.received.filter((r) => r.method === "_codeaw/replay").length).toBe(resets);
+    desktop.finish();
+    const b = await TestClient.connect(bridge.url, bridge.tokenFor("tablet")); clients.push(b); await load(b);
+    expect(children(b).filter((update) => update.sessionUpdate !== "tool_call_update").map((update) => update.toolCallId ?? update.messageId))
+      .toEqual([`child:${child}:lifecycle`, `child:${child}:m1`, `child:${child}:exec-1`, `child:${child}:m2`]);
+  });
+
   it("steers desktop-started turns and honors explicit queueing after they finish", async () => {
     const { a, desktop } = await setup(); await load(a);
     desktop.begin(); await a.waitFor(() => a.events(nativeId, "state").at(-1)?.event.state === "running");

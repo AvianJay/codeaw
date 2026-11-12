@@ -5,6 +5,7 @@ import type { AgentBackend } from "./backend.js";
 import { AgentProcess, type AgentHandlers, type AgentInfo } from "./agent-process.js";
 import { CodexDesktopIpc, DesktopIpcRequestError, type DesktopIpcMessage } from "./codex-desktop-ipc.js";
 import { CodexDesktopLauncher } from "./codex-desktop-launcher.js";
+import { CodexChildTranscripts } from "./codex-child-transcripts.js";
 import { applyDesktopPatches, codexInput, inputBlocks, desktopRecordChanges, desktopRequests, projectDesktopConversation, type DesktopRecord, type DesktopState } from "./codex-desktop-state.js";
 import { desktopConfigOptions, desktopModels, desktopRestoreMessage, desktopSettingsPatch } from "./codex-desktop-settings.js";
 import { desktopAsyncReply, desktopAsyncRequests, type DesktopAsyncQuestion } from "./codex-desktop-questions.js";
@@ -15,6 +16,10 @@ interface DesktopSession {
   revision: number;
   conversation?: any;
   records?: DesktopRecord[];
+  /** Spawned agents' own activity, read from their transcripts beside the owner's snapshot. */
+  childRecords?: DesktopRecord[];
+  childTimer?: NodeJS.Timeout;
+  childChangedAt?: number;
   configOptions?: acp.SessionConfigOption[];
   connected: boolean;
   attaching?: Promise<void>;
@@ -32,6 +37,7 @@ export class CodexDesktopBackend implements AgentBackend {
   readonly ipc: CodexDesktopIpc;
   private readonly acp: AgentProcess;
   private readonly launcher: CodexDesktopLauncher;
+  private readonly children: CodexChildTranscripts;
   private readonly sessions = new Map<string, DesktopSession>();
   private readonly forcedDesktop = new Set<string>();
   private closed = false;
@@ -44,6 +50,8 @@ export class CodexDesktopBackend implements AgentBackend {
     // A reboot leaves the owner absent until Codex Desktop is opened; reopen
     // the chat automatically instead of making the user remote in and do it.
     this.launcher = new CodexDesktopLauncher({ enabled: (config.desktopSync as any)?.autoLaunch !== false });
+    const codexHome = (typeof config.desktopSync === "object" ? config.desktopSync.codexHome : undefined) ?? config.env?.CODEX_HOME;
+    this.children = new CodexChildTranscripts(codexHome ? () => codexHome : undefined);
     this.ipc.on("message", (message) => this.onMessage(message));
     this.ipc.on("disconnected", () => {
       for (const session of this.sessions.values()) {
@@ -324,10 +332,19 @@ export class CodexDesktopBackend implements AgentBackend {
       }
     }
     const firstSnapshot = session.records === undefined;
+    const spawned = this.spawnedAgents(projection.records);
     const changes = desktopRecordChanges(session.records, projection.records);
+    const childRecords = this.childActivity(spawned);
+    const childChanges = desktopRecordChanges(session.childRecords ?? [], childRecords);
     session.records = projection.records;
-    if (firstSnapshot || changes.reset) this.handlers.onHistoryReset?.(this.id, session.id, changes.updates);
-    else for (const update of changes.updates) this.handlers.onUpdate(this.id, { sessionId: session.id, update });
+    session.childRecords = childRecords;
+    if (firstSnapshot || changes.reset || childChanges.reset) {
+      this.handlers.onHistoryReset?.(this.id, session.id, [...projection.records, ...childRecords].map((record) => record.update));
+    } else {
+      for (const update of [...changes.updates, ...childChanges.updates]) this.handlers.onUpdate(this.id, { sessionId: session.id, update });
+    }
+    if (childChanges.updates.length) session.childChangedAt = Date.now();
+    this.watchChildren(session, spawned.size > 0);
     const configOptions = this.configOptions(session);
     if (changes.reset || JSON.stringify(configOptions) !== JSON.stringify(session.configOptions)) {
       session.configOptions = configOptions;
@@ -341,6 +358,52 @@ export class CodexDesktopBackend implements AgentBackend {
       session.prompts.delete(prompt);
       prompt.resolve({ stopReason: ["interrupted", "cancelled"].includes(turn.status) ? "cancelled" : "end_turn" });
     }
+  }
+
+  /**
+   * Thread id of each spawned agent and the card that launched it. Names the
+   * card after the agent, as desktop does, once its transcript is readable.
+   */
+  private spawnedAgents(records: DesktopRecord[]): Map<string, string> {
+    const spawned = new Map<string, string>();
+    for (const record of records) {
+      const update = record.update as any;
+      const ids = update.rawInput?.receiverThreadIds;
+      if (update.sessionUpdate !== "tool_call" || update.title !== "spawnAgent" || !Array.isArray(ids) || ids.length !== 1 || typeof ids[0] !== "string" || spawned.has(ids[0])) continue;
+      spawned.set(ids[0], update.toolCallId);
+      const child = this.children.read(ids[0]);
+      if (child?.nickname && update.rawInput.name === undefined) {
+        record.update = { ...update, rawInput: { ...update.rawInput, name: child.nickname, ...(child.role ? { agent_type: child.role } : {}) } };
+      }
+    }
+    return spawned;
+  }
+
+  private childActivity(spawned: Map<string, string>): DesktopRecord[] {
+    return [...spawned].flatMap(([threadId, toolCallId]) => this.children.records(threadId, toolCallId));
+  }
+
+  /** A child writes its transcript without telling the parent's followers; poll while one may be working. */
+  private watchChildren(session: DesktopSession, wanted: boolean): void {
+    if (!wanted || !session.connected || this.closed || this.sessions.get(session.id) !== session) {
+      if (session.childTimer) clearInterval(session.childTimer);
+      session.childTimer = undefined;
+      return;
+    }
+    if (session.childTimer) return;
+    session.childChangedAt = Date.now();
+    session.childTimer = setInterval(() => {
+      if (!session.connected || this.closed || this.sessions.get(session.id) !== session || !session.records) return this.watchChildren(session, false);
+      const childRecords = this.childActivity(this.spawnedAgents(session.records));
+      const changes = desktopRecordChanges(session.childRecords ?? [], childRecords);
+      if (changes.reset) return this.project(session);
+      session.childRecords = childRecords;
+      for (const update of changes.updates) this.handlers.onUpdate(this.id, { sessionId: session.id, update });
+      if (changes.updates.length) session.childChangedAt = Date.now();
+      // Stop once the parent is idle and its agents have been quiet; the next snapshot starts it again.
+      else if (projectDesktopConversation(session.conversation).state.state === "idle" && Date.now() - (session.childChangedAt ?? 0) > 120000) this.watchChildren(session, false);
+    }, 1500);
+    session.childTimer.unref();
   }
 
   private configOptions(session: DesktopSession): acp.SessionConfigOption[] {
@@ -511,6 +574,7 @@ export class CodexDesktopBackend implements AgentBackend {
     if (this.ipc.connected) await this.follow(session, false).catch(() => undefined);
     this.rejectWaiting(session, new Error("Desktop synchronization was detached"));
     session.connected = false;
+    this.watchChildren(session, false);
     this.sessions.delete(session.id);
     this.publishState(session);
     this.ipc.setReconnectWanted(this.sessions.size > 0);

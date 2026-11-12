@@ -711,6 +711,80 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('a desktop-spawned agent shows its own work instead of an empty card', (tester) async {
+    final c = controller();
+    addTearDown(c.dispose);
+    c.timeline.setTurnState('running');
+    const child = '01a1b8a3-065d-7df1-9eaa-6da736c25eab';
+    // What Codex Desktop shares about a spawn: the task and a pending state, nothing else.
+    update(c.timeline, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'turn:spawn', 'title': 'spawnAgent', 'kind': 'other', 'status': 'completed',
+      'rawInput': {
+        'receiverThreadIds': [child], 'prompt': 'Suggest low-latency settings', 'model': 'gpt-6.1-sol',
+        'agentsStates': {child: {'status': 'pendingInit', 'message': null}},
+      },
+    });
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: SubagentPanel(controller: c))));
+    await tester.tap(find.byKey(const ValueKey('subagent-row:turn:spawn')));
+    await tester.pump();
+    expect(find.text('尚無子代理活動紀錄'), findsOneWidget);
+    expect(find.text('等待中'), findsOneWidget);
+
+    // The bridge now reads the child's transcript and attributes it to the card.
+    update(c.timeline, {
+      'sessionUpdate': 'tool_call_update', 'toolCallId': 'turn:spawn',
+      'rawInput': {
+        'receiverThreadIds': [child], 'prompt': 'Suggest low-latency settings', 'model': 'gpt-6.1-sol',
+        'name': 'Volta', 'agent_type': 'worker',
+        'agentsStates': {child: {'status': 'pendingInit', 'message': null}},
+      },
+    });
+    Map<String, dynamic> lifecycle(String status, {String? message}) => {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'child:$child:lifecycle', 'title': 'subAgentActivity', 'kind': 'other', 'status': 'completed',
+      'rawInput': {
+        'agentThreadId': child, 'agentPath': 'Volta',
+        'agentsStates': {child: {'status': status, 'message': ?message}},
+      },
+      '_meta': {'parentToolCallId': 'turn:spawn'},
+    };
+    update(c.timeline, lifecycle('running'));
+    update(c.timeline, {
+      'sessionUpdate': 'agent_message_chunk', 'messageId': 'child:$child:m1',
+      'content': {'type': 'text', 'text': 'Reading the mpv manual first.'},
+      '_meta': {'parentToolCallId': 'turn:spawn'},
+    });
+    update(c.timeline, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'child:$child:exec-1', 'title': 'flutter test', 'kind': 'execute', 'status': 'completed',
+      '_meta': {'parentToolCallId': 'turn:spawn'},
+    });
+    await tester.pump();
+    final agent = c.timeline.subagents.single;
+    expect(agent.toolCallId, 'turn:spawn');
+    // The lifecycle report folds into the card; only the child's real work is listed.
+    final work = c.timeline.childrenOf(agent);
+    expect(work, hasLength(2));
+    expect(work.first, isA<MessageItem>());
+    expect((work.last as ToolItem).toolCallId, 'child:$child:exec-1');
+    expect(c.timeline.statusOfSubagent(agent), SubagentStatus.running);
+    expect(find.text('尚無子代理活動紀錄'), findsNothing);
+    expect(find.text('活動紀錄 · 2'), findsOneWidget);
+    expect(find.text('Volta'), findsOneWidget);
+    expect(find.text('執行中'), findsOneWidget);
+    expect(find.textContaining('Reading the mpv manual first.'), findsWidgets);
+
+    update(c.timeline, {...lifecycle('completed', message: 'Use profile=low-latency.'), 'sessionUpdate': 'tool_call_update'});
+    await tester.pump();
+    expect(c.timeline.statusOfSubagent(agent), SubagentStatus.completed);
+    expect(c.timeline.resultOfSubagent(agent), 'Use profile=low-latency.');
+    final restored = Timeline.fromSnapshot(c.timeline.toSnapshot());
+    addTearDown(restored.dispose);
+    expect(restored.subagents, hasLength(1));
+    expect(restored.childrenOf(restored.subagents.single), hasLength(2));
+    expect(restored.statusOfSubagent(restored.subagents.single), SubagentStatus.completed);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('legacy interaction cards do not show phantom completed agents', (tester) async {
     final c = controller();
     addTearDown(c.dispose);

@@ -24,6 +24,8 @@ const AgentConfigSchema = z.object({
     pipe: z.string().optional(),
     archivePath: z.string().optional(),
     modelCatalogPath: z.string().optional(),
+    /** Where Codex keeps its transcripts, when not CODEX_HOME or ~/.codex. */
+    codexHome: z.string().optional(),
     timeoutMs: z.number().int().min(100).max(60000).optional(),
     /** Reopen Codex Desktop when a linked chat's owner is gone (default true). */
     autoLaunch: z.boolean().optional(),
