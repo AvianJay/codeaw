@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -42,6 +43,21 @@ class RemoteDesktopController extends ChangeNotifier {
   bool systemAvailable = false, hardware = false, smoothAvailable = false;
   bool loading = false, active = false, visible = false, disposed = false;
   String? error, notice;
+
+  /// Remote copy: text copied on the PC lands on this device's clipboard, and
+  /// this device's clipboard is handed to the PC when pasting there.
+  bool clipboardSync = false;
+
+  /// Whether the connected bridge can share its clipboard.
+  bool clipboardAvailable = false;
+
+  /// Short messages about remote copy, in order; [clipboardRevision] counts them.
+  String? clipboardMessage;
+  int clipboardRevision = 0;
+
+  /// The last text that crossed in either direction, so it is not sent back.
+  String? _clipboardText;
+  static const _clipboardLimit = 65536;
   String state = 'disconnected';
   ui.Image? image;
   RTCVideoRenderer? video;
@@ -120,6 +136,7 @@ class RemoteDesktopController extends ChangeNotifier {
         .firstOrNull;
     final fps = prefs?['preferredFps'];
     preferredFps = fps is int && (fps == 30 || fps == 60) ? fps : null;
+    clipboardSync = prefs?['clipboardSync'] == true;
   }
 
   void _selectOptions() {
@@ -153,6 +170,8 @@ class RemoteDesktopController extends ChangeNotifier {
     loading = true;
     active = false;
     error = null;
+    clipboardAvailable = false;
+    _clipboardText = null;
     state = 'connecting';
     _notify();
     try {
@@ -286,6 +305,51 @@ class RemoteDesktopController extends ChangeNotifier {
   }
 
   void release() => input({'kind': 'release'});
+
+  void _clipboardSay(String message) {
+    clipboardMessage = message;
+    clipboardRevision++;
+    _notify();
+  }
+
+  /// Turns remote copy on or off and remembers it for this computer.
+  Future<void> setClipboardSync(bool enabled) =>
+      _serializePreferenceChange(() async {
+        if (clipboardSync == enabled) return;
+        clipboardSync = enabled;
+        _clipboardText = null;
+        await store.saveDesktopPreferences(
+          host,
+          _savedPreferences(
+            monitorId: monitorId,
+            mode: preferredMode,
+            fps: preferredFps,
+          ),
+        );
+        if (disposed) return;
+        if (clipboardAvailable) _send({'type': 'clipboard', 'enabled': enabled});
+        _notify();
+      });
+
+  /// Hands this device's clipboard text to the PC, when it has something new.
+  /// Returns once the PC has been told, so a paste sent next sees it.
+  Future<void> pushClipboard() async {
+    if (!clipboardSync || !clipboardAvailable || !canInput) return;
+    String? text;
+    try {
+      text = (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    } catch (_) {
+      return; // The system refused; pasting still uses the PC's own clipboard.
+    }
+    if (text == null || text.isEmpty || text == _clipboardText) return;
+    if (text.length > _clipboardLimit) {
+      _clipboardSay('剪貼簿內容太長，沒有傳到電腦');
+      return;
+    }
+    if (!canInput) return;
+    _clipboardText = text;
+    _send({'type': 'clipboardSet', 'text': text});
+  }
   void refresh() => _send({'type': 'refresh'});
 
   Future<void> _serializePreferenceChange(Future<void> Function() change) {
@@ -306,6 +370,7 @@ class RemoteDesktopController extends ChangeNotifier {
     'monitorId': ?monitorId,
     'preferredMode': ?mode?.name,
     'preferredFps': ?fps,
+    if (clipboardSync) 'clipboardSync': true,
   };
 
   /// Persists explicit stream choices; null restores automatic selection.
@@ -415,12 +480,33 @@ class RemoteDesktopController extends ChangeNotifier {
           error = msg['message'] as String;
         }
         if (actualMode != DesktopMode.smooth) await _closeVideo();
+      case 'clipboard':
+        final text = msg['text'];
+        if (!clipboardSync || text is! String || text.isEmpty) return;
+        if (text == _clipboardText) return;
+        _clipboardText = text;
+        try {
+          await Clipboard.setData(ClipboardData(text: text));
+          _clipboardSay('已複製電腦上的文字');
+        } catch (_) {
+          _clipboardSay('無法寫入這台裝置的剪貼簿');
+        }
+        return;
       case 'info':
+        if (msg['clipboard'] == true) {
+          clipboardAvailable = true;
+          if (clipboardSync) _send({'type': 'clipboard', 'enabled': true});
+        }
         if (msg['monitorId'] != null) monitorId = msg['monitorId'] as String;
         monitors = (msg['monitors'] as List? ?? [])
             .whereType<Map<String, dynamic>>()
             .toList();
       case 'notice':
+        if ('${msg['code']}'.startsWith('clipboard')) {
+          // Not a stream problem: it must not cover the desktop.
+          _clipboardSay(msg['message'] as String? ?? '遠端複製暫時無法使用');
+          return;
+        }
         notice = msg['message'] as String?;
       case 'error':
         error = msg['message'] as String? ?? '桌面服務暫時無法使用';

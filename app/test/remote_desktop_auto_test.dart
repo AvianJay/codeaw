@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/remote_desktop_controller.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -582,6 +583,97 @@ void main() {
 
       await cursor(currentEpoch + 1);
       expect(controller.cursorRevision, 3);
+    },
+  );
+
+  test(
+    'remote copy is off until switched on, then carries text both ways once',
+    () async {
+      // The device clipboard, as the platform channel sees it.
+      String? device = 'typed on the phone';
+      final binding = TestDefaultBinaryMessengerBinding.instance;
+      binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          if (call.method == 'Clipboard.setData') {
+            device = (call.arguments as Map)['text'] as String?;
+          }
+          if (call.method == 'Clipboard.getData') return {'text': device};
+          return null;
+        },
+      );
+      addTearDown(
+        () => binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          SystemChannels.platform,
+          null,
+        ),
+      );
+      final controller = harness.controller;
+      await harness.connect();
+      final socket = harness.sockets.single;
+      List<Map<String, dynamic>> sent(String type) =>
+          harness.messages.where((m) => m['type'] == type).toList();
+      Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 80));
+      void fromPc(Map<String, dynamic> message) => socket.add(jsonEncode(message));
+
+      // A bridge that cannot share is never sent a message it would reject.
+      await controller.setClipboardSync(true);
+      await controller.pushClipboard();
+      await settle();
+      expect(sent('clipboard'), isEmpty);
+      expect(sent('clipboardSet'), isEmpty);
+      await controller.setClipboardSync(false);
+      expect(harness.store.preferences!.containsKey('clipboardSync'), isFalse);
+
+      fromPc({'type': 'info', 'monitors': <Object>[], 'clipboard': true});
+      await harness.waitFor(() => controller.clipboardAvailable);
+      // Off: nothing the PC copies reaches this device, and nothing leaves it.
+      fromPc({'type': 'clipboard', 'text': 'secret on the pc'});
+      await settle();
+      await controller.pushClipboard();
+      await settle();
+      expect(device, 'typed on the phone');
+      expect(sent('clipboardSet'), isEmpty);
+
+      await controller.setClipboardSync(true);
+      await settle();
+      expect(sent('clipboard').single, {'type': 'clipboard', 'enabled': true});
+      expect(harness.store.preferences!['clipboardSync'], isTrue);
+
+      fromPc({'type': 'clipboard', 'text': '電腦上複製的 😀\nline 2'});
+      await harness.waitFor(() => controller.clipboardRevision == 1);
+      expect(device, '電腦上複製的 😀\nline 2');
+      expect(controller.clipboardMessage, '已複製電腦上的文字');
+      // What just came from the PC is not sent straight back to it.
+      await controller.pushClipboard();
+      await settle();
+      expect(sent('clipboardSet'), isEmpty);
+
+      device = 'copied in another app';
+      await controller.pushClipboard();
+      await controller.pushClipboard();
+      await settle();
+      expect(sent('clipboardSet'), [
+        {'type': 'clipboardSet', 'text': 'copied in another app'},
+      ]);
+
+      device = 'x' * 70000;
+      await controller.pushClipboard();
+      await settle();
+      expect(sent('clipboardSet'), hasLength(1));
+      expect(controller.clipboardMessage, '剪貼簿內容太長，沒有傳到電腦');
+
+      // A clipboard notice is a toast, not a banner over the desktop.
+      fromPc({'type': 'notice', 'code': 'clipboard_busy', 'message': '電腦剪貼簿暫時無法寫入'});
+      await harness.waitFor(() => controller.clipboardRevision == 3);
+      expect(controller.notice, isNull);
+
+      await controller.setClipboardSync(false);
+      await settle();
+      expect(sent('clipboard').last, {'type': 'clipboard', 'enabled': false});
+      fromPc({'type': 'clipboard', 'text': 'after switching off'});
+      await settle();
+      expect(device, 'x' * 70000);
     },
   );
 }

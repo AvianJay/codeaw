@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,6 +27,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   RemoteDesktopController? _controller;
   late AppLifecycleListener _lifecycle;
   bool _keyboard = false, _showingGuide = false;
+  int _clipboardSeen = 0;
   double _zoom = 1;
   final _canvas = GlobalKey<_DesktopCanvasState>();
   final _text = TextEditingController.fromValue(_idle);
@@ -39,6 +41,11 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
           if (_controller?.visible == false) unawaited(_controller?.connect());
+          // Something copied in another app is ready to paste on the PC. iOS asks
+          // before every clipboard read, so there it waits for an actual paste.
+          if (defaultTargetPlatform != TargetPlatform.iOS) {
+            unawaited(_controller?.pushClipboard());
+          }
         } else if (state == AppLifecycleState.paused ||
             state == AppLifecycleState.hidden ||
             state == AppLifecycleState.detached) {
@@ -62,7 +69,23 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final c = _controller;
+    if (c != null && c.clipboardRevision != _clipboardSeen) {
+      _clipboardSeen = c.clipboardRevision;
+      final message = c.clipboardMessage;
+      if (message != null) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Text(message),
+              duration: const Duration(seconds: 2),
+            ),
+          );
+      }
+    }
+    setState(() {});
   }
 
   /// A soft keyboard reports nothing for a delete in an empty field, so the
@@ -165,6 +188,20 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     }
     final code = _virtualKey(event.logicalKey);
     if (code == null) return KeyEventResult.ignored;
+    if (code == 86 &&
+        event is KeyDownEvent &&
+        c!.clipboardSync &&
+        (HardwareKeyboard.instance.isControlPressed ||
+            HardwareKeyboard.instance.isMetaPressed)) {
+      // Paste: the PC needs this device's clipboard before it sees the V.
+      unawaited(
+        c.pushClipboard().whenComplete(() {
+          c.input({'kind': 'key', 'code': code, 'down': true});
+          c.input({'kind': 'key', 'code': code, 'down': false});
+        }),
+      );
+      return KeyEventResult.handled;
+    }
     _sentKeys[event.physicalKey] = code;
     c!.input({'kind': 'key', 'code': code, 'down': true});
     return KeyEventResult.handled;
@@ -389,6 +426,15 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         if (!_keyboard) _focus.requestFocus();
       case 'guide':
         await _showGuide();
+      case 'clipboard':
+        if (c == null) return;
+        final enable = !c.clipboardSync;
+        if (enable && c.active && !c.clipboardAvailable) {
+          _say('請更新電腦端 bridge 以使用遠端複製');
+          return;
+        }
+        await c.setClipboardSync(enable);
+        _say(enable ? '遠端複製已開啟：電腦複製的文字會到這台裝置，貼上時會帶入這台裝置的剪貼簿' : '遠端複製已關閉');
       case 'monitor':
         await _chooseMonitor();
       case 'zoom':
@@ -404,6 +450,13 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       case 'info':
         await _connectionInfo();
     }
+  }
+
+  void _say(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
   }
 
   PopupMenuItem<String> _menuItem(
@@ -445,7 +498,13 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
               }.entries)
                 TextButton(
                   onPressed: c.canInput
-                      ? () => _shortcut(shortcut.value)
+                      ? () => shortcut.key == 'Ctrl+V'
+                            ? unawaited(
+                                c.pushClipboard().whenComplete(
+                                  () => _shortcut(shortcut.value),
+                                ),
+                              )
+                            : _shortcut(shortcut.value)
                       : null,
                   child: Text(shortcut.key),
                 ),
@@ -518,6 +577,12 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                     : Icons.keyboard_outlined,
                 _keyboard ? '收起鍵盤' : '顯示鍵盤',
                 enabled: c != null,
+              ),
+              CheckedPopupMenuItem(
+                value: 'clipboard',
+                enabled: c != null,
+                checked: c?.clipboardSync ?? false,
+                child: const Text('遠端複製'),
               ),
               _menuItem('guide', Icons.touch_app_outlined, '手勢教學'),
               const PopupMenuDivider(),

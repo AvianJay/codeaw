@@ -112,6 +112,13 @@ class FakeDesktop extends RemoteDesktopController {
     inputs.add(value);
   }
 
+  /// Remote copy hand-offs, recorded in order with the keys that follow.
+  @override
+  Future<void> pushClipboard() async {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    if (clipboardSync) inputs.add({'kind': 'clipboard'});
+  }
+
   @override
   Future<void> setStreamPreferences({
     required DesktopMode? mode,
@@ -360,6 +367,92 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       c.image?.dispose();
       c.image = null;
+      c.dispose();
+      state.desktop = null;
+      state.dispose();
+    },
+  );
+
+  testWidgets(
+    'remote copy is a switch in the menu and a paste carries the phone clipboard first',
+    (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final c = FakeDesktop()
+        ..width = 1280
+        ..height = 720
+        ..clipboardAvailable = true;
+      final state = AppState(MemoryStore(), openSession: (_) {})
+        ..host = host
+        ..desktop = c
+        ..loaded = true;
+      await tester.pumpWidget(
+        AppScope(
+          state: state,
+          child: const MaterialApp(home: RemoteDesktopPage()),
+        ),
+      );
+      await tester.pump();
+      Future<CheckedPopupMenuItem<String>> openMenu() async {
+        await tester.tap(find.byTooltip('桌面選項'));
+        await tester.pumpAndSettle();
+        return tester.widget<CheckedPopupMenuItem<String>>(
+          find.widgetWithText(CheckedPopupMenuItem<String>, '遠端複製'),
+        );
+      }
+
+      expect((await openMenu()).checked, isFalse);
+      await tester.tap(find.text('遠端複製'));
+      await tester.pumpAndSettle();
+      expect(c.clipboardSync, isTrue);
+      expect(find.textContaining('遠端複製已開啟'), findsOneWidget);
+      expect((await openMenu()).checked, isTrue);
+      await tester.tap(find.text('顯示鍵盤'));
+      await tester.pumpAndSettle();
+
+      // The on-screen paste key: clipboard first, then Ctrl+V.
+      c.inputs.clear();
+      await tester.tap(find.text('Ctrl+V'));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(c.inputs.first, {'kind': 'clipboard'});
+      expect(c.inputs.skip(1).map((i) => '${i['code']}${i['down']}'), [
+        '17true',
+        '86true',
+        '86false',
+        '17false',
+      ]);
+      // Other keys do not read the clipboard.
+      c.inputs.clear();
+      await tester.tap(find.text('Ctrl+C'));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(c.inputs.any((i) => i['kind'] == 'clipboard'), isFalse);
+
+      // Text the PC copied is announced once.
+      c
+        ..clipboardMessage = '已複製電腦上的文字'
+        ..clipboardRevision = c.clipboardRevision + 1
+        ..notifyListeners();
+      // The earlier toast leaves first.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('已複製電腦上的文字'), findsOneWidget);
+
+      // Switching off, and a bridge too old to share.
+      await openMenu();
+      await tester.tap(find.text('遠端複製'));
+      await tester.pumpAndSettle();
+      expect(c.clipboardSync, isFalse);
+      c.clipboardAvailable = false;
+      await openMenu();
+      await tester.tap(find.text('遠端複製'));
+      await tester.pumpAndSettle();
+      expect(c.clipboardSync, isFalse);
+      expect(find.text('請更新電腦端 bridge 以使用遠端複製'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
       c.dispose();
       state.desktop = null;
       state.dispose();

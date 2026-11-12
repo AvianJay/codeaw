@@ -41,6 +41,8 @@ struct InputController {
   void apply(const Json& input, RECT monitor); void release();
 };
 void output(const Json& header, const std::vector<unsigned char>& payload = {});
+Json clipboardRead(DWORD known, std::vector<unsigned char>& payload);
+Json clipboardWrite(const std::string& text);
 struct Video {
   struct Impl; std::unique_ptr<Impl> impl;
   Video(); ~Video();

@@ -22,8 +22,16 @@ class FakeDesktop implements DesktopBackend {
   onEvent?: (event: Record<string, any>) => void;
   calls: { command: string; params: Record<string, any> }[] = [];
   disposed = false;
+  /** The PC clipboard: its text and Windows' change counter. */
+  clip = { text: "", seq: 10 };
+  copy(text: string) { this.clip = { text, seq: this.clip.seq + 1 }; }
   async request(command: string, params: Record<string, any> = {}): Promise<NativeReply> {
     this.calls.push({ command, params });
+    if (command === "clipboard") {
+      const changed = params.seq !== this.clip.seq && this.clip.text !== "";
+      return { result: { seq: this.clip.seq, changed }, payload: changed ? Buffer.from(this.clip.text) : Buffer.alloc(0) };
+    }
+    if (command === "clipboardSet") { this.copy(params.text); return { result: { ok: true, seq: this.clip.seq }, payload: Buffer.alloc(0) }; }
     if (command === "video") throw new Error("No encoder");
     const result = command === "info" ? { monitors: [{ id: "m", name: "Monitor", width: 640, height: 360, x: -640, y: 0, primary: true }], smooth: true, hardware: false, state: "ready" }
       : command === "capture" ? { width: 128, height: 128, sourceWidth: 640, sourceHeight: 360, full: params.full,
@@ -103,6 +111,31 @@ describe("remote desktop", () => {
     c.ws.close(); await until(() => h.backends[0].disposed);
     expect(h.backends[0].calls.at(-1)?.command).toBe("release");
   });
+  it("shares the clipboard only after the device asks, in both directions, without echoing", async () => {
+    const h = await harness(); const c = await h.open(await h.create());
+    await until(() => c.frames.length === 1); c.send({ type: "ack", epoch: 1, seq: 1 });
+    await until(() => c.messages.some((m) => m.state === "active"));
+    const pc = h.backends[0], received = () => c.messages.filter((m) => m.type === "clipboard").map((m) => m.text);
+    pc.copy("copied before sharing");
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(pc.calls.some((x) => x.command === "clipboard")).toBe(false); expect(received()).toEqual([]);
+    c.send({ type: "clipboard", enabled: true });
+    await until(() => pc.calls.some((x) => x.command === "clipboard"));
+    expect(c.messages.find((m) => m.type === "info")?.clipboard).toBe(true);
+    pc.copy("copied while sharing"); await until(() => received().length === 1, 4000);
+    expect(received()).toEqual(["copied while sharing"]);
+    pc.copy("第二段 😀\nline 2"); await until(() => received().length === 2, 4000);
+    expect(received()[1]).toBe("第二段 😀\nline 2");
+    c.send({ type: "clipboardSet", text: "from the phone 中文" });
+    await until(() => pc.clip.text === "from the phone 中文");
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(received()).toHaveLength(2);
+    c.send({ type: "clipboard", enabled: false }); await new Promise((resolve) => setTimeout(resolve, 100));
+    pc.copy("private again"); await new Promise((resolve) => setTimeout(resolve, 1600));
+    expect(received()).toHaveLength(2);
+    c.send({ type: "clipboardSet", text: "x".repeat(70_000) });
+    await until(() => c.ws.readyState === WebSocket.CLOSED); expect(pc.clip.text).toBe("private again");
+  }, 15_000);
   it("validates coordinates and blocks another device from ending the session", async () => {
     const h = await harness(); const session = await h.create(); const c = await h.open(session);
     expect((await h.request("DELETE", `/api/desktop/sessions/${session.sessionId}`, undefined, h.otherToken)).status).toBe(404);
