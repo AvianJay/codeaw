@@ -696,7 +696,7 @@ describe("Codex desktop synchronization", () => {
     }
   });
 
-  it("asks the launcher to reopen the chat automatically when the IPC pipe is absent", async () => {
+  it("never opens Codex Desktop for loads or background recovery, only when the user sends", async () => {
     const reopen = vi.mocked(CodexDesktopLauncher.prototype.resume);
     const { a, desktop, bridge: first } = await setup(); await load(a);
     const home = first.home, config = first.loaded;
@@ -710,8 +710,12 @@ describe("Codex desktop synchronization", () => {
     try {
       const b = await TestClient.connect(`ws://127.0.0.1:${restarted.port()}/acp`, first.tokenFor("phone")); clients.push(b);
       await b.request("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] });
-      // The bridge reopens that specific conversation instead of waiting for a human.
-      await b.waitFor(() => reopen.mock.calls.length > 0, 4000);
+      // Loading (including bulk loads by scripts) and the recovery loop must not open the app.
+      await new Promise((resolve) => setTimeout(resolve, 4500));
+      expect(reopen).not.toHaveBeenCalled();
+      // A message the user sends reopens that specific conversation.
+      await expect(send(b, "must not be sent")).rejects.toThrow(/desktop/i);
+      expect(reopen).toHaveBeenCalledTimes(1);
       expect(reopen).toHaveBeenCalledWith(desktop.id);
     } finally {
       await restarted.stop();

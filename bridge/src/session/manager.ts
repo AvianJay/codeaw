@@ -970,6 +970,15 @@ export class SessionManager implements AgentHandlers {
     return this.registry.get(agentId);
   }
 
+  /** Only a message the user sends may reopen a closed Codex Desktop chat. */
+  private async activeForSend(s: BridgeSession): Promise<AgentBackend> {
+    try { return await this.ensureActive(s); }
+    catch (error) {
+      if (s.meta.connection === "desktop" && this.registry.has(s.meta.agentId)) this.requireAgent(s.meta.agentId).reopenForSend?.(s.meta.backendId);
+      throw error;
+    }
+  }
+
   /** Makes sure the agent process holds this session live, resuming it after restarts. */
   private async ensureActive(s: BridgeSession, allowDisconnected = false, override?: { configId: string; value: unknown }): Promise<AgentBackend> {
     const agent = this.requireAgent(s.meta.agentId);
@@ -1333,7 +1342,7 @@ export class SessionManager implements AgentHandlers {
       if (s.turn && s.turn.promptId === promptId) return s.turn.done;
       return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
     }
-    const agent = await this.ensureActive(s);
+    const agent = await this.activeForSend(s);
     // A removal request can race the asynchronous owner/agent connection.
     if (this.dequeueStates(s).get(promptId)?.cancelled) return { stopReason: "cancelled", _meta: { codeaw: { duplicate: true, promptId } } };
     if (this.receiptStates(s).has(promptId)) {
@@ -1399,7 +1408,7 @@ export class SessionManager implements AgentHandlers {
       let result: acp.PromptResponse | undefined;
       let error: unknown;
       try {
-        const agent = await this.ensureActive(s);
+        const agent = await this.activeForSend(s);
         result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: this.withImageData(blocks), _meta: { codeaw: { promptId } } });
       } catch (err) {
         error = err;
