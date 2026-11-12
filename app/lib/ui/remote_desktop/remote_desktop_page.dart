@@ -28,7 +28,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   bool _keyboard = false, _showingGuide = false;
   double _zoom = 1;
   final _canvas = GlobalKey<_DesktopCanvasState>();
-  final _text = TextEditingController();
+  final _text = TextEditingController.fromValue(_idle);
   final _focus = FocusNode();
   final _sentKeys = <PhysicalKeyboardKey, int>{};
 
@@ -65,16 +65,33 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     if (mounted) setState(() {});
   }
 
+  /// A soft keyboard reports nothing for a delete in an empty field, so the
+  /// field always holds an invisible character on each side of the cursor:
+  /// losing the one before it is Backspace, the one after it Delete.
+  static const _guard = '​';
+  static const _idle = TextEditingValue(
+    text: '$_guard$_guard',
+    selection: TextSelection.collapsed(offset: 1),
+  );
+
   void _commitText() {
     final value = _text.value;
-    if (value.text.isEmpty ||
+    if (value == _idle ||
         (value.composing.isValid && !value.composing.isCollapsed)) {
       return;
     }
+    final typed = value.text.replaceAll(_guard, '');
     if (_controller?.canInput == true) {
-      _controller!.input({'kind': 'text', 'text': value.text});
+      if (typed.isNotEmpty) {
+        // Text that replaced a guard (select all, then type) is still only text.
+        _controller!.input({'kind': 'text', 'text': typed});
+      } else if (value.text.length < _idle.text.length) {
+        // The guards look alike; the cursor stays where it was only for Delete.
+        _shortcut([value.text.isNotEmpty && value.selection.baseOffset == 1 ? 46 : 8]);
+      }
     }
-    _text.clear();
+    // Also puts the cursor back between the guards after a tap or arrow key.
+    _text.value = _idle;
   }
 
   int? _virtualKey(LogicalKeyboardKey key) {
@@ -420,6 +437,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                 'Alt+Tab': [18, 9],
                 'Win': [91],
                 '⌫': [8],
+                'Del': [46],
                 '←': [37],
                 '↑': [38],
                 '↓': [40],
@@ -448,8 +466,9 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             enableSuggestions: false,
             enableIMEPersonalizedLearning: false,
             decoration: InputDecoration(
-              hintText: '輸入文字',
-              helperText: '中文組字完成後送出',
+              // Never empty (see _guard), so a hint would not show.
+              labelText: '輸入文字',
+              helperText: '中文組字完成後送出，刪除鍵會傳到電腦',
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
                 tooltip: '收起鍵盤',

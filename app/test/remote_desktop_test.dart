@@ -288,6 +288,75 @@ void main() {
         ),
         isTrue,
       );
+      // The on-screen keyboard's delete keys reach the PC even though nothing
+      // typed is left in the field: each press is one key down and one key up.
+      List<Object?> keys() => [
+        for (final input in c.inputs)
+          if (input['kind'] == 'key') '${input['code']}${input['down'] == true ? '↓' : '↑'}',
+      ];
+      c.inputs.clear();
+      final field = tester.widget<TextField>(find.byType(TextField)).controller!;
+      final idle = field.value;
+      expect(idle.text.length, 2);
+      expect(idle.selection.baseOffset, 1);
+      for (var press = 0; press < 3; press++) {
+        // What the platform reports for Backspace: the character before the cursor is gone.
+        tester.testTextInput.updateEditingValue(
+          TextEditingValue(
+            text: idle.text.substring(1),
+            selection: const TextSelection.collapsed(offset: 0),
+          ),
+        );
+        await tester.pump();
+        expect(field.value, idle);
+      }
+      expect(keys(), ['8↓', '8↑', '8↓', '8↑', '8↓', '8↑']);
+      c.inputs.clear();
+      // Forward delete removes the character after the cursor.
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: idle.text.substring(0, 1),
+          selection: const TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pump();
+      expect(keys(), ['46↓', '46↑']);
+      expect(field.value, idle);
+      c.inputs.clear();
+      // Typing and moving the cursor never press a delete key.
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: '${idle.text[0]}a${idle.text[1]}',
+          selection: const TextSelection.collapsed(offset: 2),
+        ),
+      );
+      tester.testTextInput.updateEditingValue(
+        idle.copyWith(selection: const TextSelection.collapsed(offset: 0)),
+      );
+      await tester.pump();
+      expect(c.inputs, [
+        {'kind': 'text', 'text': 'a'},
+      ]);
+      expect(field.value, idle);
+      // A composition in progress is left alone until it is committed.
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: '${idle.text[0]}ㄋ${idle.text[1]}',
+          selection: const TextSelection.collapsed(offset: 2),
+          composing: const TextRange(start: 1, end: 2),
+        ),
+      );
+      await tester.pump();
+      expect(c.inputs.length, 1);
+      tester.testTextInput.updateEditingValue(
+        TextEditingValue(
+          text: '${idle.text[0]}你${idle.text[1]}',
+          selection: const TextSelection.collapsed(offset: 2),
+        ),
+      );
+      await tester.pump();
+      expect(c.inputs.last, {'kind': 'text', 'text': '你'});
+      expect(find.text('Del'), findsOneWidget);
       await tester.pumpWidget(const SizedBox());
       c.image?.dispose();
       c.image = null;
