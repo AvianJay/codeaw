@@ -212,7 +212,9 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
             ),
           Expanded(
             key: const ValueKey('workspace-content'),
-            child: widget.child,
+            // A page's modal barrier hides everything painted before it from
+            // screen readers; its own container keeps that off the sidebar.
+            child: Semantics(container: true, child: widget.child),
           ),
         ],
       ),

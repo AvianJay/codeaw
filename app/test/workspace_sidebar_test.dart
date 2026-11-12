@@ -68,7 +68,12 @@ Future<AppState> _show(WidgetTester tester, Size size) async {
       child: MaterialApp(
         home: WorkspaceShell(
           location: Uri.parse('/session?id=claude:a'),
-          child: const Center(child: Text('chat content')),
+          // As in the app, the page is a route of its own navigator.
+          child: Navigator(
+            onGenerateRoute: (_) => MaterialPageRoute<void>(
+              builder: (_) => const Scaffold(body: Center(child: Text('chat content'))),
+            ),
+          ),
         ),
       ),
     ),
@@ -87,6 +92,11 @@ void main() {
     final open = tester.getSize(content).width;
     expect(find.text('側邊欄裡的對話'), findsOneWidget);
     expect(open, lessThan(1210 - 290));
+    // The page beside it must not hide the sidebar from screen readers.
+    final semantics = tester.ensureSemantics();
+    await tester.pump();
+    expect(find.bySemanticsLabel(RegExp('側邊欄裡的對話')), findsWidgets);
+    semantics.dispose();
 
     await tester.tap(find.byTooltip('收合側邊欄'));
     await tester.pumpAndSettle();
