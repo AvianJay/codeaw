@@ -142,6 +142,16 @@ function configOrder(option: { id: string; category?: string | null }): number {
   return option.category === "model" || option.id === "model" ? 0 : option.category === "thought_level" || option.id === "reasoning_effort" ? 2 : 1;
 }
 
+/** True when the agent lists values for this option and none of them is the saved one. */
+function valueRetired(option: { type?: string; options?: unknown[] | null; currentValue?: unknown }, wanted: unknown): boolean {
+  if (option.type !== "select" || !Array.isArray(option.options) || option.options.length === 0) return false;
+  return !option.options.some((candidate: any) => candidate?.value !== undefined && sameJson(candidate.value, wanted));
+}
+
+function optionName(option: { id?: string; name?: string | null } | undefined, id: string): string {
+  return option?.name ?? id;
+}
+
 function errorMessage(err: unknown): string {
   if (err instanceof acp.RequestError) {
     const details = (err.data as any)?.details ?? (err.data as any)?.message;
@@ -1155,10 +1165,17 @@ export class SessionManager implements AgentHandlers {
     try {
       for (const [configId, value] of initialOptions) {
         const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
+        // A default the agent has since renamed or retired must not make every
+        // new chat fail; keep the agent's own value and say what changed.
+        if (current && valueRetired(current, value)) {
+          this.retiredSettingNotice(s, { id: configId, currentValue: value, options: (current.options ?? []) }, current);
+          continue;
+        }
         if (!current || !sameJson(current.currentValue, value)) await this.applyConfigOption(s, agent, configId, value);
       }
       for (const [configId, value] of initialOptions) {
         const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
+        if (valueRetired(current, value)) continue;
         if (!current || !sameJson(current.currentValue, value)) throw new Error(`Unconfirmed ${configId}`);
       }
     } catch (err) {
@@ -1545,8 +1562,14 @@ export class SessionManager implements AgentHandlers {
       if (wanted.type !== "select" && wanted.type !== "boolean") continue;
       const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
       if (current && sameJson(current.currentValue, wanted.currentValue)) continue;
+      // Agents rename and retire models/settings constantly. A saved value the
+      // agent no longer offers must not block every send forever; keep the
+      // agent's own current value and tell the user which one changed.
+      if (!current || current.type !== wanted.type || valueRetired(current, wanted.currentValue)) {
+        this.retiredSettingNotice(fork, wanted, current);
+        continue;
+      }
       try {
-        if (!current || current.type !== wanted.type) throw new Error("Setting is no longer available");
         await this.applyConfigOption(fork, agent, wanted.id, wanted.currentValue);
         const applied = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
         if (!sameJson(applied?.currentValue, wanted.currentValue)) throw new Error("Agent did not confirm the setting");
@@ -1554,19 +1577,42 @@ export class SessionManager implements AgentHandlers {
         throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent. Choose the setting again before retrying`);
       }
     }
-    for (const wanted of options) {
-      if (wanted.type !== "select" && wanted.type !== "boolean") continue;
-      const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
-      if (!sameJson(current?.currentValue, wanted.currentValue)) throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent`);
-    }
     const mode = source.modes?.currentModeId;
     if (!mode || !fork.meta.modes || fork.meta.modes.currentModeId === mode || modeOf(fork.meta) === mode) return;
+    const retiredMode = fork.meta.modes.availableModes?.length
+      ? !fork.meta.modes.availableModes.some((m) => m.id === mode)
+      : false;
+    if (retiredMode) {
+      const current = fork.meta.modes.availableModes?.find((m) => m.id === fork.meta.modes?.currentModeId);
+      this.appendNotice(fork, "warning", `${mode} is no longer available.`,
+        `${current?.name ?? fork.meta.modes.currentModeId ?? "The current mode"} will be used instead.`);
+      return;
+    }
     try {
       await agent.request("session/set_mode", { sessionId: fork.meta.backendId, modeId: mode });
       this.applySetup(fork, { modes: { ...fork.meta.modes, currentModeId: mode } });
     } catch (err) {
       throw acp.RequestError.invalidRequest(undefined, "Could not restore mode; no message was sent. Choose the mode again before retrying");
     }
+  }
+
+  /** One advisory line when a saved setting no longer exists, instead of a blocked chat. */
+  private retiredSettingNotice(fork: BridgeSession, wanted: any, current: any): void {
+    const label = optionName(current ?? wanted, wanted.id);
+    const wantedLabel = (wanted.options ?? []).find((o: any) => sameJson(o?.value, wanted.currentValue))?.name ?? String(wanted.currentValue);
+    const kept = (current?.options ?? []).find((o: any) => sameJson(o?.value, current?.currentValue))?.name ?? (current?.currentValue !== undefined ? String(current.currentValue) : undefined);
+    this.appendNotice(fork, "warning",
+      current ? `${label} "${wantedLabel}" is no longer available.` : `${label} is no longer available.`,
+      kept ? `Using ${kept} instead. Change it from the composer when you are ready.` : "Using the agent's current setting instead.");
+  }
+
+  private appendNotice(s: BridgeSession, severity: "info" | "warning", title: string, description?: string): void {
+    const update: any = { sessionUpdate: "notice", severity, title, ...(description ? { description } : {}) };
+    const seen = this.noticeKeys(s);
+    const key = noticeKey(update);
+    if (seen.has(key)) return;
+    seen.add(key);
+    this.append(s, { kind: "update", update });
   }
 
   /** Prompts may reuse an image already in the log (e.g. an edited message) by its blob URI. */

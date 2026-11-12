@@ -25,6 +25,8 @@ const AgentConfigSchema = z.object({
     archivePath: z.string().optional(),
     modelCatalogPath: z.string().optional(),
     timeoutMs: z.number().int().min(100).max(60000).optional(),
+    /** Reopen Codex Desktop when a linked chat's owner is gone (default true). */
+    autoLaunch: z.boolean().optional(),
   })]).optional(),
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;

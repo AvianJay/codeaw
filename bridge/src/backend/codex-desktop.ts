@@ -4,6 +4,7 @@ import type { AgentConfig } from "../config.js";
 import type { AgentBackend } from "./backend.js";
 import { AgentProcess, type AgentHandlers, type AgentInfo } from "./agent-process.js";
 import { CodexDesktopIpc, DesktopIpcRequestError, type DesktopIpcMessage } from "./codex-desktop-ipc.js";
+import { CodexDesktopLauncher } from "./codex-desktop-launcher.js";
 import { applyDesktopPatches, codexInput, inputBlocks, desktopRecordChanges, desktopRequests, projectDesktopConversation, type DesktopRecord, type DesktopState } from "./codex-desktop-state.js";
 import { desktopConfigOptions, desktopModels, desktopRestoreMessage, desktopSettingsPatch } from "./codex-desktop-settings.js";
 import { desktopAsyncReply, desktopAsyncRequests, type DesktopAsyncQuestion } from "./codex-desktop-questions.js";
@@ -30,6 +31,7 @@ interface DesktopSession {
 export class CodexDesktopBackend implements AgentBackend {
   readonly ipc: CodexDesktopIpc;
   private readonly acp: AgentProcess;
+  private readonly launcher: CodexDesktopLauncher;
   private readonly sessions = new Map<string, DesktopSession>();
   private readonly forcedDesktop = new Set<string>();
   private closed = false;
@@ -39,6 +41,9 @@ export class CodexDesktopBackend implements AgentBackend {
   constructor(readonly id: string, readonly config: AgentConfig, private readonly handlers: AgentHandlers, logDir: string, startTimeoutMs?: number) {
     this.acp = new AgentProcess(id, config, handlers, logDir, startTimeoutMs);
     this.ipc = new CodexDesktopIpc(typeof config.desktopSync === "object" ? config.desktopSync : {});
+    // A reboot leaves the owner absent until Codex Desktop is opened; reopen
+    // the chat automatically instead of making the user remote in and do it.
+    this.launcher = new CodexDesktopLauncher({ enabled: (config.desktopSync as any)?.autoLaunch !== false });
     this.ipc.on("message", (message) => this.onMessage(message));
     this.ipc.on("disconnected", () => {
       for (const session of this.sessions.values()) {
@@ -184,11 +189,23 @@ export class CodexDesktopBackend implements AgentBackend {
     if (session.connected && this.ipc.connected) return Promise.resolve();
     if (!session.attaching) {
       session.attaching = (async () => {
-        await this.ipc.ensureReady();
+        try {
+          await this.ipc.ensureReady();
+        } catch (error) {
+          // The pipe is absent until Codex Desktop runs: after a reboot the
+          // bridge can restart the app and reopen this chat on its own.
+          this.launcher.resume(session.id);
+          throw error;
+        }
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
         const owner = await this.ipc.request("thread-owner-discovery", { hostId: "local", conversationId: session.id });
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
-        if (!owner.handledByClientId) throw new Error("Codex desktop session owner is unavailable");
+        if (!owner.handledByClientId) {
+          // After a reboot (or when the user closed the app) no client owns the
+          // thread. Ask Windows to reopen this conversation so it can resume.
+          this.launcher.resume(session.id);
+          throw new Error("Codex desktop session owner is unavailable");
+        }
         session.owner = owner.handledByClientId;
         session.revision = -1;
         const snapshot = this.waitForRevision(session, 0);

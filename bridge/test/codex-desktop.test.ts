@@ -8,6 +8,7 @@ import { CodexDesktopIpc, DesktopIpcFrameDecoder, encodeDesktopIpc, readDesktopI
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { desktopConfigOptions, desktopSettingsPatch } from "../src/backend/codex-desktop-settings.js";
+import { setDesktopOpenerForTest } from "../src/backend/codex-desktop-launcher.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
@@ -171,6 +172,7 @@ afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
   await bridge?.stop(); bridge = undefined;
   await desktop?.stop(); desktop = undefined;
+  setDesktopOpenerForTest(undefined);
 });
 
 async function setup(timeoutMs = 1000): Promise<{ a: TestClient; desktop: DesktopPeer; bridge: TestBridge }> {
@@ -635,6 +637,31 @@ describe("Codex desktop synchronization", () => {
       expect(replayedText(b)).toBe("earlier desktop replydesktop started late");
       expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
       b.close(); clients.splice(clients.indexOf(b), 1);
+    } finally {
+      await restarted.stop();
+      if (path.dirname(home) !== path.resolve(os.tmpdir()) || !path.basename(home).startsWith("codeaw-test-")) throw new Error("Invalid test cleanup directory");
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
+  it("asks Windows to reopen the chat automatically when the IPC pipe is absent", async () => {
+    const opened: string[] = [];
+    setDesktopOpenerForTest((target) => { opened.push(target); return true; });
+    const { a, desktop, bridge: first } = await setup(); await load(a);
+    const home = first.home, config = first.loaded;
+    a.close(); clients.splice(clients.indexOf(a), 1);
+    await first.bridge.stop(); bridge = undefined;
+    for (const socket of desktop.sockets) socket.destroy();
+    await new Promise<void>((resolve) => desktop.server.close(() => resolve()));
+    // A reboot looks exactly like this: no pipe, no owner, nobody to ask.
+    const { startBridge } = await import("../src/bridge.js");
+    const restarted = await startBridge(config, { hosts: ["127.0.0.1"], port: 0 });
+    try {
+      const b = await TestClient.connect(`ws://127.0.0.1:${restarted.port()}/acp`, first.tokenFor("phone")); clients.push(b);
+      await b.request("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] });
+      // The bridge reopens that specific conversation instead of waiting for a human.
+      await b.waitFor(() => opened.length > 0, 4000);
+      expect(opened).toContain(`codex://threads/${desktop.id}`);
     } finally {
       await restarted.stop();
       if (path.dirname(home) !== path.resolve(os.tmpdir()) || !path.basename(home).startsWith("codeaw-test-")) throw new Error("Invalid test cleanup directory");

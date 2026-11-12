@@ -25,6 +25,8 @@ function fixture(id = "codex") {
   const state = new Map<string, { model: string; reasoning_effort: string; mode: string }>();
   let next = 0;
   let rejectModel = false, ignoreModel = false;
+  // Models an adapter has retired (renamed away) are removed from the offered list.
+  let liveModels = ["cheap", "expensive"];
   const defaults = () => ({ model: "expensive", reasoning_effort: "ultra", mode: "agent" });
   const options = (s: ReturnType<typeof defaults>): any[] => [
     // Deliberately put effort before model; cheap only supports low.
@@ -33,7 +35,7 @@ function fixture(id = "codex") {
     { id: "mode", category: "mode", name: "Mode", type: "select", currentValue: s.mode,
       options: ["agent", "workspace-write", "read-only", "agent-full-access"].map((value) => ({ value, name: value })) },
     { id: "model", category: "model", name: "Model", type: "select", currentValue: s.model,
-      options: ["cheap", "expensive"].map((value) => ({ value, name: value })) },
+      options: liveModels.map((value) => ({ value, name: value })) },
   ];
   const backend = {
     id, config: { name: "Codex", command: "fixture", args: [], env: { CODEX_HOME: codexHome }, enabled: true },
@@ -54,6 +56,8 @@ function fixture(id = "codex") {
         const s = state.get(params.sessionId)!;
         if (params.configId === "model") {
           if (rejectModel) throw new Error("Model unavailable");
+          // A retired model is rejected exactly like a real adapter: -32602 Invalid params.
+          if (!liveModels.includes(params.value)) throw new Error(`Invalid params: Invalid value for config option model: ${params.value}`);
           if (!ignoreModel) { s.model = params.value; s.reasoning_effort = s.model === "cheap" ? "low" : "ultra"; }
         } else {
           if (params.configId === "reasoning_effort" && s.model === "cheap" && params.value !== "low") throw new Error("Unsupported effort");
@@ -77,7 +81,8 @@ function fixture(id = "codex") {
   const select = (m: SessionManager, sessionId: string, configId: string, value: string) => m.setConfigOption(client, { sessionId, configId, value } as acp.SetSessionConfigOptionRequest);
   const send = (m: SessionManager, sessionId: string) => m.prompt(client, { sessionId, prompt: [{ type: "text", text: "hello" }] });
   return { home, file, calls, state, backend, client, store, manager, newChat, select, send,
-    reject: (value: boolean) => { rejectModel = value; }, ignore: (value: boolean) => { ignoreModel = value; } };
+    reject: (value: boolean) => { rejectModel = value; }, ignore: (value: boolean) => { ignoreModel = value; },
+    retire: (models: string[]) => { liveModels = models; } };
 }
 
 const value = (response: any, id: string) => response.configOptions.find((o: any) => o.id === id).currentValue;
@@ -131,6 +136,45 @@ describe("Codex defaults and session restoration", () => {
     f.ignore(false);
     await f.send(m, chat.sessionId);
     expect(f.state.get("s1")?.model).toBe("cheap");
+  });
+
+  it("sends after a restart even when the saved model no longer exists, keeping the agent's current value", async () => {
+    const f = fixture("other"), m = f.manager(), chat = await f.newChat(m);
+    await f.select(m, chat.sessionId, "model", "cheap");
+    await m.shutdown();
+    // The adapter renamed its models while the chat was closed.
+    f.retire(["expensive", "premium"]);
+    const reopened = f.manager();
+    await reopened.loadSession(f.client, { sessionId: chat.sessionId, cwd: f.home, mcpServers: [] });
+    const at = f.calls.length;
+    await f.send(reopened, chat.sessionId);
+    const after = f.calls.slice(at);
+    expect(after.some((c) => c.method === "session/prompt")).toBe(true);
+    expect(after.some((c) => c.method === "session/set_config_option" && c.params.value === "cheap")).toBe(false);
+    expect(value(f.store.readMeta(chat.sessionId), "model")).toBe("expensive");
+    const notice = f.store.readEntries(chat.sessionId).find((e) => e.kind === "update" && (e.update as any).sessionUpdate === "notice") as any;
+    expect([notice?.update?.title, notice?.update?.description]).toEqual(['Model "cheap" is no longer available.', "Using expensive instead. Change it from the composer when you are ready."]);
+  });
+
+  it("restores a setting the agent still offers and warns only once when it disappears", async () => {
+    const f = fixture("other"), m = f.manager(), chat = await f.newChat(m);
+    await f.select(m, chat.sessionId, "model", "cheap");
+    await m.closeSession(f.client, { sessionId: chat.sessionId });
+    // "cheap" is still offered, so it must be restored, not silently replaced.
+    await f.send(m, chat.sessionId);
+    expect(f.state.get("s1")?.model).toBe("cheap");
+    expect(f.store.readEntries(chat.sessionId).some((e) => e.kind === "update" && (e.update as any).sessionUpdate === "notice")).toBe(false);
+    // Now it is gone: the same chat warns once and still sends the message.
+    await m.closeSession(f.client, { sessionId: chat.sessionId });
+    f.retire(["expensive"]);
+    await f.send(m, chat.sessionId);
+    const notices = f.store.readEntries(chat.sessionId).filter((e) => e.kind === "update" && (e.update as any).sessionUpdate === "notice");
+    expect(notices).toHaveLength(1);
+    // Reopening again keeps the chat usable and does not repeat the warning.
+    await m.closeSession(f.client, { sessionId: chat.sessionId });
+    await f.send(m, chat.sessionId);
+    expect(f.store.readEntries(chat.sessionId).filter((e) => e.kind === "update" && (e.update as any).sessionUpdate === "notice")).toHaveLength(1);
+    expect(f.calls.filter((c) => c.method === "session/prompt").length).toBe(3);
   });
 
   it("lets a user choose a replacement model after restoration fails", async () => {
