@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app_state.dart';
 import '../common/adaptive.dart';
@@ -23,6 +26,34 @@ class WorkspaceShell extends StatefulWidget {
 class _WorkspaceShellState extends State<WorkspaceShell> {
   final _scaffold = GlobalKey<ScaffoldState>();
   String? _sessionId;
+
+  /// The wide sidebar is hidden to give the chat the whole screen.
+  bool _collapsed = false;
+  static const _collapsedKey = 'workspace.sidebarCollapsed';
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(() async {
+      try {
+        final saved = (await SharedPreferences.getInstance()).getBool(_collapsedKey);
+        if (mounted && saved == true) setState(() => _collapsed = true);
+      } catch (_) {
+        // Without storage the sidebar simply starts open.
+      }
+    }());
+  }
+
+  void _setCollapsed(bool collapsed) {
+    setState(() => _collapsed = collapsed);
+    unawaited(() async {
+      try {
+        await (await SharedPreferences.getInstance()).setBool(_collapsedKey, collapsed);
+      } catch (_) {
+        // Remembering it is a convenience only.
+      }
+    }());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -55,7 +86,38 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (desktop)
+          if (desktop && _collapsed)
+            ColoredBox(
+              color: scheme.surfaceContainerLow,
+              child: SafeArea(
+                right: false,
+                child: SizedBox(
+                  width: 56,
+                  child: Column(
+                    children: [
+                      const SizedBox(height: 12),
+                      IconButton(
+                        tooltip: '展開側邊欄',
+                        icon: const Icon(Icons.menu_rounded),
+                        onPressed: () => _setCollapsed(false),
+                      ),
+                      const SizedBox(height: 8),
+                      ListenableBuilder(
+                        listenable: state.client!,
+                        builder: (context, _) => IconButton.filledTonal(
+                          tooltip: '新對話',
+                          icon: const Icon(Icons.add_rounded),
+                          onPressed: state.client!.isOnline
+                              ? () => showNewSessionSheet(context)
+                              : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
+          else if (desktop)
             SizedBox(
               width: width >= 1440 ? 320 : 296,
               child: ColoredBox(
@@ -63,6 +125,7 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                 child: SessionsPage(
                   sidebar: true,
                   selectedSessionId: _sessionId,
+                  onCollapse: () => _setCollapsed(true),
                 ),
               ),
             )

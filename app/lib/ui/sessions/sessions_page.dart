@@ -20,10 +20,14 @@ class SessionsPage extends StatefulWidget {
     this.sidebar = false,
     this.selectedSessionId,
     this.onSessionSelected,
+    this.onCollapse,
   });
   final bool sidebar;
   final String? selectedSessionId;
   final VoidCallback? onSessionSelected;
+
+  /// Shown as a button in the sidebar header when the sidebar can be hidden.
+  final VoidCallback? onCollapse;
 
   @override
   State<SessionsPage> createState() => _SessionsPageState();
@@ -105,6 +109,12 @@ class _SessionsPageState extends State<SessionsPage> {
                       ),
                     ),
                     const Spacer(),
+                    if (widget.onCollapse != null)
+                      IconButton(
+                        tooltip: '收合側邊欄',
+                        icon: const Icon(Icons.menu_open_rounded),
+                        onPressed: widget.onCollapse,
+                      ),
                     IconButton(
                       tooltip: '重新整理對話',
                       icon: const Icon(Icons.refresh_rounded),
