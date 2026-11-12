@@ -299,10 +299,13 @@ void main() {
       // typed is left in the field: each press is one key down and one key up.
       List<Object?> keys() => [
         for (final input in c.inputs)
-          if (input['kind'] == 'key') '${input['code']}${input['down'] == true ? '↓' : '↑'}',
+          if (input['kind'] == 'key')
+            '${input['code']}${input['down'] == true ? '↓' : '↑'}',
       ];
       c.inputs.clear();
-      final field = tester.widget<TextField>(find.byType(TextField)).controller!;
+      final field = tester
+          .widget<TextField>(find.byType(TextField))
+          .controller!;
       final idle = field.value;
       expect(idle.text.length, 2);
       expect(idle.selection.baseOffset, 1);
@@ -404,7 +407,9 @@ void main() {
       }
 
       expect((await openMenu()).checked, isFalse);
-      await tester.tap(find.text('遠端複製'));
+      await tester.tap(
+        find.widgetWithText(CheckedPopupMenuItem<String>, '遠端複製'),
+      );
       await tester.pumpAndSettle();
       expect(c.clipboardSync, isTrue);
       expect(find.textContaining('遠端複製已開啟'), findsOneWidget);
@@ -440,14 +445,37 @@ void main() {
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.text('已複製電腦上的文字'), findsOneWidget);
 
+      // A hardware Ctrl+V is still a paste when both keys are released before
+      // the clipboard platform call returns.
+      await tester.tap(find.byTooltip('收起鍵盤'));
+      await tester.pumpAndSettle();
+      c.inputs.clear();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.keyV);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump(const Duration(milliseconds: 50));
+      final paste = c.inputs.indexWhere((i) => i['kind'] == 'clipboard');
+      expect(paste, greaterThan(0));
+      expect(c.inputs.skip(paste + 1).map((i) => '${i['code']}${i['down']}'), [
+        '17true',
+        '86true',
+        '86false',
+        '17false',
+      ]);
+
       // Switching off, and a bridge too old to share.
       await openMenu();
-      await tester.tap(find.text('遠端複製'));
+      await tester.tap(
+        find.widgetWithText(CheckedPopupMenuItem<String>, '遠端複製'),
+      );
       await tester.pumpAndSettle();
       expect(c.clipboardSync, isFalse);
       c.clipboardAvailable = false;
       await openMenu();
-      await tester.tap(find.text('遠端複製'));
+      await tester.tap(
+        find.widgetWithText(CheckedPopupMenuItem<String>, '遠端複製'),
+      );
       await tester.pumpAndSettle();
       expect(c.clipboardSync, isFalse);
       expect(find.text('請更新電腦端 bridge 以使用遠端複製'), findsOneWidget);
@@ -457,5 +485,9 @@ void main() {
       state.desktop = null;
       state.dispose();
     },
+    variant: const TargetPlatformVariant({
+      TargetPlatform.iOS,
+      TargetPlatform.android,
+    }),
   );
 }

@@ -28,12 +28,12 @@ class FakeDesktop implements DesktopBackend {
   async request(command: string, params: Record<string, any> = {}): Promise<NativeReply> {
     this.calls.push({ command, params });
     if (command === "clipboard") {
-      const changed = params.seq !== this.clip.seq && this.clip.text !== "";
+      const changed = !params.sequenceOnly && params.seq !== this.clip.seq && this.clip.text !== "";
       return { result: { seq: this.clip.seq, changed }, payload: changed ? Buffer.from(this.clip.text) : Buffer.alloc(0) };
     }
     if (command === "clipboardSet") { this.copy(params.text); return { result: { ok: true, seq: this.clip.seq }, payload: Buffer.alloc(0) }; }
     if (command === "video") throw new Error("No encoder");
-    const result = command === "info" ? { monitors: [{ id: "m", name: "Monitor", width: 640, height: 360, x: -640, y: 0, primary: true }], smooth: true, hardware: false, state: "ready" }
+    const result = command === "info" ? { monitors: [{ id: "m", name: "Monitor", width: 640, height: 360, x: -640, y: 0, primary: true }], smooth: true, hardware: false, state: "ready", clipboard: true }
       : command === "capture" ? { width: 128, height: 128, sourceWidth: 640, sourceHeight: 360, full: params.full,
         tiles: [{ x: 0, y: 0, width: 128, height: 128, offset: 0, length: 3 }], cursor: { x: .5, y: .5, visible: true } } : {};
     return { result, payload: command === "capture" ? Buffer.from([1, 2, 3]) : Buffer.alloc(0) };
@@ -126,15 +126,21 @@ describe("remote desktop", () => {
     expect(received()).toEqual(["copied while sharing"]);
     pc.copy("第二段 😀\nline 2"); await until(() => received().length === 2, 4000);
     expect(received()[1]).toBe("第二段 😀\nline 2");
-    c.send({ type: "clipboardSet", text: "from the phone 中文" });
+    c.send({ type: "clipboardSet", epoch: 0, text: "stale" });
+    c.send({ type: "clipboardSet", epoch: 1, text: "from the phone 中文" });
     await until(() => pc.clip.text === "from the phone 中文");
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+    c.send({ type: "clipboardSet", epoch: 1, text: "x".repeat(70_000) });
+    await until(() => c.messages.some((m) => m.code === "clipboard_invalid"));
+    expect(c.ws.readyState).toBe(WebSocket.OPEN);
+    await new Promise((resolve) => setTimeout(resolve, 850));
     expect(received()).toHaveLength(2);
-    c.send({ type: "clipboard", enabled: false }); await new Promise((resolve) => setTimeout(resolve, 100));
-    pc.copy("private again"); await new Promise((resolve) => setTimeout(resolve, 1600));
+    c.send({ type: "clipboard", enabled: false });
+    c.send({ type: "clipboardSet", epoch: 1, text: "not enabled" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    pc.copy("private again"); await new Promise((resolve) => setTimeout(resolve, 850));
     expect(received()).toHaveLength(2);
-    c.send({ type: "clipboardSet", text: "x".repeat(70_000) });
-    await until(() => c.ws.readyState === WebSocket.CLOSED); expect(pc.clip.text).toBe("private again");
+    expect(pc.calls.filter((x) => x.command === "clipboardSet").map((x) => x.params.text)).toEqual(["from the phone 中文"]);
+    expect(pc.calls.find((x) => x.command === "clipboard")?.params).toEqual({ sequenceOnly: true });
   }, 15_000);
   it("validates coordinates and blocks another device from ending the session", async () => {
     const h = await harness(); const session = await h.create(); const c = await h.open(session);

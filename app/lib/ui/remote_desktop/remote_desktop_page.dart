@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -41,11 +40,6 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       onStateChange: (state) {
         if (state == AppLifecycleState.resumed) {
           if (_controller?.visible == false) unawaited(_controller?.connect());
-          // Something copied in another app is ready to paste on the PC. iOS asks
-          // before every clipboard read, so there it waits for an actual paste.
-          if (defaultTargetPlatform != TargetPlatform.iOS) {
-            unawaited(_controller?.pushClipboard());
-          }
         } else if (state == AppLifecycleState.paused ||
             state == AppLifecycleState.hidden ||
             state == AppLifecycleState.detached) {
@@ -110,7 +104,9 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         _controller!.input({'kind': 'text', 'text': typed});
       } else if (value.text.length < _idle.text.length) {
         // The guards look alike; the cursor stays where it was only for Delete.
-        _shortcut([value.text.isNotEmpty && value.selection.baseOffset == 1 ? 46 : 8]);
+        _shortcut([
+          value.text.isNotEmpty && value.selection.baseOffset == 1 ? 46 : 8,
+        ]);
       }
     }
     // Also puts the cursor back between the guards after a tap or arrow key.
@@ -189,22 +185,33 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     final code = _virtualKey(event.logicalKey);
     if (code == null) return KeyEventResult.ignored;
     if (code == 86 &&
-        event is KeyDownEvent &&
         c!.clipboardSync &&
-        (HardwareKeyboard.instance.isControlPressed ||
-            HardwareKeyboard.instance.isMetaPressed)) {
-      // Paste: the PC needs this device's clipboard before it sees the V.
-      unawaited(
-        c.pushClipboard().whenComplete(() {
-          c.input({'kind': 'key', 'code': code, 'down': true});
-          c.input({'kind': 'key', 'code': code, 'down': false});
-        }),
-      );
+        c.clipboardAvailable &&
+        HardwareKeyboard.instance.isControlPressed &&
+        !HardwareKeyboard.instance.isAltPressed &&
+        !HardwareKeyboard.instance.isMetaPressed) {
+      if (event is KeyDownEvent) unawaited(_paste(c));
       return KeyEventResult.handled;
     }
     _sentKeys[event.physicalKey] = code;
     c!.input({'kind': 'key', 'code': code, 'down': true});
     return KeyEventResult.handled;
+  }
+
+  Future<void> _paste(RemoteDesktopController c) async {
+    final connection = c.connectionRevision, epoch = c.epoch;
+    await c.pushClipboard();
+    if (!mounted ||
+        _controller != c ||
+        c.connectionRevision != connection ||
+        c.epoch != epoch) {
+      return;
+    }
+    // The clipboard prompt can outlast the user's physical Ctrl press. Send a
+    // complete Ctrl+V if they already released it; don't release a held key.
+    final ctrlHeld =
+        _sentKeys.containsValue(0xa2) || _sentKeys.containsValue(0xa3);
+    _shortcut(ctrlHeld ? [86] : [17, 86]);
   }
 
   void _shortcut(List<int> codes) {
@@ -433,8 +440,16 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
           _say('請更新電腦端 bridge 以使用遠端複製');
           return;
         }
-        await c.setClipboardSync(enable);
-        _say(enable ? '遠端複製已開啟：電腦複製的文字會到這台裝置，貼上時會帶入這台裝置的剪貼簿' : '遠端複製已關閉');
+        try {
+          await c.setClipboardSync(enable);
+          _say(
+            enable
+                ? '遠端複製已開啟：電腦複製的文字會傳到這台裝置。用 Ctrl+V 將這台裝置的文字貼到電腦。'
+                : '遠端複製已關閉',
+          );
+        } catch (_) {
+          _say('遠端複製設定未儲存，請再試一次');
+        }
       case 'monitor':
         await _chooseMonitor();
       case 'zoom':
@@ -499,11 +514,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                 TextButton(
                   onPressed: c.canInput
                       ? () => shortcut.key == 'Ctrl+V'
-                            ? unawaited(
-                                c.pushClipboard().whenComplete(
-                                  () => _shortcut(shortcut.value),
-                                ),
-                              )
+                            ? unawaited(_paste(c))
                             : _shortcut(shortcut.value)
                       : null,
                   child: Text(shortcut.key),

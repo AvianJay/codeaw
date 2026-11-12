@@ -26,7 +26,7 @@ int worker() {
       if (command == "input" && msg.contains("input")) inputKind = msg["input"].value("kind", "");
       Json result = Json::object(); std::vector<unsigned char> payload;
       if (command == "info") {
-        auto displays = capture.monitors(); result = {{"monitors", displays}, {"smooth", Video::supported()}, {"hardware", Video::hardware()}, {"state", displays.empty() ? "display_unavailable" : "ready"}};
+        auto displays = capture.monitors(); result = {{"monitors", displays}, {"smooth", Video::supported()}, {"hardware", Video::hardware()}, {"clipboard", true}, {"state", displays.empty() ? "display_unavailable" : "ready"}};
       } else if (command == "selfTest") result = Video::selfTest();
       else if (command == "configure") {
         video.stop(); input.release(); monitor = msg.at("monitorId").get<std::string>(); capture.configure(monitor);
@@ -36,7 +36,10 @@ int worker() {
       } else if (command == "ack") capture.ack();
       else if (command == "input") input.apply(msg.at("input"), capture.bounds());
       else if (command == "release") input.release();
-      else if (command == "clipboard") result = clipboardRead(msg.value("seq", 0u), payload);
+      else if (command == "clipboard") {
+        if (msg.value("sequenceOnly", false)) result = {{"seq", GetClipboardSequenceNumber()}};
+        else result = clipboardRead(msg.value("seq", 0u), payload);
+      }
       else if (command == "clipboardSet") result = clipboardWrite(msg.at("text").get<std::string>());
       else if (command == "video") video.start(monitor, msg.value("fps", 30) == 60 ? 60 : 30, std::clamp(msg.value("bitrate", 4000000), 128000, 8000000), std::clamp(msg.value("longEdge", 1920), 320, 1920), msg.value("bindAddress", "127.0.0.1"), msg.value("epoch", 1));
       else if (command == "videoTest") video.start("", msg.value("fps", 30) == 60 ? 60 : 30, 1000000, 640, "127.0.0.1", 1, true);

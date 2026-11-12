@@ -3,9 +3,9 @@
 static const size_t clipboardLimit = 256 * 1024;
 struct OpenedClipboard {
   bool open = false;
-  OpenedClipboard() {
+  explicit OpenedClipboard(HWND owner = nullptr) {
     // Another program may hold it for a moment while it copies.
-    for (int attempt = 0; attempt < 8 && !open; attempt++) { open = OpenClipboard(nullptr) != 0; if (!open) Sleep(15); }
+    for (int attempt = 0; attempt < 8 && !open; attempt++) { open = OpenClipboard(owner) != 0; if (!open) Sleep(15); }
   }
   ~OpenedClipboard() { if (open) CloseClipboard(); }
 };
@@ -20,10 +20,10 @@ Json clipboardRead(DWORD known, std::vector<unsigned char>& payload) {
     HANDLE data = GetClipboardData(CF_UNICODETEXT);
     const wchar_t* text = data ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
     if (!text) return {{"seq", seq}, {"changed", false}};
-    const size_t available = GlobalSize(data) / sizeof(wchar_t);
+    struct LockedText { HANDLE data; ~LockedText() { GlobalUnlock(data); } } lock{data};
+    const size_t available = std::min(GlobalSize(data) / sizeof(wchar_t), clipboardLimit + 1);
     size_t length = 0; while (length < available && text[length]) length++;
-    std::string encoded = length <= clipboardLimit ? utf8(std::wstring(text, length)) : std::string();
-    GlobalUnlock(data);
+    std::string encoded = length < available ? utf8(std::wstring(text, length)) : std::string();
     if (encoded.empty() || encoded.size() > clipboardLimit) return {{"seq", seq}, {"changed", false}, {"skipped", length > 0}};
     payload.assign(encoded.begin(), encoded.end());
     SecureZeroMemory(encoded.data(), encoded.size());
@@ -32,7 +32,13 @@ Json clipboardRead(DWORD known, std::vector<unsigned char>& payload) {
 }
 Json clipboardWrite(const std::string& encoded) {
   try {
-    if (encoded.size() > clipboardLimit) return {{"ok", false}};
+    if (encoded.size() > clipboardLimit || encoded.find('\0') != std::string::npos) return {{"ok", false}};
+    // EmptyClipboard makes this window the owner; a null owner is not reliable
+    // for writes. The short-lived message-only window never takes focus.
+    struct Owner { HWND window; ~Owner() { if (window) DestroyWindow(window); } } owner{
+      CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr)
+    };
+    if (!owner.window) return {{"ok", false}};
     std::wstring text = wide(encoded);
     HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (text.size() + 1) * sizeof(wchar_t));
     if (!memory) return {{"ok", false}};
@@ -42,7 +48,7 @@ Json clipboardWrite(const std::string& encoded) {
     SecureZeroMemory(text.data(), text.size() * sizeof(wchar_t));
     bool stored = false;
     {
-      OpenedClipboard clipboard;
+      OpenedClipboard clipboard(owner.window);
       stored = clipboard.open && EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory);
     }
     // The clipboard owns the memory only once it accepted it.

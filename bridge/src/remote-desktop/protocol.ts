@@ -26,7 +26,7 @@ export const Input = z.discriminatedUnion("kind", [
 ]);
 
 export interface Monitor { id: string; name: string; x: number; y: number; width: number; height: number; primary: boolean }
-export interface NativeInfo { monitors: Monitor[]; smooth: boolean; hardware: boolean; state: string }
+export interface NativeInfo { monitors: Monitor[]; smooth: boolean; hardware: boolean; state: string; clipboard?: boolean }
 export interface Tile { x: number; y: number; width: number; height: number; offset: number; length: number }
 export interface NativeFrame {
   width: number; height: number; sourceWidth: number; sourceHeight: number;

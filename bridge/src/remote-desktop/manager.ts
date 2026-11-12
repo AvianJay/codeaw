@@ -15,9 +15,11 @@ interface Session {
   epoch: number; seq: number; ready: boolean; pending?: number; pendingAt?: number;
   activeUntil: number; budget: FrameBudget; closed: boolean; capturing: boolean; chain: Promise<void>;
   actualMode: SessionOptions["mode"]; lastCursor?: string; receivedAt: number; receivedCount: number;
-  /** Set only while this device asked to follow the PC clipboard. */
-  clipboardTimer?: NodeJS.Timeout; clipboardSeq?: number; clipboardBusy?: boolean;
+  clipboardAvailable?: boolean;
+  /** Set only while this device asked to share the clipboard. */
+  clipboard?: { seq: number; timer?: NodeJS.Timeout; busy: boolean };
 }
+const clipboardText = z.string().min(1).max(65_536).refine((text) => !text.includes("\0"));
 const hash = (ticket: string) => crypto.createHash("sha256").update(ticket).digest();
 const json = (res: http.ServerResponse, status: number, value: unknown) => {
   const body = JSON.stringify(value);
@@ -151,7 +153,8 @@ export class DesktopManager {
     const info = (await s.backend.request("info")).result as NativeInfo;
     if (!info.monitors.some((m) => m.id === s.options.monitorId)) s.options.monitorId = info.monitors.find((m) => m.primary)?.id ?? info.monitors[0]?.id;
     if (!s.options.monitorId) throw new DesktopError(409, "display_unavailable", "目前沒有可擷取的螢幕");
-    this.send(s, { type: "info", ...info, privilege: s.options.privilege, clipboard: true });
+    s.clipboardAvailable = info.clipboard === true;
+    this.send(s, { type: "info", ...info, privilege: s.options.privilege });
     await this.configure(s);
   }
   private async configure(s: Session) {
@@ -256,24 +259,31 @@ export class DesktopManager {
         s.options = parsed.data; s.actualMode = s.options.mode; s.epoch++; s.activeUntil = this.now() + 2000;
         await this.configure(s); break;
       }
-      case "clipboard":
-        if (s.clipboardTimer) clearInterval(s.clipboardTimer);
-        s.clipboardTimer = undefined; s.clipboardSeq = undefined;
-        if (msg.enabled === true) {
-          // What was copied before sharing began stays on the PC, and the phone keeps its own.
-          try { s.clipboardSeq = Number((await s.backend.request("clipboard", { seq: 0 })).result.seq) || 0; }
-          catch { this.send(s, { type: "notice", code: "clipboard_unavailable", message: "請更新電腦端 bridge 以使用遠端複製" }); return; }
-          s.clipboardTimer = setInterval(() => { void this.clipboard(s); }, 700); s.clipboardTimer.unref();
+      case "clipboard": {
+        if (msg.enabled !== true) { this.stopClipboard(s); break; }
+        if (!s.clipboardAvailable || s.clipboard) break;
+        try {
+          // Remember the change counter without fetching pre-existing clipboard text.
+          const { result } = await s.backend.request("clipboard", { sequenceOnly: true });
+          if (s.closed || typeof result.seq !== "number") return;
+          const clip: NonNullable<Session["clipboard"]> = { seq: result.seq, busy: false };
+          s.clipboard = clip;
+          clip.timer = setInterval(() => this.pollClipboard(s, clip), 700); clip.timer.unref();
+        } catch {
+          this.send(s, { type: "notice", code: "clipboard_unavailable", message: "遠端複製暫時無法使用" });
         }
         break;
+      }
       case "clipboardSet": {
-        const text = z.string().min(1).max(65_536).safeParse(msg.text);
-        if (!text.success) throw new DesktopError(400, "invalid_clipboard", "剪貼簿內容過大或無效");
-        if (!s.ready) return;
+        if (!s.clipboard || !s.ready || msg.epoch !== s.epoch) break;
+        const text = clipboardText.safeParse(msg.text);
+        if (!text.success) {
+          this.send(s, { type: "notice", code: "clipboard_invalid", message: "剪貼簿內容過大或無效" }); break;
+        }
         const reply = await s.backend.request("clipboardSet", { text: text.data });
-        if (reply.result.ok !== true) { this.send(s, { type: "notice", code: "clipboard_busy", message: "電腦剪貼簿暫時無法寫入" }); return; }
+        if (reply.result.ok !== true) { this.send(s, { type: "notice", code: "clipboard_busy", message: "電腦剪貼簿暫時無法寫入" }); break; }
         // Our own write is not a change to report back.
-        if (s.clipboardTimer && typeof reply.result.seq === "number") s.clipboardSeq = reply.result.seq;
+        if (s.clipboard && typeof reply.result.seq === "number") s.clipboard.seq = reply.result.seq;
         break;
       }
       case "refresh": s.activeUntil = this.now() + 2000; if (s.actualMode !== "smooth") this.schedule(s, 0); break;
@@ -292,19 +302,27 @@ export class DesktopManager {
       default: throw new DesktopError(400, "invalid_message", "無效的桌面訊息");
     }
   }
-  /** Text copied on the PC goes to the phone; nothing is sent unless it changed. */
-  private async clipboard(s: Session) {
-    if (s.closed || !s.backend || !s.clipboardTimer || s.clipboardBusy) return;
-    s.clipboardBusy = true;
-    try {
-      const reply = await s.backend.request("clipboard", { seq: s.clipboardSeq ?? 0 });
-      if (s.closed || !s.clipboardTimer) return;
-      if (typeof reply.result.seq === "number") s.clipboardSeq = reply.result.seq;
-      if (reply.result.changed === true && reply.payload.length) this.send(s, { type: "clipboard", text: reply.payload.toString("utf8") });
-    } catch {
-      // An older helper cannot read the clipboard; stop asking it.
-      if (s.clipboardTimer) clearInterval(s.clipboardTimer); s.clipboardTimer = undefined;
-    } finally { s.clipboardBusy = false; }
+  /** Serialize polls with writes so a clipboard paste never echoes back. */
+  private pollClipboard(s: Session, clip: NonNullable<Session["clipboard"]>) {
+    if (s.closed || !s.ready || clip.busy) return;
+    clip.busy = true;
+    s.chain = s.chain.then(async () => {
+      if (s.closed || !s.ready || s.clipboard !== clip || !s.backend) return;
+      const epoch = s.epoch;
+      const reply = await s.backend.request("clipboard", { seq: clip.seq });
+      if (s.closed || s.clipboard !== clip || !this.opts.devices.authenticate(s.token)) return;
+      if (typeof reply.result.seq === "number") clip.seq = reply.result.seq;
+      if (s.ready && s.epoch === epoch && reply.result.changed === true && reply.payload.length && reply.payload.length <= 256 * 1024) {
+        this.send(s, { type: "clipboard", epoch, text: reply.payload.toString("utf8") });
+      }
+    }).catch(() => {
+      this.stopClipboard(s);
+      this.send(s, { type: "notice", code: "clipboard_unavailable", message: "遠端複製暫時無法使用" });
+    }).finally(() => { clip.busy = false; });
+  }
+  private stopClipboard(s: Session) {
+    if (s.clipboard?.timer) clearInterval(s.clipboard.timer);
+    s.clipboard = undefined;
   }
   private error(s: Session, error: unknown) {
     const e = error instanceof DesktopError ? error : new DesktopError(503, "unavailable", "桌面服務暫時無法使用");
@@ -314,7 +332,7 @@ export class DesktopManager {
   private async close(s: Session) {
     if (s.closed) return; s.closed = true;
     if (s.timer) clearTimeout(s.timer); if (s.videoTimer) clearTimeout(s.videoTimer);
-    if (s.clipboardTimer) clearInterval(s.clipboardTimer); s.clipboardTimer = undefined;
+    this.stopClipboard(s);
     s.socket?.close(1000, "Desktop session ended");
     await s.backend?.dispose(); s.token = ""; s.ticketHash.fill(0);
     if (this.session === s) this.session = undefined;

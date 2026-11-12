@@ -613,8 +613,10 @@ void main() {
       final socket = harness.sockets.single;
       List<Map<String, dynamic>> sent(String type) =>
           harness.messages.where((m) => m['type'] == type).toList();
-      Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 80));
-      void fromPc(Map<String, dynamic> message) => socket.add(jsonEncode(message));
+      Future<void> settle() =>
+          Future<void>.delayed(const Duration(milliseconds: 80));
+      void fromPc(Map<String, dynamic> message) =>
+          socket.add(jsonEncode(message));
 
       // A bridge that cannot share is never sent a message it would reject.
       await controller.setClipboardSync(true);
@@ -654,17 +656,25 @@ void main() {
       await controller.pushClipboard();
       await settle();
       expect(sent('clipboardSet'), [
-        {'type': 'clipboardSet', 'text': 'copied in another app'},
+        {
+          'type': 'clipboardSet',
+          'epoch': controller.epoch,
+          'text': 'copied in another app',
+        },
       ]);
 
       device = 'x' * 70000;
       await controller.pushClipboard();
       await settle();
       expect(sent('clipboardSet'), hasLength(1));
-      expect(controller.clipboardMessage, '剪貼簿內容太長，沒有傳到電腦');
+      expect(controller.clipboardMessage, '剪貼簿內容過大或無效，沒有傳到電腦');
 
       // A clipboard notice is a toast, not a banner over the desktop.
-      fromPc({'type': 'notice', 'code': 'clipboard_busy', 'message': '電腦剪貼簿暫時無法寫入'});
+      fromPc({
+        'type': 'notice',
+        'code': 'clipboard_busy',
+        'message': '電腦剪貼簿暫時無法寫入',
+      });
       await harness.waitFor(() => controller.clipboardRevision == 3);
       expect(controller.notice, isNull);
 
