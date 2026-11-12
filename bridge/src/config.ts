@@ -78,6 +78,8 @@ export const ConfigSchema = z.object({
   idleSessionCloseMinutes: z.number().min(1).default(30),
   /** Stop an agent process with no live sessions after this many minutes. */
   idleAgentStopMinutes: z.number().min(1).default(60),
+  /** Once a day, update Codeaw-installed ACP adapters (and so their model lists) from the ACP registry. */
+  autoUpdateAgents: z.boolean().default(true),
   dataDir: z.string().optional(),
 });
 export type Config = z.infer<typeof ConfigSchema>;

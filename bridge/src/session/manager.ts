@@ -798,6 +798,24 @@ export class SessionManager implements AgentHandlers {
 
   activitySnapshots(): ActivitySnapshot[] { return [...this.sessions.values()].map((s) => this.snapshot(s)); }
 
+  /** Stopping this agent's ACP process would not interrupt a turn, request or background job. */
+  agentIdle(agentId: string): boolean {
+    if (!this.registry.has(agentId)) return true;
+    const agent = this.requireAgent(agentId);
+    if (agent.inflight > 0) return false;
+    return ![...this.sessions.values()].some((s) => s.meta.agentId === agentId && s.meta.connection !== "desktop"
+      && (this.isBusy(s) || s.activating !== undefined || agent.hasBackgroundWork?.(s.meta.backendId) === true));
+  }
+
+  /** Reopen chats a client is viewing so their model pickers show the updated adapter's catalog. */
+  async reopenViewed(agentId: string): Promise<void> {
+    for (const s of [...this.sessions.values()]) {
+      if (s.meta.agentId !== agentId || s.meta.connection === "desktop" || !s.subscribers.size || this.isBusy(s)) continue;
+      try { await this.ensureActive(s); }
+      catch (error) { log.warn(`could not reopen ${s.id} after an adapter update: ${(error as Error).message}`); }
+    }
+  }
+
   private snapshot(s: BridgeSession): ActivitySnapshot {
     const native = s.desktop?.turnId ? s.desktop : undefined;
     const disconnected = native?.connected === false;

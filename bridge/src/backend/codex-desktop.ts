@@ -50,7 +50,7 @@ export class CodexDesktopBackend implements AgentBackend {
   private recoveryTimer?: NodeJS.Timeout;
   private recoveryDelay = MIN_RECOVERY_DELAY_MS;
 
-  constructor(readonly id: string, readonly config: AgentConfig, private readonly handlers: AgentHandlers, logDir: string, startTimeoutMs?: number) {
+  constructor(readonly id: string, public config: AgentConfig, private readonly handlers: AgentHandlers, logDir: string, startTimeoutMs?: number) {
     this.acp = new AgentProcess(id, config, handlers, logDir, startTimeoutMs);
     this.ipc = new CodexDesktopIpc(typeof config.desktopSync === "object" ? config.desktopSync : {});
     // A reboot leaves the owner absent until Codex Desktop is opened; reopen
@@ -619,6 +619,13 @@ export class CodexDesktopBackend implements AgentBackend {
       }
     }, delay);
     this.recoveryTimer.unref();
+  }
+
+  /** Only the ACP fallback process is replaced; linked desktop conversations stay attached. */
+  async retarget(config: AgentConfig): Promise<boolean> {
+    if (!await this.acp.retarget(config)) return false;
+    this.config = config;
+    return true;
   }
 
   async stop(reason?: string): Promise<void> {

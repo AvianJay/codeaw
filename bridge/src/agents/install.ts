@@ -205,7 +205,10 @@ export function registerInstalledAgent(file: string, installed: InstalledAgent):
     // Installing an ACP adapter over a CLI configuration must change transport too.
     if (installed.config.transport) doc.setIn(["agents", installed.id, "transport"], installed.config.transport);
     else doc.deleteIn(["agents", installed.id, "transport"]);
-    if (!existing.cwd && installed.config.cwd) doc.setIn(["agents", installed.id, "cwd"], installed.config.cwd);
+    // A cwd inside a previous managed installation must follow the update; a custom cwd is kept.
+    const managedCwd = !!existing.cwd && isInside(path.join(current.home, "agents"), path.resolve(existing.cwd));
+    if (installed.config.cwd && (!existing.cwd || managedCwd)) doc.setIn(["agents", installed.id, "cwd"], installed.config.cwd);
+    else if (!installed.config.cwd && managedCwd) doc.deleteIn(["agents", installed.id, "cwd"]);
     for (const [key, value] of Object.entries(installed.config.env)) {
       if (!Object.hasOwn(existing.env, key)) doc.setIn(["agents", installed.id, "env", key], value);
     }

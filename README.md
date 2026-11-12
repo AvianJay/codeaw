@@ -104,6 +104,7 @@ Windows 背景 bridge、系統匣與登入啟動由附帶的 `codeaw-launcher.ex
 | `agents.<id>.geminiEnvFile` | 選擇讓 bridge 讀取 CC Switch 的 Gemini `.env`，只匯入 key、endpoint、預設 model |
 | `notifications.ntfy` | 推播設定，見下方 |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
+| `autoUpdateAgents` | 預設 `true`；每天自動更新由 Codeaw 安裝的 ACP adapter，取得新模型。設為 `false` 關閉 |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
@@ -137,10 +138,13 @@ codeaw-bridge agents install claude-acp
 codeaw-bridge agents install codex-acp
 codeaw-bridge agents install kimi
 codeaw-bridge agents install antigravity-acp
+codeaw-bridge agents update   # 立即檢查 ACP adapter 更新（平常每天自動檢查）
 codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；會中止執行中的回合
 ```
 
 agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式；Hermes Agent 目前不在 ACP registry，請依下方指引安裝。
+
+**每日自動更新（新模型）**：新模型通常隨 adapter 新版發佈。bridge 執行時，啟動約 2 分鐘後與之後每天（本機日期）檢查一次 ACP registry，自動更新所有由 Codeaw 安裝在 `agents/` 的 ACP adapter（含停用中的），不更動自行安裝的 adapter、AGY 等原生傳輸與 Codex Desktop。新版本先安裝到新目錄，並完成一次 ACP initialize 才寫入設定；失敗時保留原版本，每小時重試。執行中的 agent 等到它的所有對話都沒有進行中的回合、權限詢問、排隊訊息或背景工作時，才單獨切換到新版本，不重啟 bridge、不中斷終端機或遠端桌面；手機正在看的對話會自動重新開啟，模型選單即顯示新清單。保留目前與前一版安裝，更舊且超過一天未用的版本會自動刪除。狀態記錄在 `agent-updates.json`。
 
 macOS 的 npm 安裝器會先檢查 Node.js／npm；若缺少或損壞，會下載官方 Node 24、驗證 SHA-256，放在設定旁的 `runtime/node/`，不更動 Homebrew 或系統 Node。新設定只列出真正找到的 ACP 執行檔，不再自動加入未安裝的 Claude。
 

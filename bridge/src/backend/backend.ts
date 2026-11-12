@@ -25,6 +25,8 @@ export interface AgentBackend {
   sessionConnected?(sessionId: string): boolean;
   /** The session still runs work that a turn left in the background, such as a Claude workflow. */
   hasBackgroundWork?(sessionId: string): boolean;
+  /** Use an updated ACP installation from the next launch, stopping the idle process first. */
+  retarget?(config: AgentConfig): Promise<boolean>;
   /** A send failed because the desktop app does not own this chat; reopen it there. */
   reopenForSend?(sessionId: string): void;
 }
