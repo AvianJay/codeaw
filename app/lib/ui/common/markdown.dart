@@ -5,11 +5,64 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/bridge_client.dart';
 import 'code_view.dart';
+import 'link_text.dart';
 import 'markdown_blocks.dart';
 import 'markdown_details.dart';
 import 'markdown_image.dart';
 import 'markdown_link.dart';
 import 'markdown_visualization.dart';
+
+/// Replaces the system launcher in tests.
+@visibleForTesting
+Future<bool> Function(Uri uri)? debugLinkLauncher;
+
+/// Schemes handed to the system; anything else must resolve to a bridge file.
+const _external = {'http', 'https', 'mailto', 'tel', 'sms'};
+
+/// Opens a link from a message: web and contact links in the system, file
+/// links in the bridge file viewer. Says so when it cannot.
+Future<void> openLink(
+  BuildContext context,
+  String url, {
+  BridgeClient? client,
+  String? basePath,
+}) async {
+  url = linkTarget(url);
+  // A bare host is a web address, as the autolinker already treats it.
+  if (RegExp(r'^www\.[^\s/]+\.[^\s/]+', caseSensitive: false).hasMatch(url)) {
+    url = 'https://$url';
+  }
+  final uri = Uri.tryParse(url);
+  if (uri != null && _external.contains(uri.scheme.toLowerCase())) {
+    try {
+      final launch =
+          debugLinkLauncher ??
+          (Uri uri) => launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (await launch(uri)) return;
+    } catch (_) {
+      // No handler for this scheme on the device.
+    }
+  } else {
+    final file = markdownFileLink(url, basePath: basePath);
+    if (file != null && client != null) {
+      context.push(
+        Uri(
+          path: '/file',
+          queryParameters: {
+            'path': file.path,
+            if (file.line != null) 'line': '${file.line}',
+          },
+        ).toString(),
+      );
+      return;
+    }
+  }
+  if (context.mounted) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('無法開啟這個連結')));
+  }
+}
 
 /// Agent markdown. `streaming` keeps unfinished code fences cheap while tokens arrive.
 class Markdown extends StatelessWidget {
@@ -86,32 +139,6 @@ class _MarkdownText extends StatelessWidget {
   final bool streaming;
   final TextStyle? style;
 
-  Future<void> _openLink(BuildContext context, String url) async {
-    final uri = Uri.tryParse(url);
-    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-      if (await launchUrl(uri, mode: LaunchMode.externalApplication)) return;
-    } else {
-      final file = markdownFileLink(url, basePath: basePath);
-      if (file != null && client != null) {
-        context.push(
-          Uri(
-            path: '/file',
-            queryParameters: {
-              'path': file.path,
-              if (file.line != null) 'line': '${file.line}',
-            },
-          ).toString(),
-        );
-        return;
-      }
-    }
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('無法開啟這個連結')));
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return GptMarkdown(
@@ -133,7 +160,8 @@ class _MarkdownText extends StatelessWidget {
         fontFamily: 'monospace',
         fontFamilyFallback: ['Roboto Mono', 'Noto Sans Mono'],
       ),
-      onLinkTap: (url, title) => _openLink(context, url),
+      onLinkTap: (url, title) =>
+          openLink(context, url, client: client, basePath: basePath),
       codeBuilder: (context, name, code, closed) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: CodeBlock(

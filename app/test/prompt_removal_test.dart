@@ -185,6 +185,10 @@ void main() {
       final m = controller.timeline.items.whereType<MessageItem>().single;
       client.processing = true;
       expect(await controller.removePrompt(m), isFalse);
+      // Told once that it is being processed, the message stops offering removal.
+      expect(m.receipt, 'read');
+      expect(m.canRemovePending, isFalse);
+      m.receipt = 'unknown';
       client.oldBridge = true;
       expect(await controller.removePrompt(m), isFalse);
       expect(m.removed, isFalse);

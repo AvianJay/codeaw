@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -14,6 +15,7 @@ import '../../data/tool_display.dart';
 import '../../util/diff.dart';
 import '../common/code_view.dart';
 import '../common/diff_view.dart';
+import '../common/link_text.dart';
 import '../common/markdown.dart';
 import '../common/image_preview.dart';
 import '../common/markdown_image.dart';
@@ -213,15 +215,37 @@ class _MessageReceipt extends StatelessWidget {
 }
 
 /// Text and file mentions flow as one paragraph; images and other blocks stand alone.
-class _UserParts extends StatelessWidget {
+class _UserParts extends StatefulWidget {
   const _UserParts(this.parts);
   final List<Map<String, dynamic>> parts;
 
   @override
+  State<_UserParts> createState() => _UserPartsState();
+}
+
+class _UserPartsState extends State<_UserParts> {
+  final _taps = <TapGestureRecognizer>[];
+
+  void _releaseTaps() {
+    for (final tap in _taps) {
+      tap.dispose();
+    }
+    _taps.clear();
+  }
+
+  @override
+  void dispose() {
+    _releaseTaps();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final parts = widget.parts;
     final children = <Widget>[];
     var spans = <InlineSpan>[];
+    _releaseTaps();
     void paragraph() {
       if (spans.isEmpty) return;
       children.add(Text.rich(TextSpan(children: spans), style: TextStyle(color: scheme.onPrimaryContainer, height: 1.35)));
@@ -231,7 +255,28 @@ class _UserParts extends StatelessWidget {
     for (final part in parts) {
       switch (part['type']) {
         case 'text':
-          spans.add(TextSpan(text: part['text'] as String? ?? ''));
+          // A prompt stays as typed, but a web link in it — pasted, or written as [label](url) — opens.
+          for (final run in linkRuns(part['text'] as String? ?? '')) {
+            final url = run.url;
+            if (url == null) {
+              spans.add(TextSpan(text: run.text));
+              continue;
+            }
+            final tap = TapGestureRecognizer()..onTap = () => openLink(context, url);
+            _taps.add(tap);
+            spans.add(TextSpan(
+              text: run.text,
+              recognizer: tap,
+              mouseCursor: SystemMouseCursors.click,
+              semanticsLabel: run.text == url ? null : '${run.text}，連結',
+              style: TextStyle(
+                color: scheme.primary,
+                fontWeight: FontWeight.w600,
+                decoration: TextDecoration.underline,
+                decorationColor: scheme.primary,
+              ),
+            ));
+          }
         case 'resource_link':
           spans.add(WidgetSpan(alignment: PlaceholderAlignment.middle, child: MentionChip(part)));
         case 'image':

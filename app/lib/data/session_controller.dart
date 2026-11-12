@@ -780,6 +780,13 @@ class SessionController extends ChangeNotifier {
               })
               as Map;
       if (response['removed'] != true) {
+        // The receipt that says so was missed (sent while reconnecting); take the
+        // bridge's word now, or the button stays and fails on every press.
+        timeline.apply('_codeaw/event', {
+          'event': {'type': 'prompt_receipt', 'promptId': id, 'status': 'read'},
+        });
+        timeline.flush();
+        _scheduleSave();
         _toast('這則訊息已開始處理，無法取消待送');
         return false;
       }
