@@ -1,7 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { CODEX_APP_ID, CodexDesktopLauncher, codexThreadUri, isLaunchableConversation, setDesktopOpenerForTest, type DesktopLauncherOptions } from "../src/backend/codex-desktop-launcher.js";
-
-afterEach(() => setDesktopOpenerForTest(undefined));
+import { describe, expect, it } from "vitest";
+import { CODEX_APP_ID, CodexDesktopLauncher, codexThreadUri, isLaunchableConversation, type DesktopLauncherOptions } from "../src/backend/codex-desktop-launcher.js";
 
 const opened: string[] = [];
 

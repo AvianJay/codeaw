@@ -3,12 +3,12 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CodexDesktopIpc, DesktopIpcFrameDecoder, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { desktopConfigOptions, desktopSettingsPatch } from "../src/backend/codex-desktop-settings.js";
-import { setDesktopOpenerForTest } from "../src/backend/codex-desktop-launcher.js";
+import { CodexDesktopLauncher } from "../src/backend/codex-desktop-launcher.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
@@ -168,11 +168,15 @@ class DesktopPeer {
 let desktop: DesktopPeer | undefined;
 let bridge: TestBridge | undefined;
 const clients: TestClient[] = [];
+beforeEach(() => {
+  // Exercise the recovery path on every platform without opening a real desktop app.
+  vi.spyOn(CodexDesktopLauncher.prototype, "resume").mockReturnValue(true);
+});
 afterEach(async () => {
   for (const client of clients.splice(0)) client.close();
   await bridge?.stop(); bridge = undefined;
   await desktop?.stop(); desktop = undefined;
-  setDesktopOpenerForTest(undefined);
+  vi.restoreAllMocks();
 });
 
 async function setup(timeoutMs = 1000): Promise<{ a: TestClient; desktop: DesktopPeer; bridge: TestBridge }> {
@@ -640,6 +644,9 @@ describe("Codex desktop synchronization", () => {
       expect(b.events(nativeId, "prompt_receipt").some((r) => r.event.promptId === promptId)).toBe(false);
       expect(desktop.requests.filter((r) => r.method === "thread-follower-start-turn")).toHaveLength(0);
       expect(fs.existsSync(path.join(home, "fake-state.json"))).toBe(false);
+      // The desktop process is already running; it returned `no-client-found`
+      // for this thread. Reopen the thread rather than waiting for the user.
+      expect(CodexDesktopLauncher.prototype.resume).toHaveBeenCalledWith(desktop.id);
       // The owner's latest settings win over the bridge's saved settings.
       desktop.conversation.latestThreadSettings.sandboxPolicy = { type: "readOnly" };
       desktop.available = true;
@@ -689,9 +696,8 @@ describe("Codex desktop synchronization", () => {
     }
   });
 
-  it("asks Windows to reopen the chat automatically when the IPC pipe is absent", async () => {
-    const opened: string[] = [];
-    setDesktopOpenerForTest((target) => { opened.push(target); return true; });
+  it("asks the launcher to reopen the chat automatically when the IPC pipe is absent", async () => {
+    const reopen = vi.mocked(CodexDesktopLauncher.prototype.resume);
     const { a, desktop, bridge: first } = await setup(); await load(a);
     const home = first.home, config = first.loaded;
     a.close(); clients.splice(clients.indexOf(a), 1);
@@ -705,8 +711,8 @@ describe("Codex desktop synchronization", () => {
       const b = await TestClient.connect(`ws://127.0.0.1:${restarted.port()}/acp`, first.tokenFor("phone")); clients.push(b);
       await b.request("session/load", { sessionId: nativeId, cwd: home, mcpServers: [] });
       // The bridge reopens that specific conversation instead of waiting for a human.
-      await b.waitFor(() => opened.length > 0, 4000);
-      expect(opened).toContain(`codex://threads/${desktop.id}`);
+      await b.waitFor(() => reopen.mock.calls.length > 0, 4000);
+      expect(reopen).toHaveBeenCalledWith(desktop.id);
     } finally {
       await restarted.stop();
       if (path.dirname(home) !== path.resolve(os.tmpdir()) || !path.basename(home).startsWith("codeaw-test-")) throw new Error("Invalid test cleanup directory");

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "smol-toml";
-import type * as acp from "@agentclientprotocol/sdk";
+import * as acp from "@agentclientprotocol/sdk";
 import type { AgentBackend } from "../src/backend/backend.js";
 import type { AgentRegistry } from "../src/backend/registry.js";
 import { patchCodexDefaults } from "../src/backend/codex-defaults.js";
@@ -57,7 +57,9 @@ function fixture(id = "codex") {
         if (params.configId === "model") {
           if (rejectModel) throw new Error("Model unavailable");
           // A retired model is rejected exactly like a real adapter: -32602 Invalid params.
-          if (!liveModels.includes(params.value)) throw new Error(`Invalid params: Invalid value for config option model: ${params.value}`);
+          if (!liveModels.includes(params.value) && params.value !== "gpt-6.1-terra") {
+            throw acp.RequestError.invalidParams({ details: `Invalid value for config option model: ${params.value}` });
+          }
           if (!ignoreModel) { s.model = params.value; s.reasoning_effort = s.model === "cheap" ? "low" : "ultra"; }
         } else {
           if (params.configId === "reasoning_effort" && s.model === "cheap" && params.value !== "low") throw new Error("Unsupported effort");
@@ -105,6 +107,19 @@ describe("Codex defaults and session restoration", () => {
     expect(f.calls.some((c) => c.method === "session/prompt")).toBe(false);
   });
 
+  it("applies and restores a custom model even if the catalog does not list it", async () => {
+    const f = fixture(), m = f.manager();
+    const chat = await m.newSession(f.client, {
+      cwd: f.home, mcpServers: [], _meta: { codeaw: { initialConfig: { model: "gpt-6.1-terra" } } },
+    });
+    expect(value(chat, "model")).toBe("gpt-6.1-terra");
+    await m.shutdown();
+    const reopened = f.manager();
+    await reopened.loadSession(f.client, { sessionId: chat.sessionId, cwd: f.home, mcpServers: [] });
+    await f.send(reopened, chat.sessionId);
+    expect(f.state.get("s1")?.model).toBe("gpt-6.1-terra");
+  });
+
   it("restores a cached chat's own settings before its first send, without changing newer defaults", async () => {
     const f = fixture(), m = f.manager(), chat = await f.newChat(m);
     await f.select(m, chat.sessionId, "model", "cheap");
@@ -150,7 +165,7 @@ describe("Codex defaults and session restoration", () => {
     await f.send(reopened, chat.sessionId);
     const after = f.calls.slice(at);
     expect(after.some((c) => c.method === "session/prompt")).toBe(true);
-    expect(after.some((c) => c.method === "session/set_config_option" && c.params.value === "cheap")).toBe(false);
+    expect(after.some((c) => c.method === "session/set_config_option" && c.params.value === "cheap")).toBe(true);
     expect(value(f.store.readMeta(chat.sessionId), "model")).toBe("expensive");
     const notice = f.store.readEntries(chat.sessionId).find((e) => e.kind === "update" && (e.update as any).sessionUpdate === "notice") as any;
     expect([notice?.update?.title, notice?.update?.description]).toEqual(['Model "cheap" is no longer available.', "Using expensive instead. Change it from the composer when you are ready."]);

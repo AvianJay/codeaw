@@ -142,10 +142,18 @@ function configOrder(option: { id: string; category?: string | null }): number {
   return option.category === "model" || option.id === "model" ? 0 : option.category === "thought_level" || option.id === "reasoning_effort" ? 2 : 1;
 }
 
-/** True when the agent lists values for this option and none of them is the saved one. */
-function valueRetired(option: { type?: string; options?: unknown[] | null; currentValue?: unknown }, wanted: unknown): boolean {
-  if (option.type !== "select" || !Array.isArray(option.options) || option.options.length === 0) return false;
-  return !option.options.some((candidate: any) => candidate?.value !== undefined && sameJson(candidate.value, wanted));
+function selectValues(option?: { options?: unknown[] | null }): { value: unknown; name?: string }[] {
+  if (!Array.isArray(option?.options)) return [];
+  return option.options.flatMap((choice: any) => Array.isArray(choice?.options) ? choice.options : [choice])
+    .filter((choice) => choice?.value !== undefined);
+}
+
+/** A catalog can omit valid custom models. Fall back only after a definite rejection. */
+function valueRetired(option: acp.SessionConfigOption | undefined, wanted: unknown, error: unknown): boolean {
+  if (!option || option.type !== "select" || configOrder(option) === 1 || !(error instanceof acp.RequestError) || error.code !== -32602) return false;
+  const values = selectValues(option);
+  return values.length > 0 && !values.some((candidate) => sameJson(candidate.value, wanted)) &&
+    errorMessage(error).toLowerCase().includes(`invalid value for config option ${option.id.toLowerCase()}:`);
 }
 
 function optionName(option: { id?: string; name?: string | null } | undefined, id: string): string {
@@ -1160,22 +1168,24 @@ export class SessionManager implements AgentHandlers {
     s.backendGen = agent.generation;
     this.applySetup(s, resp);
     this.flushOrphans(s);
-    const initial = { ...defaults, ...(m.initialConfig && typeof m.initialConfig === "object" ? (m.initialConfig as Record<string, unknown>) : {}) };
-    const initialOptions = Object.entries(initial).sort(([a], [b]) => configOrder({ id: a }) - configOrder({ id: b }));
+    const explicit = m.initialConfig && typeof m.initialConfig === "object" ? m.initialConfig as Record<string, unknown> : {};
+    const initialOptions = Object.entries({ ...defaults, ...explicit }).sort(([a], [b]) => configOrder({ id: a }) - configOrder({ id: b }));
+    const retired = new Set<string>();
     try {
       for (const [configId, value] of initialOptions) {
-        const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
-        // A default the agent has since renamed or retired must not make every
-        // new chat fail; keep the agent's own value and say what changed.
-        if (current && valueRetired(current, value)) {
-          this.retiredSettingNotice(s, { id: configId, currentValue: value, options: (current.options ?? []) }, current);
-          continue;
+        const current = s.meta.configOptions?.find((o) => o.id === configId);
+        if (current && sameJson(current.currentValue, value)) continue;
+        try { await this.applyConfigOption(s, agent, configId, value); }
+        catch (error) {
+          // An explicit request is never silently changed, including a custom model.
+          if (Object.hasOwn(explicit, configId) || !valueRetired(current, value, error)) throw error;
+          retired.add(configId);
+          this.retiredSettingNotice(s, { id: configId, currentValue: value }, current);
         }
-        if (!current || !sameJson(current.currentValue, value)) await this.applyConfigOption(s, agent, configId, value);
       }
       for (const [configId, value] of initialOptions) {
-        const current = s.meta.configOptions?.find((o: any) => o.id === configId) as any;
-        if (valueRetired(current, value)) continue;
+        if (retired.has(configId)) continue;
+        const current = s.meta.configOptions?.find((o) => o.id === configId);
         if (!current || !sameJson(current.currentValue, value)) throw new Error(`Unconfirmed ${configId}`);
       }
     } catch (err) {
@@ -1558,36 +1568,34 @@ export class SessionManager implements AgentHandlers {
     // Models can change the available effort levels; always restore the model first.
     const options = [...(source.configOptions ?? [])] as any[];
     options.sort((a, b) => configOrder(a) - configOrder(b));
+    const confirmed: typeof options = [];
     for (const wanted of options) {
       if (wanted.type !== "select" && wanted.type !== "boolean") continue;
-      const current = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
-      if (current && sameJson(current.currentValue, wanted.currentValue)) continue;
-      // Agents rename and retire models/settings constantly. A saved value the
-      // agent no longer offers must not block every send forever; keep the
-      // agent's own current value and tell the user which one changed.
-      if (!current || current.type !== wanted.type || valueRetired(current, wanted.currentValue)) {
-        this.retiredSettingNotice(fork, wanted, current);
-        continue;
-      }
+      const current = fork.meta.configOptions?.find((o) => o.id === wanted.id);
       try {
-        await this.applyConfigOption(fork, agent, wanted.id, wanted.currentValue);
-        const applied = fork.meta.configOptions?.find((o: any) => o.id === wanted.id) as any;
-        if (!sameJson(applied?.currentValue, wanted.currentValue)) throw new Error("Agent did not confirm the setting");
-      } catch (err) {
+        if (!current || current.type !== wanted.type) throw new Error("Setting is no longer available");
+        if (!sameJson(current.currentValue, wanted.currentValue)) {
+          await this.applyConfigOption(fork, agent, wanted.id, wanted.currentValue);
+        }
+        confirmed.push(wanted);
+      } catch (error) {
+        // Only fall back from a retired model/effort, never a permission mode,
+        // transient error or an unconfirmed change.
+        if (valueRetired(current, wanted.currentValue, error)) {
+          this.retiredSettingNotice(fork, wanted, current);
+          continue;
+        }
         throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent. Choose the setting again before retrying`);
+      }
+    }
+    for (const wanted of confirmed) {
+      const current = fork.meta.configOptions?.find((o) => o.id === wanted.id);
+      if (!current || !sameJson(current.currentValue, wanted.currentValue)) {
+        throw acp.RequestError.invalidRequest(undefined, `Could not restore ${wanted.id}; no message was sent`);
       }
     }
     const mode = source.modes?.currentModeId;
     if (!mode || !fork.meta.modes || fork.meta.modes.currentModeId === mode || modeOf(fork.meta) === mode) return;
-    const retiredMode = fork.meta.modes.availableModes?.length
-      ? !fork.meta.modes.availableModes.some((m) => m.id === mode)
-      : false;
-    if (retiredMode) {
-      const current = fork.meta.modes.availableModes?.find((m) => m.id === fork.meta.modes?.currentModeId);
-      this.appendNotice(fork, "warning", `${mode} is no longer available.`,
-        `${current?.name ?? fork.meta.modes.currentModeId ?? "The current mode"} will be used instead.`);
-      return;
-    }
     try {
       await agent.request("session/set_mode", { sessionId: fork.meta.backendId, modeId: mode });
       this.applySetup(fork, { modes: { ...fork.meta.modes, currentModeId: mode } });
@@ -1599,8 +1607,8 @@ export class SessionManager implements AgentHandlers {
   /** One advisory line when a saved setting no longer exists, instead of a blocked chat. */
   private retiredSettingNotice(fork: BridgeSession, wanted: any, current: any): void {
     const label = optionName(current ?? wanted, wanted.id);
-    const wantedLabel = (wanted.options ?? []).find((o: any) => sameJson(o?.value, wanted.currentValue))?.name ?? String(wanted.currentValue);
-    const kept = (current?.options ?? []).find((o: any) => sameJson(o?.value, current?.currentValue))?.name ?? (current?.currentValue !== undefined ? String(current.currentValue) : undefined);
+    const wantedLabel = selectValues(wanted).find((o) => sameJson(o.value, wanted.currentValue))?.name ?? String(wanted.currentValue);
+    const kept = selectValues(current).find((o) => sameJson(o.value, current?.currentValue))?.name ?? (current?.currentValue !== undefined ? String(current.currentValue) : undefined);
     this.appendNotice(fork, "warning",
       current ? `${label} "${wantedLabel}" is no longer available.` : `${label} is no longer available.`,
       kept ? `Using ${kept} instead. Change it from the composer when you are ready.` : "Using the agent's current setting instead.");

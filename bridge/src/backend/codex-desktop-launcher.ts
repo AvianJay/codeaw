@@ -18,15 +18,6 @@ export function isLaunchableConversation(id: string): boolean {
   return /^[A-Za-z0-9._-]{1,128}$/.test(id);
 }
 
-/**
- * Test seam: replaces the OS opener so tests can assert what a resume would
- * open without starting the real application on the machine.
- */
-let osOpener: ((target: string) => Promise<boolean> | boolean) | undefined;
-export function setDesktopOpenerForTest(opener?: (target: string) => Promise<boolean> | boolean): void {
-  osOpener = opener;
-}
-
 export interface DesktopLauncherOptions {
   /** Ignore repeat requests for the same chat within this window (ms). */
   cooldownMs?: number;
@@ -55,7 +46,7 @@ export class CodexDesktopLauncher {
     this.cooldownMs = options.cooldownMs ?? 60000;
     this.platform = options.platform ?? process.platform;
     this.disabled = options.enabled === false;
-    this.opener = options.open ?? ((target) => (osOpener ?? ((t: string) => openWithShell(t, this.platform)))(target));
+    this.opener = options.open ?? ((target) => openWithShell(target));
   }
 
   get available(): boolean {
@@ -79,19 +70,14 @@ export class CodexDesktopLauncher {
 }
 
 /** Start the app / open a deep link through the OS, detached from the bridge. */
-function openWithShell(target: string, platform: NodeJS.Platform): Promise<boolean> {
-  return new Promise((resolve) => {
-    try {
-      const [command, args] = platform === "win32"
-        ? ["cmd.exe", ["/c", "start", "", target]]
-        : platform === "darwin"
-          ? ["open", [target]]
-          : ["xdg-open", [target]];
-      const child = spawn(command, args, { windowsHide: true, detached: true, stdio: "ignore" });
-      child.on("error", () => resolve(false));
-      child.on("spawn", () => { child.unref(); resolve(true); });
-    } catch {
-      resolve(false);
-    }
-  });
+function openWithShell(target: string): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    const child = spawn("cmd.exe", ["/d", "/c", "start", "", target], {
+      windowsHide: true, detached: true, stdio: "ignore",
+    });
+    child.once("error", () => resolve(false));
+    // The shell can start successfully but fail to hand off an unregistered URI.
+    child.once("exit", (code) => resolve(code === 0));
+    child.unref();
+  }).catch(() => false);
 }

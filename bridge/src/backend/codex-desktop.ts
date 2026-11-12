@@ -49,7 +49,7 @@ export class CodexDesktopBackend implements AgentBackend {
     this.ipc = new CodexDesktopIpc(typeof config.desktopSync === "object" ? config.desktopSync : {});
     // A reboot leaves the owner absent until Codex Desktop is opened; reopen
     // the chat automatically instead of making the user remote in and do it.
-    this.launcher = new CodexDesktopLauncher({ enabled: (config.desktopSync as any)?.autoLaunch !== false });
+    this.launcher = new CodexDesktopLauncher({ enabled: typeof config.desktopSync !== "object" || config.desktopSync.autoLaunch !== false });
     const codexHome = (typeof config.desktopSync === "object" ? config.desktopSync.codexHome : undefined) ?? config.env?.CODEX_HOME;
     this.children = new CodexChildTranscripts(codexHome ? () => codexHome : undefined);
     this.ipc.on("message", (message) => this.onMessage(message));
@@ -206,11 +206,17 @@ export class CodexDesktopBackend implements AgentBackend {
           throw error;
         }
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
-        const owner = await this.ipc.request("thread-owner-discovery", { hostId: "local", conversationId: session.id });
+        const owner = await this.ipc.request("thread-owner-discovery", { hostId: "local", conversationId: session.id }, {
+          // The desktop router waits up to 10 seconds before reporting no owner.
+          timeoutMs: Math.max(12_000, this.ipc.options.timeoutMs ?? 0),
+        }).catch((error: unknown) => {
+          if (error instanceof DesktopIpcRequestError && error.response.error === "no-client-found") return undefined;
+          throw error;
+        });
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
-        if (!owner.handledByClientId) {
-          // After a reboot (or when the user closed the app) no client owns the
-          // thread. Ask Windows to reopen this conversation so it can resume.
+        if (!owner?.handledByClientId) {
+          // Desktop can be running without this thread open. Reopen this thread
+          // without creating a new session or resubmitting any prompt.
           this.launcher.resume(session.id);
           throw new Error("Codex desktop session owner is unavailable");
         }
