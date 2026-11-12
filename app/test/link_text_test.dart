@@ -59,6 +59,8 @@ void main() {
     );
     expect(only('[t](https://example.com "Title")'), 'https://example.com');
     expect(only('**https://example.com/b**'), 'https://example.com/b');
+    expect(only('or www.example.com/h.'), 'https://www.example.com/h');
+    expect(linkRuns('mail a@www.example.com or awww.x.y').every((run) => run.url == null), isTrue);
     for (final plain in ['no links', 'a [b] (c)', 'http:// nothing', 'x[1](2)']) {
       expect(linkRuns(plain), [(text: plain, url: null)], reason: plain);
     }

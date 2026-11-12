@@ -4,7 +4,7 @@ typedef LinkRun = ({String text, String? url});
 final _links = RegExp(
   // [label](https://…) with one level of parentheses in the target, or a bare URL.
   r'\[([^\[\]\n]+)\]\(\s*<?(https?://[^\s()<>]+(?:\([^\s()<>]*\)[^\s()<>]*)*)>?(?:\s+"[^"\n]*")?\s*\)'
-  r'''|https?://[^\s<>"'`，。、；：！？「」『』（）【】《》]+''',
+  r'''|(?:https?://|(?<![\w@./-])www\.(?=[^\s/]+\.))[^\s<>"'`，。、；：！？「」『』（）【】《》]+''',
   caseSensitive: false,
 );
 
@@ -38,9 +38,11 @@ List<LinkRun> linkRuns(String text) {
         break;
       }
     }
-    if (Uri.tryParse(url)?.host.isEmpty ?? true) continue;
+    // A bare host is a web address, as in an agent's reply.
+    final target = url.toLowerCase().startsWith('www.') ? 'https://$url' : url;
+    if (Uri.tryParse(target)?.host.isEmpty ?? true) continue;
     plain(match.start);
-    runs.add((text: url, url: url));
+    runs.add((text: url, url: target));
     from = match.start + url.length;
   }
   plain(text.length);

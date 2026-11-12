@@ -51,11 +51,48 @@ McpToolRef? mcpToolOf({String? title, String? name, Object? rawInput, Object? me
   return null;
 }
 
+final _shellWrapper = RegExp(
+  r'''^\s*(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s+-(?!c\b|lc\b|Command\b)[A-Za-z]+(?:\s+(?:Bypass|RemoteSigned|Unrestricted|Hidden))?)*\s+(?:-Command|-c|-lc|/c)\s+([\s\S]+)$''',
+  caseSensitive: false,
+);
+const _shells = {'pwsh', 'powershell', 'bash', 'sh', 'zsh', 'cmd'};
+
+/// The command an agent ran, without the shell it was handed to.
+///
+/// Codex reports `"C:\\…\\pwsh.exe" -Command '<what it ran>'`; the launcher
+/// path fills the whole line and says nothing. Anything else is returned as is.
+String shellCommand(String command) {
+  final match = _shellWrapper.firstMatch(command);
+  if (match == null) return command;
+  final shell = match.group(1) ?? match.group(2) ?? match.group(3)!;
+  var name = shell.split(RegExp(r'[\\/]')).last.toLowerCase();
+  if (name.endsWith('.exe')) name = name.substring(0, name.length - 4);
+  if (!_shells.contains(name)) return command;
+  var inner = match.group(4)!.trim();
+  if (inner.length >= 2) {
+    final quote = inner[0];
+    final body = inner.substring(1, inner.length - 1);
+    if (quote == "'" && inner.endsWith("'") && !body.replaceAll("''", '').contains("'")) {
+      inner = body.replaceAll("''", "'");
+    } else if (quote == '"' && inner.endsWith('"') && !body.replaceAll(r'\"', '').contains('"')) {
+      inner = body.replaceAll(r'\"', '"');
+    }
+  }
+  // The same escaping that doubled the launcher's backslashes doubled these.
+  if (shell.contains(r'\\')) inner = inner.replaceAll(r'\\', r'\');
+  return inner.isEmpty ? command : inner;
+}
+
 /// One line of tool title for lists, banners and progress text.
 String toolTitle({String? title, String? name, Object? rawInput, Object? metadata}) {
   final mcp = mcpToolOf(title: title, name: name, rawInput: rawInput, metadata: metadata);
-  return argumentTitle(mcp?.arguments ?? objectMap(rawInput)) ?? mcp?.label ?? nonEmptyString(title) ?? nonEmptyString(name) ?? '工具';
+  final shown = nonEmptyString(title);
+  return argumentTitle(mcp?.arguments ?? objectMap(rawInput)) ?? mcp?.label ?? (shown == null ? null : shellCommand(shown)) ?? nonEmptyString(name) ?? '工具';
 }
+
+/// What a shell command is for, when the agent said so alongside it (Claude Code's `description`).
+String? commandPurpose(Map<dynamic, dynamic> arguments) =>
+    arguments['command'] == null ? null : nonEmptyString(arguments['description'])?.replaceAll(RegExp(r'\s+'), ' ');
 
 /// Some tools include a readable title in the call's JSON arguments.
 String? argumentTitle(Map<dynamic, dynamic> arguments) => nonEmptyString(arguments['title'])?.replaceAll(RegExp(r'\s+'), ' ');

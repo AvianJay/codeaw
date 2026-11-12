@@ -502,25 +502,27 @@ class _ToolCallCardState extends State<ToolCallCard> {
     final exit = t.exitCode;
     final mcp = t.mcp;
     final arguments = mcp?.arguments ?? objectMap(t.rawInput);
-    final inputTitle = argumentTitle(arguments);
+    final command = mcp == null && (t.kind == 'execute' || arguments['command'] != null);
+    final inputTitle = argumentTitle(arguments) ?? (command ? commandPurpose(arguments) : null);
     final sourceTitle = toolTitle(title: t.title, name: t.name, metadata: t.meta);
     final summary = open || !t.bareTitle ? null : argumentSummary({
       for (final entry in arguments.entries)
         if (inputTitle == null || entry.key != 'title') entry.key: entry.value,
     });
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+      // Runs of calls read as one quiet stack: a fill, no outline per row.
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Material(
-        color: scheme.surfaceContainerLow,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5))),
+        color: open ? scheme.surfaceContainer : scheme.surfaceContainerLow,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
         clipBehavior: Clip.antiAlias,
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           InkWell(
             onTap: () => setState(() => _open = !open),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(children: [
-                Icon(mcp != null ? Icons.extension_outlined : toolIcon(t.kind), size: 18, color: scheme.primary),
+                Icon(mcp != null ? Icons.extension_outlined : toolIcon(t.kind), size: 17, color: scheme.onSurfaceVariant),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -542,9 +544,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
                       maxLines: open ? 4 : 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
-                        fontSize: inputTitle == null ? 13.5 : 12,
-                        fontWeight: inputTitle == null ? FontWeight.w500 : FontWeight.normal,
+                        fontSize: inputTitle == null ? (command ? 12.5 : 13.5) : 12,
+                        fontWeight: inputTitle == null && !command ? FontWeight.w500 : FontWeight.normal,
                         color: inputTitle == null ? null : scheme.onSurfaceVariant,
+                        // A command is read character by character; prose is not.
+                        fontFamily: command ? 'monospace' : null,
+                        fontFamilyFallback: command ? const ['Roboto Mono', 'Noto Sans Mono'] : null,
                       ),
                     ),
                     if (summary != null)
@@ -634,7 +639,7 @@ class _ToolDetails extends StatelessWidget {
     }
     final inputOnly = children.length;
     if (showInput && input is Map && input['command'] != null) {
-      final cmd = input['command'] is List ? (input['command'] as List).join(' ') : '${input['command']}';
+      final cmd = shellCommand(input['command'] is List ? (input['command'] as List).join(' ') : '${input['command']}');
       children.add(CodeBlock(code: '\$ $cmd', language: 'bash', wrap: true));
     }
     if (t.terminalOutput.isNotEmpty) {
