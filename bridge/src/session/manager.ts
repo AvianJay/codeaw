@@ -51,6 +51,11 @@ interface Turn {
   promptId: string;
   startedAt: number;
   done: Promise<acp.PromptResponse>;
+  /** A Claude cycle started by a monitor, cron job or task notification. */
+  autonomous?: {
+    resolve: (result: acp.PromptResponse) => void;
+    reject: (error: Error) => void;
+  };
 }
 
 interface QueuedPrompt {
@@ -285,6 +290,10 @@ export class SessionManager implements AgentHandlers {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     for (const s of this.sessions.values()) {
       if (s.workTimer) clearTimeout(s.workTimer);
+      if (s.turn?.autonomous) {
+        s.turn.autonomous.reject(new Error("Bridge stopped"));
+        s.turn = undefined;
+      }
       for (const q of s.queue.splice(0)) {
         this.appendEvent(s, { type: "dequeued", promptId: q.promptId, cancelled: true });
         q.resolve({ stopReason: "cancelled" });
@@ -374,10 +383,50 @@ export class SessionManager implements AgentHandlers {
       return;
     }
     if (s.suppressUpdates) return;
-    if (s.meta.connection !== "desktop" && s.turn && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(params.update.sessionUpdate)) {
+    this.observeAutonomousTurn(s, params.update);
+    if (s.meta.connection !== "desktop" && s.turn && !s.turn.autonomous && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(params.update.sessionUpdate)) {
       this.receipt(s, s.turn.promptId, "read");
     }
     this.ingest(s, params.update);
+    // Claude emits cost only for the SDK's terminal result. Streaming usage,
+    // compaction and rate-limit updates have no cost and do not end a cycle.
+    const update = params.update as any;
+    if (s.turn?.autonomous && !parentToolCallId(update) && update.sessionUpdate === "usage_update" && typeof update.cost?.amount === "number") {
+      this.finishAutonomousTurn(s, "end_turn");
+      this.startNext(s);
+    }
+  }
+
+  private observeAutonomousTurn(s: BridgeSession, update: acp.SessionUpdate): void {
+    if (s.turn || s.meta.connection === "desktop" || parentToolCallId(update) || !this.registry.has(s.meta.agentId)) return;
+    const agent = this.requireAgent(s.meta.agentId);
+    const info = agent.describe().agentInfo as { name?: string } | undefined;
+    // Import/load replays arrive before the session is active in this process.
+    if (!s.backendGen || s.backendGen !== agent.generation || info?.name !== "@agentclientprotocol/claude-agent-acp") return;
+    const active = (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk")
+      ? update.content.type !== "text" || update.content.text.length > 0
+      : update.sessionUpdate === "tool_call" && (update.status === "pending" || update.status === "in_progress");
+    if (!active) return;
+    let resolve!: (result: acp.PromptResponse) => void;
+    let reject!: (error: Error) => void;
+    const done = new Promise<acp.PromptResponse>((res, rej) => { resolve = res; reject = rej; });
+    done.catch(() => undefined);
+    s.turn = { promptId: crypto.randomUUID(), startedAt: Date.now(), done, autonomous: { resolve, reject } };
+    s.work.reset();
+    s.completedTurn = undefined;
+    s.stopReason = undefined;
+    this.emitState(s);
+  }
+
+  private finishAutonomousTurn(s: BridgeSession, stopReason: "end_turn" | "cancelled" | "error"): void {
+    const turn = s.turn;
+    if (!turn?.autonomous) return;
+    s.turn = undefined;
+    const completedTurn = { promptId: turn.promptId, startedAt: turn.startedAt, endedAt: Date.now() };
+    this.emitState(s, stopReason, completedTurn);
+    if (stopReason === "error") turn.autonomous.reject(acp.RequestError.internalError(undefined, "Agent stopped during a background turn"));
+    else turn.autonomous.resolve({ stopReason });
+    this.push(s, stopReason === "error" ? "error" : "turn_end", undefined, () => !s.turn);
   }
 
   /** Desktop snapshots are authoritative; an edited history gets a new replay epoch. */
@@ -517,7 +566,7 @@ export class SessionManager implements AgentHandlers {
   async onPermission(agentId: string, params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
     const s = this.sessions.get(extId(agentId, params.sessionId));
     if (!s) return { outcome: { outcome: "cancelled" } };
-    if (s.turn) this.receipt(s, s.turn.promptId, "read");
+    if (s.turn && !s.turn.autonomous) this.receipt(s, s.turn.promptId, "read");
     const toolTitle = (params.toolCall as any)?.title as string | undefined;
     return this.openRequest(s, {
       kind: "permission",
@@ -534,7 +583,7 @@ export class SessionManager implements AgentHandlers {
     const backendSession = (params as any).sessionId as string | undefined;
     const s = backendSession ? this.sessions.get(extId(agentId, backendSession)) : undefined;
     if (!s) return { action: "decline" } as acp.CreateElicitationResponse;
-    if (s.turn) this.receipt(s, s.turn.promptId, "read");
+    if (s.turn && !s.turn.autonomous) this.receipt(s, s.turn.promptId, "read");
     return this.openRequest(s, {
       kind: "elicitation",
       method: "elicitation/create",
@@ -558,6 +607,7 @@ export class SessionManager implements AgentHandlers {
         q.reject(acp.RequestError.internalError(undefined, `Agent ${detail}`));
       }
       if (s.turn) this.appendEvent(s, { type: "error", message: `Agent process ${detail}` });
+      this.finishAutonomousTurn(s, "error");
     }
   }
 
@@ -1637,6 +1687,7 @@ export class SessionManager implements AgentHandlers {
   async cancel(_c: ClientHandle, params: acp.CancelNotification): Promise<void> {
     const s = this.sessions.get(params.sessionId);
     if (!s) return;
+    const turn = s.turn;
     for (const pr of [...s.pending.values()]) this.settle(s, pr, pr.cancelValue, undefined);
     for (const q of s.queue.splice(0)) {
       this.appendEvent(s, { type: "dequeued", promptId: q.promptId, cancelled: true });
@@ -1652,6 +1703,10 @@ export class SessionManager implements AgentHandlers {
           this.appendEvent(s, { type: "error", message: errorMessage(error) });
         }
       }
+    }
+    if (turn?.autonomous && s.turn === turn) {
+      this.finishAutonomousTurn(s, "cancelled");
+      this.startNext(s);
     }
   }
 

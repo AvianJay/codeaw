@@ -458,6 +458,15 @@ Every session has an append-only log. Each entry has a per-session `seq`
 User prompts are logged as `user_message_chunk` updates with
 `_meta.codeaw = { mid, promptId, queued?, steered? }` so every device sees them.
 
+Claude monitor, cron and task-notification cycles can run without a client
+`session/prompt`. For a live `@agentclientprotocol/claude-agent-acp` session, the
+first top-level thought, response or pending/in-progress tool call starts a bridge
+turn with its own `turnPromptId` and `turnStartedAt`. No user message or receipt
+is synthesized. Claude's terminal `usage_update` with `cost` completes that turn;
+streaming usage updates and child activity do not. History replay does not start
+live turns. Autonomous turns support cancellation, prompt queueing, reconnect
+snapshots and activity notifications, and end if the agent process exits.
+
 Notification `_meta.codeaw.t` is the log entry's Unix time in milliseconds.
 
 Full replay retains each turn's first active state and completed idle state so clients
