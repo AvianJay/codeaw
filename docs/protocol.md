@@ -214,6 +214,12 @@ For Codex, explicit model/effort changes save the confirmed model and effort to
 `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). Permission-mode changes
 save `approval_policy`, `approvals_reviewer` and `sandbox_mode`, or update an
 existing `default_permissions` profile instead of mixing the two sandbox formats.
+The desktop-only `codeaw-full-access-on-request` choice stays on its owning thread.
+For new ACP chats, codex-acp's full-access preset implies `never`: only an explicit
+`never` default selects it. Full access with `on-request` (or no explicit policy)
+uses the workspace preset with the configured reviewer, without rewriting the file.
+Other full-access approval policies require a supported explicit initial mode or
+a change to the user's defaults; they are never silently replaced with `never`.
 New chats apply these defaults before returning their selectors. A failure to
 apply or confirm the initial settings fails creation without sending a prompt.
 Other config keys, tables and comments are preserved. A default-save failure is
@@ -645,12 +651,15 @@ Codex desktop steering includes the owner's required `restoreMessage` (message
 ID, input, cwd, workspace roots and collaboration context), and requires an
 accepted result. It never starts a second ACP runtime for a desktop-owned turn.
 Desktop `session/set_config_option` supports `model`, `reasoning_effort`, `mode`
-(`read-only`, `workspace-write`, `agent`, `agent-full-access`) and `collaboration_mode` (`default`,
+(`read-only`, `workspace-write`, `agent`, `codeaw-full-access-on-request`, `agent-full-access`) and `collaboration_mode` (`default`,
 `plan`); `session/set_mode` is also supported. Settings are applied to the next
 turn and confirmed from the owner's snapshot. Updated options are returned and
 broadcast as `config_option_update`.
 `agent` selects Auto review; `workspace-write` asks the user for sandbox
 escalations. Switching permission modes also updates `approvalsReviewer`.
+`codeaw-full-access-on-request` sends `dangerFullAccess`, `on-request` and reviewer
+`user` to the desktop owner. An approval is possible only when Codex requests one.
+ACP-only chats advertise only their adapter's own supported modes.
 
 ## Permission and elicitation requests
 

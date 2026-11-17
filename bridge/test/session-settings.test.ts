@@ -6,7 +6,7 @@ import { parse } from "smol-toml";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentBackend } from "../src/backend/backend.js";
 import type { AgentRegistry } from "../src/backend/registry.js";
-import { patchCodexDefaults } from "../src/backend/codex-defaults.js";
+import { DESKTOP_FULL_ACCESS_ASK, patchCodexDefaults, saveCodexDefaults } from "../src/backend/codex-defaults.js";
 import { SessionManager, type ClientHandle } from "../src/session/manager.js";
 import { SessionStore } from "../src/session/store.js";
 
@@ -221,6 +221,39 @@ describe("Codex defaults and session restoration", () => {
       await f.select(m, chat.sessionId, "mode", mode);
       expect(value(await f.newChat(m), "mode")).toBe(mode);
     }
+  });
+
+  it.each([
+    ['default_permissions = ":danger-full-access"', 'approval_policy = "on-request"\napprovals_reviewer = "user"', "workspace-write"],
+    ['sandbox_mode = "danger-full-access"', 'approval_policy = "on-request"\napprovals_reviewer = "auto_review"', "agent"],
+    ['sandbox_mode = "danger-full-access"', '', "workspace-write"],
+  ])("keeps interactive approval for a new ACP chat without rewriting %s / %s", async (sandbox, approval, expected) => {
+    const f = fixture(), text = `${sandbox}\n${approval}\n`;
+    fs.writeFileSync(f.file, text);
+    const m = f.manager(), chat = await f.newChat(m);
+    expect(value(chat, "mode")).toBe(expected);
+    await f.send(m, chat.sessionId);
+    expect(f.state.get("s1")?.mode).toBe(expected);
+    expect(fs.readFileSync(f.file, "utf8")).toBe(text);
+    expect(f.calls.some((call) => call.params.value === "agent-full-access")).toBe(false);
+  });
+
+  it("refuses an unrepresentable full-access policy unless the user explicitly chose a supported initial mode", async () => {
+    const f = fixture(), text = 'sandbox_mode = "danger-full-access"\napproval_policy = { granular = { rules = false } }\n';
+    fs.writeFileSync(f.file, text);
+    const m = f.manager();
+    await expect(f.newChat(m)).rejects.toThrow(/Workspace access/);
+    expect(f.calls).toEqual([]);
+    const chat = await m.newSession(f.client, { cwd: f.home, mcpServers: [], _meta: { codeaw: { initialConfig: { mode: "read-only" } } } });
+    expect(value(chat, "mode")).toBe("read-only");
+    expect(fs.readFileSync(f.file, "utf8")).toBe(text);
+  });
+
+  it("keeps the desktop-only interactive full-access preset out of ACP and CLI defaults", () => {
+    const f = fixture(), text = 'sandbox_mode = "read-only"\napproval_policy = "on-request"\n';
+    fs.writeFileSync(f.file, text);
+    saveCodexDefaults(f.backend, "mode", [{ id: "mode", currentValue: DESKTOP_FULL_ACCESS_ASK }]);
+    expect(fs.readFileSync(f.file, "utf8")).toBe(text);
   });
 
   it("preserves modern permission profiles without mixing in legacy sandbox_mode", async () => {

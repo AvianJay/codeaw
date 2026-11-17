@@ -9,16 +9,24 @@ import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation }
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { desktopConfigOptions, desktopSettingsPatch } from "../src/backend/codex-desktop-settings.js";
 import { CodexDesktopLauncher } from "../src/backend/codex-desktop-launcher.js";
+import { DESKTOP_FULL_ACCESS_ASK } from "../src/backend/codex-defaults.js";
 import { startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 const VERSIONS = { "thread-owner-discovery": 1, "thread-stream-state-changed": 11, "thread-stream-following-changed": 1, "thread-follower-start-turn": 2, "thread-follower-steer-turn": 1, "thread-follower-interrupt-turn": 4, "thread-follower-update-thread-settings": 2 };
 
 it("distinguishes desktop auto review from workspace access and resets the reviewer when switching modes", () => {
-  for (const mode of ["read-only", "workspace-write", "agent", "agent-full-access"]) {
+  for (const mode of ["read-only", "workspace-write", "agent", "agent-full-access", DESKTOP_FULL_ACCESS_ASK]) {
     const patch = desktopSettingsPatch({ cwd: "/workspace" }, "mode", mode);
     const options = desktopConfigOptions({ latestThreadSettings: patch }, []);
     expect(options.find((o: any) => o.id === "mode")?.currentValue).toBe(mode);
     expect(patch.approvalsReviewer).toBe(mode === "agent" ? "auto_review" : "user");
+  }
+});
+
+it("does not label other full-access owner policies as manual or never", () => {
+  for (const extra of [{}, { approvalPolicy: "on-request", approvalsReviewer: "auto_review" }, { approvalPolicy: { granular: { rules: false } } }]) {
+    const mode = desktopConfigOptions({ latestThreadSettings: { activePermissionProfile: { id: ":danger-full-access" }, ...extra } }, []).find(o => o.id === "mode");
+    expect(mode?.currentValue).toBe("codeaw-custom-full-access");
   }
 });
 
@@ -492,7 +500,11 @@ describe("Codex desktop synchronization", () => {
   });
 
   it("forwards phone approvals to the desktop owner and cancels sheets answered on desktop", async () => {
-    const { a, desktop } = await setup(); await load(a); desktop.begin();
+    const { a, desktop } = await setup(); await load(a);
+    const result = await a.request("session/set_config_option", { sessionId: nativeId, configId: "mode", value: DESKTOP_FULL_ACCESS_ASK });
+    expect(result.configOptions.find((o: any) => o.id === "mode").currentValue).toBe(DESKTOP_FULL_ACCESS_ASK);
+    expect(desktop.conversation.latestThreadSettings).toMatchObject({ sandboxPolicy: { type: "dangerFullAccess" }, approvalPolicy: "on-request", approvalsReviewer: "user" });
+    desktop.begin();
     a.permissionAnswer = () => ({ outcome: { outcome: "selected", optionId: "allow" } });
     desktop.patch([{ op: "add", path: ["requests", 0], value: { id: "approve-1", method: "item/commandExecution/requestApproval", params: { turnId: desktop.conversation.turns.at(-1).turnId, itemId: "command", command: "echo fixture", cwd: desktop.home } } }]);
     await a.waitFor(() => desktop.requests.some((message) => message.method === "thread-follower-command-approval-decision"));

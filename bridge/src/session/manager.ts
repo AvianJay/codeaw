@@ -1158,7 +1158,7 @@ export class SessionManager implements AgentHandlers {
     let resp: any;
     let s: BridgeSession;
     try {
-      defaults = codexDefaults(agent);
+      defaults = codexDefaults(agent, m.initialConfig?.mode);
       resp = await agent.request<any>("session/new", req);
       s = this.createSession({ id: extId(agentId, resp.sessionId), agentId, backendId: resp.sessionId, cwd, ...(projectless ? { projectless: true } : {}), origin: "bridge" });
     } catch (error) {
