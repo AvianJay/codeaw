@@ -6,6 +6,7 @@ import 'package:codeaw/data/bridge_client.dart';
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/models.dart';
 import 'package:codeaw/main.dart';
+import 'package:codeaw/ui/chat/chat_header.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/ui/chat/items.dart';
@@ -264,6 +265,30 @@ void main() {
       await h.close(tester);
     });
   }
+
+  testWidgets(
+    'iPad chat follows changing native top insets without stacking them',
+    (tester) async {
+      final h = _Harness();
+      await h.show(tester, const Size(600, 800), location: sessionRoute(_first));
+      final back = find.byType(BackButton);
+      final title = find.byType(ChatHeaderTitle);
+      final initial = tester.getRect(back);
+      for (final top in [68.0, 44.0, 24.0, 0.0]) {
+        tester.view.viewPadding = FakeViewPadding(top: top);
+        tester.view.padding = FakeViewPadding(top: top);
+        await tester.pumpAndSettle();
+        expect(tester.getRect(back), initial.shift(Offset(0, top)));
+        expect(tester.getTopLeft(title).dy, greaterThanOrEqualTo(top));
+        expect(back.hitTestable(), findsOneWidget);
+      }
+      await tester.tap(back);
+      await tester.pumpAndSettle();
+      expect(h.router.state.uri.path, '/');
+      await h.close(tester);
+    },
+    variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+  );
 
   testWidgets('chat back button preserves an existing previous route', (
     tester,
