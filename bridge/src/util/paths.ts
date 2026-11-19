@@ -35,6 +35,11 @@ function comparable(p: string): string {
   return isWindows ? n.toLowerCase() : n;
 }
 
+/** One spelling per path, for use as a lookup key. The path must already be absolute and resolved. */
+export function pathKey(p: string): string {
+  return comparable(p);
+}
+
 /** True when `child` is `root` or lies below it. Both must already be absolute and resolved. */
 export function isInside(root: string, child: string): boolean {
   const r = comparable(root);

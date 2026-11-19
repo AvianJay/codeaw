@@ -11,10 +11,15 @@
  *   crash         exit the process mid-turn
  *   image         report the image block it received
  *   history       list the user messages the agent remembers (to check forks)
+ *   mcp <tool> <json>       call a tool of the MCP server named "codeaw" it was given, then say the result
+ *   mcp-perm <tool> <json>  the same, after asking permission for the call like Claude Code does
+ *   mcp-codex <tool> <json> the same, reporting the call and asking permission like codex-acp does
  * State is persisted in $FAKE_AGENT_STATE so list/load/resume work across restarts.
  */
 import fs from "node:fs";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
+import readline from "node:readline";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 
@@ -25,6 +30,8 @@ interface StoredSession {
   mode: string;
   history: acp.SessionUpdate[];
   nativeHistory?: acp.SessionNotification[];
+  /** The MCP servers each session setup request carried, for tests to inspect. */
+  mcp?: { method: string; servers: unknown }[];
 }
 
 const stateFile = process.env.FAKE_AGENT_STATE;
@@ -33,6 +40,8 @@ const steering = process.env.FAKE_AGENT_STEERING === "1";
 const forking = process.env.FAKE_AGENT_FORK === "1";
 /** Like the real adapters: opening a session rewrites its file and repeats configuration warnings. */
 const touchOnOpen = process.env.FAKE_AGENT_TOUCH_ON_OPEN === "1";
+/** Like Claude Code and Codex: MCP servers may be reached over HTTP. Without it, stdio only. */
+const mcpHttp = process.env.FAKE_AGENT_MCP === "http";
 const CONFIG_WARNING = { sessionUpdate: "notice", severity: "warning", title: "`old_setting` is deprecated.", description: "Remove it from config." };
 const sessions: Record<string, StoredSession> = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
 const live = new Map<string, { cancelled: boolean; steer: string[]; running: boolean }>();
@@ -66,6 +75,39 @@ function configOptions(mode: string): acp.SessionConfigOption[] {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+function recordMcp(sessionId: string, method: string, servers: unknown): void {
+  const s = sessions[sessionId];
+  if (!s) return;
+  (s.mcp ??= []).push({ method, servers: servers ?? null });
+  save();
+}
+
+/** One MCP request to a server from `mcpServers`, over whichever transport the entry describes. */
+async function mcpRequest(server: any, method: string, params: unknown): Promise<any> {
+  const message = JSON.stringify({ jsonrpc: "2.0", id: 1, method, params });
+  if (server.type === "http") {
+    const response = await fetch(server.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...Object.fromEntries(server.headers.map((h: any) => [h.name, h.value])) },
+      body: message,
+    });
+    return response.json();
+  }
+  const child = spawn(server.command, server.args, {
+    env: { ...process.env, ...Object.fromEntries(server.env.map((e: any) => [e.name, e.value])) },
+    stdio: ["pipe", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  try {
+    const lines = readline.createInterface({ input: child.stdout! });
+    child.stdin!.write(message + "\n");
+    for await (const line of lines) return JSON.parse(line);
+    throw new Error("MCP server exited without answering");
+  } finally {
+    child.stdin!.end();
+  }
+}
+
 const app = acp
   .agent({ name: "fake-agent" })
   .onRequest("initialize", () => ({
@@ -73,6 +115,7 @@ const app = acp
     agentCapabilities: {
       loadSession: true,
       promptCapabilities: { image: true, embeddedContext: true },
+      ...(mcpHttp ? { mcpCapabilities: { http: true, sse: false } } : {}),
       sessionCapabilities: { list: {}, resume: {}, close: {}, delete: {}, ...(forking ? { fork: {} } : {}) },
     },
     agentInfo: forking ? { name: "@agentclientprotocol/codex-acp", version: "2.1.1" } : { name: "fake-agent", version: "1.0.0" },
@@ -83,6 +126,7 @@ const app = acp
     const id = "s" + crypto.randomBytes(4).toString("hex");
     sessions[id] = { cwd: ctx.params.cwd, updatedAt: new Date().toISOString(), mode: "ask", history: [] };
     save();
+    recordMcp(id, "session/new", ctx.params.mcpServers);
     live.set(id, { cancelled: false, steer: [], running: false });
     setTimeout(() => {
       void ctx.client.notify("session/update", {
@@ -98,6 +142,7 @@ const app = acp
   .onRequest("session/load", async (ctx) => {
     const s = sessions[ctx.params.sessionId];
     if (!s) throw acp.RequestError.invalidParams(undefined, "unknown session");
+    recordMcp(ctx.params.sessionId, "session/load", ctx.params.mcpServers);
     live.set(ctx.params.sessionId, live.get(ctx.params.sessionId) ?? { cancelled: false, steer: [], running: false });
     if (s.nativeHistory) {
       for (const notification of s.nativeHistory) await ctx.client.notify("session/update", notification);
@@ -110,6 +155,7 @@ const app = acp
   .onRequest("session/resume", (ctx) => {
     const s = sessions[ctx.params.sessionId];
     if (!s) throw acp.RequestError.invalidParams(undefined, "unknown session");
+    recordMcp(ctx.params.sessionId, "session/resume", ctx.params.mcpServers);
     live.set(ctx.params.sessionId, live.get(ctx.params.sessionId) ?? { cancelled: false, steer: [], running: false });
     // Like Codex: resume resets the mode.
     s.mode = "ask";
@@ -132,6 +178,7 @@ const app = acp
     // Like Claude: the fork has to be resumed before it can be prompted.
     sessions[id] = { cwd: ctx.params.cwd, title: s.title, updatedAt: new Date().toISOString(), mode: "ask", history: [...history] };
     save();
+    recordMcp(id, "session/fork", ctx.params.mcpServers);
     return { sessionId: id };
   })
   .onRequest("session/close", (ctx) => {
@@ -307,6 +354,44 @@ const app = acp
         case "image": {
           const img: any = ctx.params.prompt.find((b: any) => b.type === "image");
           await say(img ? `got image ${img.mimeType} ${img.data.length}` : "no image");
+          break;
+        }
+        case "mcp":
+        case "mcp-perm":
+        case "mcp-codex": {
+          const [tool, ...json] = rest;
+          const args = JSON.parse(json.join(" ") || "{}");
+          const server = (s.mcp?.at(-1)?.servers as any[] | null)?.find((candidate) => candidate.name === "codeaw");
+          if (!server) { await say("no codeaw server"); break; }
+          const toolCallId = "mcp" + crypto.randomBytes(3).toString("hex");
+          const toolName = `mcp__codeaw__${tool}`;
+          // codex-acp reports an MCP call as a command with the server and tool in its input,
+          // and asks for approval with nothing but the id of that call.
+          const codex = cmd === "mcp-codex";
+          await send(codex
+            ? { sessionUpdate: "tool_call", toolCallId, title: `mcp.codeaw.${tool}`, kind: "execute", status: "pending", rawInput: { server: "codeaw", tool, arguments: args } }
+            : { sessionUpdate: "tool_call", toolCallId, title: toolName, kind: "other", status: "pending", rawInput: args, _meta: { claudeCode: { toolName } } });
+          if (cmd !== "mcp") {
+            const answer = await ctx.client.request("session/request_permission", {
+              sessionId,
+              toolCall: codex ? { toolCallId, kind: "execute", status: "pending" } : { toolCallId, title: toolName, rawInput: args },
+              ...(codex ? { _meta: { is_mcp_tool_approval: true } } : {}),
+              options: [
+                { optionId: "always", name: "Always allow", kind: "allow_always" },
+                { optionId: "allow", name: "Allow", kind: "allow_once" },
+                { optionId: "reject", name: "Reject", kind: "reject_once" },
+              ],
+            });
+            if (answer.outcome.outcome !== "selected" || answer.outcome.optionId !== "allow") {
+              await send({ sessionUpdate: "tool_call_update", toolCallId, status: "failed" });
+              await say(`permission=${answer.outcome.outcome === "selected" ? answer.outcome.optionId : answer.outcome.outcome}`);
+              break;
+            }
+          }
+          const reply = await mcpRequest(server, "tools/call", { name: tool, arguments: args });
+          const result = reply.result;
+          await send({ sessionUpdate: "tool_call_update", toolCallId, status: result && !result.isError ? "completed" : "failed", rawOutput: result ?? reply.error });
+          await say(result ? `${result.isError ? "tool-error" : "tool-ok"}: ${result.content[0].text}` : `rpc-error: ${reply.error.message}`);
           break;
         }
         case "history": {

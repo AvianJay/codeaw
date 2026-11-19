@@ -95,6 +95,9 @@ export function reduce(messages: { method: string; params: any }[]): Timeline {
         case "error":
           t.items.push({ kind: "error", message: e.message });
           break;
+        case "card":
+          upsert(`card:${e.cardId}`, () => ({ kind: "card", cardId: e.cardId, card: e.card }));
+          break;
         case "dequeued":
           for (const item of t.items) if (item.kind === "user_message_chunk" && item.mid === `u-${e.promptId}`) item.dequeued = e.cancelled ? "cancelled" : "started";
           break;

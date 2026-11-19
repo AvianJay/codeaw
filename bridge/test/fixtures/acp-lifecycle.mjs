@@ -4,7 +4,7 @@ import readline from 'node:readline';
 
 const root = process.env.ACP_FIXTURE_ROOT;
 fs.mkdirSync(root, { recursive: true });
-fs.appendFileSync(path.join(root, 'launches.jsonl'), JSON.stringify({ pid: process.pid }) + '\n');
+fs.appendFileSync(path.join(root, 'launches.jsonl'), JSON.stringify({ pid: process.pid, codexConfig: process.env.CODEX_CONFIG }) + '\n');
 const keepAlive = setInterval(() => {}, 1000);
 const input = readline.createInterface({ input: process.stdin });
 let closing = false;

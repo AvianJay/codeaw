@@ -19,6 +19,7 @@ import '../common/link_text.dart';
 import '../common/markdown.dart';
 import '../common/image_preview.dart';
 import '../common/markdown_image.dart';
+import 'agent_cards.dart';
 import 'codex_permissions.dart';
 import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
@@ -29,7 +30,7 @@ import 'workflow_view.dart';
 /// Thoughts without a matching turn remain visible, including older histories.
 List<TimelineItem> chatTimelineItems(SessionController controller) {
   final timeline = controller.timeline;
-  final roots = timeline.rootItems.where((item) => item is! MessageItem || !item.removed).toList();
+  final roots = timeline.rootItems.where((item) => (item is! MessageItem || !item.removed) && (item is! CardItem || item.inline)).toList();
   if (!controller.thoughtSummary) return roots;
   final grouped = <MessageItem>{
     for (final turn in [...roots.whereType<TurnSummaryItem>(), ?timeline.currentTurn])
@@ -84,6 +85,7 @@ class TimelineItemView extends StatelessWidget {
             if (reportsPolicyBlock(e.message)) CodexPolicyHint(controller),
           ]),
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
+        CardItem c => AgentCardView(c, controller: controller),
         TurnSummaryItem t => TurnSummaryView(
             turn: t,
             showThoughts: controller.thoughtSummary,

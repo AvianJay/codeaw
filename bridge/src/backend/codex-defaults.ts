@@ -91,6 +91,34 @@ function read(file: string): string {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw error; }
 }
 
+/** Windows limits one environment variable to 32,767 characters. */
+const MAX_CONFIG_OVERRIDE_LENGTH = 30_000;
+
+/**
+ * The environment that makes Codex tell its model `instructions`.
+ *
+ * Codex ignores the instructions of an MCP server, and in code mode its model does not
+ * see tool descriptions either. codex-acp applies the JSON in `CODEX_CONFIG` to every
+ * thread it starts or resumes, so the text goes into `developer_instructions`. That
+ * replaces the user's own setting, which is therefore read and put in front; when it
+ * cannot be read, nothing is changed. It is read when the agent starts.
+ */
+export function codexInstructionsEnvironment(agent: AgentBackend, env: NodeJS.ProcessEnv, instructions: string): NodeJS.ProcessEnv {
+  let overrides: Record<string, unknown> = {};
+  if (env.CODEX_CONFIG) {
+    try { overrides = JSON.parse(env.CODEX_CONFIG); } catch { return env; }
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return env;
+  }
+  let own = overrides.developer_instructions;
+  if (own === undefined) {
+    try { own = parse(read(configFile(agent)), { integersAsBigInt: "asNeeded" }).developer_instructions; }
+    catch { return env; }
+  }
+  if (own !== undefined && typeof own !== "string") return env;
+  const value = JSON.stringify({ ...overrides, developer_instructions: [own?.trim(), instructions].filter(Boolean).join("\n\n") });
+  return value.length > MAX_CONFIG_OVERRIDE_LENGTH ? env : { ...env, CODEX_CONFIG: value };
+}
+
 /** Called only for new chats; existing chats restore their own saved settings. */
 export function codexDefaults(agent: AgentBackend, requestedMode?: unknown): Record<string, string> {
   if (!isCodex(agent)) return {};

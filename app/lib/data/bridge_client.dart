@@ -130,11 +130,16 @@ class BridgeClient extends ChangeNotifier {
 
   ServerRequestHandler? onServerRequest;
 
+  /// `_codeaw/notify`: an agent asked to tell the user something. Returns whether it
+  /// was shown; the bridge pushes through ntfy unless a device confirms.
+  bool Function(Map<String, dynamic> notice)? onNotice;
+
   JsonRpcPeer? _peer;
   WebSocketChannel? _ws;
   bool _running = false;
   bool _disposed = false;
   bool _foreground = true;
+  String? _activeSessionId;
   Completer<void>? _wake;
   int _attempt = 0;
 
@@ -256,7 +261,7 @@ class BridgeClient extends ChangeNotifier {
           host = host.withUrls([url, ...host.urls.where((u) => u != url)]);
         }
         _setStatus(ConnStatus.online);
-        peer.notify('_codeaw/client/state', {'foreground': _foreground});
+        peer.notify('_codeaw/client/state', _clientState());
         _connected.add(null);
         return (
           closed: done.future.then<void>((_) {
@@ -289,6 +294,9 @@ class BridgeClient extends ChangeNotifier {
     Map<String, dynamic> params,
     CancelToken token,
   ) async {
+    if (method == '_codeaw/notify') {
+      return {'shown': !_disposed && (onNotice?.call(params) ?? false)};
+    }
     final handler = onServerRequest;
     if (handler == null) throw RpcError(-32601, 'Method not found: $method');
     return handler(method, params, token);
@@ -335,12 +343,18 @@ class BridgeClient extends ChangeNotifier {
     if (status == ConnStatus.online) _peer?.notify(method, params);
   }
 
+  /// What the bridge needs to know to decide whether a notification is wanted.
+  Map<String, dynamic> _clientState() => {
+    'foreground': _foreground,
+    'activeSessionId': ?_activeSessionId,
+    'notices': true,
+  };
+
+  /// [activeSessionId] is the chat on screen, or null when none is.
   void setForeground(bool value, {String? activeSessionId}) {
     _foreground = value;
-    notify('_codeaw/client/state', {
-      'foreground': value,
-      'activeSessionId': ?activeSessionId,
-    });
+    _activeSessionId = activeSessionId;
+    notify('_codeaw/client/state', _clientState());
     if (value && status == ConnStatus.offline) reconnectNow();
   }
 

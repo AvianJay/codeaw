@@ -37,7 +37,8 @@ it("creates independent no-project chats without workspaces, ignoring client pat
   agent.capabilities!.sessionCapabilities!.additionalDirectories = {};
   const requests = vi.spyOn(agent, "request");
   const b = await c.request("session/new", { cwd: os.tmpdir(), additionalDirectories: [os.tmpdir()], mcpServers: [], _meta: { codeaw: { projectless: true } } });
-  expect(requests).toHaveBeenCalledWith("session/new", { cwd: b._meta.codeaw.cwd, mcpServers: [] });
+  // Only the bridge's own tools are passed on; the client's directories are not.
+  expect(requests).toHaveBeenCalledWith("session/new", { cwd: b._meta.codeaw.cwd, mcpServers: [expect.objectContaining({ name: "codeaw" })] });
   const cwd = a._meta.codeaw.cwd;
   expect(a._meta.codeaw.projectless).toBe(true);
   expect(path.dirname(cwd)).toBe(path.join(bridge.loaded.dataDir, "chats"));

@@ -127,6 +127,9 @@ class _CodeawAppState extends State<CodeawApp> {
   late final AppLifecycleListener _lifecycle;
   StreamSubscription<Uri>? _links;
   bool _platformFeaturesScheduled = false;
+  final _messenger = GlobalKey<ScaffoldMessengerState>();
+  bool _foreground = true;
+  String? _viewing;
 
   @override
   void initState() {
@@ -134,6 +137,7 @@ class _CodeawAppState extends State<CodeawApp> {
     unawaited(widget.state.updater.initialize());
     _lifecycle = AppLifecycleListener(onStateChange: _onLifecycle);
     widget.router.routerDelegate.addListener(_onRoute);
+    widget.state.notifier.onForegroundNotice = _showNotice;
     if (!kIsWeb) {
       final appLinks = AppLinks();
       _links = appLinks.uriLinkStream.listen(_onLink);
@@ -144,7 +148,8 @@ class _CodeawAppState extends State<CodeawApp> {
     final foreground = s == AppLifecycleState.resumed;
     widget.state.notifier.foreground = foreground;
     widget.state.liveActivity.foreground = foreground;
-    widget.state.client?.setForeground(foreground);
+    _foreground = foreground;
+    widget.state.client?.setForeground(foreground, activeSessionId: _viewing);
     if (foreground) unawaited(widget.state.liveActivity.refresh());
     if (!foreground) unawaited(widget.state.hub?.persist() ?? Future.value());
     if (!foreground) {
@@ -160,9 +165,35 @@ class _CodeawAppState extends State<CodeawApp> {
     final uri = router.routerDelegate.currentConfiguration.isEmpty
         ? null
         : router.state.uri;
-    widget.state.androidLiveActivity.viewing = uri?.path == '/session'
-        ? uri!.queryParameters['id']
-        : null;
+    final viewing = uri?.path == '/session' ? uri!.queryParameters['id'] : null;
+    widget.state.androidLiveActivity.viewing = viewing;
+    if (viewing == _viewing) return;
+    // The bridge skips an agent's notification for the chat that is on screen.
+    _viewing = viewing;
+    widget.state.client?.setForeground(_foreground, activeSessionId: viewing);
+  }
+
+  /// An agent's `notify` while the app is open on another screen.
+  void _showNotice(String sessionId, String title, String body) {
+    _messenger.currentState?.showSnackBar(
+      SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text.rich(
+          TextSpan(
+            children: [
+              TextSpan(text: '$title\n', style: const TextStyle(fontWeight: FontWeight.w600)),
+              TextSpan(text: body),
+            ],
+          ),
+          maxLines: 4,
+          overflow: TextOverflow.ellipsis,
+        ),
+        action: SnackBarAction(
+          label: '查看',
+          onPressed: () => widget.router.go(sessionRoute(sessionId)),
+        ),
+      ),
+    );
   }
 
   void _onLink(Uri uri) {
@@ -207,6 +238,7 @@ class _CodeawAppState extends State<CodeawApp> {
     }
     return MaterialApp.router(
       title: 'codeaw',
+      scaffoldMessengerKey: _messenger,
       debugShowCheckedModeBanner: false,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),

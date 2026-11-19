@@ -34,6 +34,12 @@ export interface TestBridgeOptions {
   desktopSync?: AgentConfig["desktopSync"];
   /** The fake agent rewrites a session and repeats a warning whenever it is opened, like real adapters. */
   touchOnOpen?: boolean;
+  /** The fake agent reaches MCP servers over HTTP, like Claude Code and Codex. Default: stdio only. */
+  mcpHttp?: boolean;
+  /** `mcp` section of the bridge config. */
+  mcp?: Record<string, unknown>;
+  /** Extra fields of the fake agent's config entry. */
+  agent?: Record<string, unknown>;
 }
 
 export interface TestBridge {
@@ -56,10 +62,12 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
         command: process.execPath,
         args: ["--import", "tsx", FAKE_AGENT],
         cwd: BRIDGE_DIR,
-        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0", FAKE_AGENT_TOUCH_ON_OPEN: opts.touchOnOpen ? "1" : "0" },
+        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0", FAKE_AGENT_TOUCH_ON_OPEN: opts.touchOnOpen ? "1" : "0", FAKE_AGENT_MCP: opts.mcpHttp ? "http" : "stdio" },
         ...(opts.desktopSync !== undefined ? { desktopSync: opts.desktopSync } : {}),
+        ...opts.agent,
       },
     },
+    ...(opts.mcp ? { mcp: opts.mcp } : {}),
     notifications: opts.ntfy ? { ntfy: opts.ntfy } : {},
   });
   const dataDir = path.join(home, opts.freshData ? `data-${Date.now()}` : "data");
@@ -100,6 +108,8 @@ export class TestClient {
   permissionAnswer?: (params: any, signal: AbortSignal) => Promise<any> | any;
   elicitationAnswer?: (params: any, signal: AbortSignal) => Promise<any> | any;
   permissionSignals: AbortSignal[] = [];
+  /** Answer to `_codeaw/notify`: whether this device showed the notice. Unset = never answers. */
+  noticeShown?: boolean = true;
   init: any;
   private conn!: acp.ClientConnection;
 
@@ -119,6 +129,11 @@ export class TestClient {
       .onNotification("_codeaw/replay", any, record("_codeaw/replay"))
       .onNotification("_codeaw/history/page", any, record("_codeaw/history/page"))
       .onNotification("_codeaw/activity", any, record("_codeaw/activity"))
+      .onRequest("_codeaw/notify", any, async (ctx) => {
+        c.received.push({ method: "_codeaw/notify", params: ctx.params });
+        if (c.noticeShown === undefined) return new Promise<never>(() => undefined);
+        return { shown: c.noticeShown };
+      })
       .onNotification("_codeaw/terminal/event", any, record("_codeaw/terminal/event"))
       .onRequest("session/request_permission", async (ctx) => {
         c.received.push({ method: "session/request_permission", params: ctx.params });

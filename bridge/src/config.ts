@@ -19,6 +19,8 @@ const AgentConfigSchema = z.object({
   /** Working directory of the agent process itself (sessions carry their own cwd). */
   cwd: z.string().optional(),
   enabled: z.boolean().default(true),
+  /** Set to false to keep the bridge's own tools (see `mcp`) away from this agent. */
+  mcp: z.boolean().optional(),
   /** Windows Codex: attach to a desktop owner before resuming through ACP. */
   desktopSync: z.union([z.boolean(), z.object({
     pipe: z.string().optional(),
@@ -74,6 +76,12 @@ export const ConfigSchema = z.object({
   remoteDesktop: z.object({ enabled: z.boolean().default(false) }).default({ enabled: false }),
   agents: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]*$/), AgentConfigSchema),
   notifications: z.object({ ntfy: NtfySchema.optional(), liveActivity: LiveActivitySchema.optional() }).default({}),
+  /** The bridge's own MCP server: tools that let an agent present things in the app. */
+  mcp: z.object({
+    enabled: z.boolean().default(true),
+    /** Extra text for the agent, after the description of the tools. */
+    instructions: z.string().max(4000).optional(),
+  }).default({ enabled: true }),
   /** Release an idle agent-side session (frees e.g. claude.exe) after this many minutes. */
   idleSessionCloseMinutes: z.number().min(1).default(30),
   /** Stop an agent process with no live sessions after this many minutes. */

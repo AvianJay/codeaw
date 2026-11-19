@@ -8,8 +8,25 @@ export interface CompletedTurn {
   endedAt: number;
 }
 
+/** A file an agent put into the chat with the `show_files` tool. */
+export interface CardFile {
+  /** Resolved absolute path on the bridge computer. */
+  path: string;
+  name: string;
+  size: number;
+  mimeType?: string;
+  caption?: string;
+}
+
+/** Something an agent asked the app to present, through the bridge's own MCP tools. */
+export type Card =
+  | { kind: "files"; title?: string; files: CardFile[] }
+  | { kind: "replies"; replies: string[] }
+  | { kind: "notice"; title?: string; message: string; urgent?: boolean };
+
 /** Bridge-synthesized events, sent to clients as `_codeaw/event` (see docs/protocol.md). */
 export type CodeawEvent =
+  | { type: "card"; cardId: string; card: Card }
   | { type: "state"; state: TurnState; stopReason?: string; queued: number; turnStartedAt?: number; turnPromptId?: string; completedTurn?: CompletedTurn; connection?: "desktop" | "acp"; desktopConnected?: boolean }
   | { type: "permission_request"; requestId: string; toolCall: acp.ToolCallUpdate; options: acp.PermissionOption[] }
   | { type: "permission_resolved"; requestId: string; outcome: acp.RequestPermissionOutcome; optionName?: string; by?: string }
@@ -63,6 +80,8 @@ export interface SessionMeta {
   forkedFrom?: { sessionId: string; messageId: string; promptId: string };
   /** A provider quota error stopped this prompt; bridge can continue it after recovery. */
   quotaBlocked?: { provider: string; promptId: string; at: number };
+  /** Files the agent showed in this chat; paired devices may read them outside the workspaces. */
+  shared?: string[];
 }
 
 export function isChunk(u: acp.SessionUpdate): u is Extract<acp.SessionUpdate, { sessionUpdate: "user_message_chunk" | "agent_message_chunk" | "agent_thought_chunk" }> {
@@ -70,7 +89,7 @@ export function isChunk(u: acp.SessionUpdate): u is Extract<acp.SessionUpdate, {
 }
 
 const ACTIVITY_UPDATES = new Set(["user_message_chunk", "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan"]);
-const ACTIVITY_EVENTS = new Set(["permission_request", "elicitation_request", "error"]);
+const ACTIVITY_EVENTS = new Set(["permission_request", "elicitation_request", "error", "card"]);
 
 /** True for entries that are the conversation itself rather than bookkeeping written when a chat is reopened. */
 export function isActivity(entry: { kind: "update"; update: { sessionUpdate: string } } | { kind: "event"; event: { type: string } }): boolean {

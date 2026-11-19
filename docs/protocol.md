@@ -132,6 +132,7 @@ The response is a normal `InitializeResponse` with
   "projectless": true,                // supports managed no-project conversations
   "editPrompts": true,                // supports _codeaw/session/fork (editing sent messages)
   "fileArchives": true,               // supports authenticated POST /api/fs/archive
+  "agentTools": ["show_files", "suggest_replies", "notify"],  // see Tools for agents; absent when off
   "bridgeUpdate": {                   // automatic bridge update status
     "state": "idle" | "checking" | "available" | "current" | "downloading" | "ready" | "installing" | "error",
     "installedVersion": "0.1.0+1",
@@ -183,8 +184,8 @@ creating sessions without an extra sign-in request.
 
 ### `session/new`
 
-Params: standard (`cwd`, `mcpServers` — the bridge always sends `[]` to the
-agent) plus
+Params: standard (`cwd`, `mcpServers` — ignored: the agent gets only the
+bridge's own server, see [Tools for agents](#tools-for-agents)) plus
 
 ```jsonc
 "_meta": { "codeaw": {
@@ -454,6 +455,7 @@ Every session has an append-only log. Each entry has a per-session `seq`
 | `elicitation_resolved` | `requestId`, `action`, `by?` | |
 | `dequeued` | `promptId`, `cancelled?`, `removed?` | a queued prompt started (or was dropped); `removed: true` hides a withdrawn unsent message |
 | `error` | `message`, `code?` | turn failed, agent crashed, … |
+| `card` | `cardId`, `card` | an agent put something in the chat (see [Tools for agents](#tools-for-agents)) |
 
 User prompts are logged as `user_message_chunk` updates with
 `_meta.codeaw = { mid, promptId, queued?, steered? }` so every device sees them.
@@ -697,6 +699,97 @@ request from the other clients with `$/cancel_request`. A client attaching
 later receives still-open requests right after its replay. Requests never time
 out on the bridge.
 
+## Tools for agents
+
+The bridge runs an MCP server of its own, named `codeaw`, and hands it to the
+agent of every chat. Its tools let the agent present things in the app; the
+result reaches clients as a `card` event. `initialize._meta.codeaw.agentTools`
+lists the tool names, and is absent when the server is off.
+
+| tool | arguments | effect |
+|---|---|---|
+| `show_files` | `files: [{path, caption?}]` (1–8; a bare path string is accepted), `title?` | a `files` card; paired devices may now read those files |
+| `suggest_replies` | `replies: string[]` (1–6, each at most 120 characters) | a `replies` card: buttons that send the reply as the next prompt |
+| `notify` | `message` (at most 500 characters), `title?`, `urgent?` | a `notice` card, and a notification on the user's devices |
+
+```jsonc
+// _codeaw/event
+{ "type": "card", "cardId": "k_…", "card":
+    { "kind": "files", "title": "Results", "files": [
+        { "path": "D:\\out\\chart.png", "name": "chart.png", "size": 20480, "mimeType": "image/png", "caption": "Latency" } ] }
+  | { "kind": "replies", "replies": ["Yes, commit it", "Run the tests first"] }
+  | { "kind": "notice", "title": "CI", "message": "The build finished.", "urgent": true } }
+```
+
+Cards are log entries like any other: they replay in order and survive
+compaction. A client must keep a card whose `kind` it does not know and show
+nothing for it. `replies` cards are not part of the conversation; the app offers
+the newest one above the composer once the turn has ended, until the user sends
+a prompt or a later turn ends.
+
+`show_files` resolves relative paths against the chat's `cwd` and shows nothing
+when any path is missing or a folder, so the agent can correct the call. Each
+shown file (not its folder) becomes readable through `_codeaw/fs/read` and
+`GET /api/fs/raw` for every paired device, also outside the workspaces. A chat
+keeps its newest 256 grants in its metadata, so they outlive a bridge restart;
+deleting the chat revokes them.
+
+`notify` is limited to four calls a minute per chat. When a client that sent
+`notices: true` has the chat on screen (`foreground` with that
+`activeSessionId`), the card is enough. Otherwise the bridge sends every such
+client the **request** `_codeaw/notify`:
+
+```jsonc
+{ "sessionId": "claude:…", "agentId": "claude", "agentName": "Claude Code",
+  "sessionTitle": "…", "title": "CI", "message": "The build finished.", "urgent": false }
+// → { "shown": true }   the device displayed it (in the app, or as a system notification)
+```
+
+If no client answers `shown: true` within five seconds, ntfy is used when it is
+configured. The tool result tells the agent which of these happened.
+
+**Transport.** The server listens on `127.0.0.1` on a port of its own, never on
+the tailnet addresses. It answers `POST /mcp` with plain JSON (`initialize`,
+`ping`, `tools/list`, `tools/call`, batches; no SSE stream and no MCP session
+id), and rejects requests carrying an `Origin` header. Each chat has its own
+64-hex bearer token, unrelated to device tokens and stable while the bridge
+runs; it is how a tool call finds its chat. The `mcpServers` entry is
+
+```jsonc
+{ "type": "http", "name": "codeaw", "url": "http://127.0.0.1:<port>/mcp",
+  "headers": [{ "name": "Authorization", "value": "Bearer <token>" }] }
+```
+
+for agents advertising `mcpCapabilities.http`. Others get a stdio entry that
+runs `codeaw-bridge mcp-stdio`, a relay to the same endpoint with the URL and
+token in `CODEAW_MCP_URL` / `CODEAW_MCP_TOKEN`. Chats owned by the Codex desktop
+app and the Antigravity CLI transport get no tools.
+
+**What the agent is told.** The text is: it runs through codeaw, the user is in
+the app (usually on a phone) and away from the computer, what the three tools
+are for, then `mcp.instructions` from the config. No one channel reaches every
+model, so it is sent three ways:
+
+- as the MCP server's `instructions`, which Claude Code adds to its system prompt;
+- to Codex, which ignores those, as `developer_instructions`: the bridge starts
+  codex-acp with them in `CODEX_CONFIG`, after the `developer_instructions` of
+  the user's own `config.toml` (read when the agent starts, never written). An
+  unreadable config is left alone and Codex is then not told;
+- to MCP clients other than Claude Code, as a note at the end of the first
+  tool's description, cut to keep that description within 1024 characters.
+
+`scripts/mcp-smoke.ts <agentId> --prompt` checks an installed agent end to end.
+
+**Permissions.** These tools only present something to the user, so the bridge
+answers an agent's `session/request_permission` for them itself (`allow_once`,
+else `allow_always`) and clients never see the request. A call counts as one of
+them when the agent names the tool (`_meta.claudeCode.toolName`, or
+`rawInput: {server: "codeaw", tool}` as codex-acp reports it), or its title is
+`mcp__codeaw__<tool>` on a call that is not a shell command.
+
+Config: `mcp.enabled: false` turns the server off; `agents.<id>.mcp: false`
+keeps it from one agent; `mcp.instructions` (at most 4000 characters) adds text.
+
 ## Extension methods (client → bridge requests)
 
 | method | params | result |
@@ -934,7 +1027,7 @@ releases use Bun's built-in PTY support.
 | bridge → client | `_codeaw/event` | see event log |
 | bridge → client | `_codeaw/terminal/event` | see interactive terminals |
 | bridge → client | `_codeaw/bridge/update` | automatic update status; same shape as `initialize._meta.codeaw.bridgeUpdate` |
-| client → bridge | `_codeaw/client/state` | `{foreground: bool, activeSessionId?}` |
+| client → bridge | `_codeaw/client/state` | `{foreground: bool, activeSessionId?, notices?: true}` — the whole state each time: `activeSessionId` is the chat on screen, omitted when none is; `notices` says the client answers `_codeaw/notify` |
 | client → bridge | `_codeaw/session/detach` | `{sessionId}` — stop pushing this session's updates/requests to this connection |
 
 ## Push notifications
@@ -994,3 +1087,7 @@ error) and **no client is connected at all**, the bridge waits
 connected, publishes to ntfy with `click = codeaw://session/<sessionId>`.
 Message text contains only the agent name and the kind of event unless
 `includeDetails: true`.
+
+An agent's `notify` call is published at once (see
+[Tools for agents](#tools-for-agents)) when no device confirmed showing it,
+connected or not, with the same rule for its text; `urgent` raises the priority.
