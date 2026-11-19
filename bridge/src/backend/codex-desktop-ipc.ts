@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -75,7 +76,7 @@ export class DesktopIpcFrameDecoder {
 
 const CURRENT_VERSIONS: Record<string, number> = {
   "thread-owner-discovery": 1,
-  "thread-stream-state-changed": 11,
+  "thread-stream-state-changed": 13,
   "thread-stream-following-changed": 1,
   "thread-stream-following-status-requested": 1,
   "thread-follower-start-turn": 2,
@@ -127,17 +128,33 @@ export async function readDesktopIpcVersions(archivePath: string): Promise<Recor
   }
 }
 
+const PACKAGE_REPOSITORY = "HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages";
+
+/** Install folders of Codex Desktop packages in `reg query ... /s /f OpenAI.Codex_ /d` output. */
+export function codexPackageRoots(regOutput: string): string[] {
+  return [...regOutput.matchAll(/^\s*PackageRootFolder\s+REG_SZ\s+(.+?)\s*$/gm)]
+    .map((match) => match[1]).filter((root) => /^OpenAI\.Codex_/.test(path.win32.basename(root)));
+}
+
+/** The user's package repository names the installed (not merely staged) package folders. */
+function registeredPackageRoots(): Promise<string[]> {
+  return new Promise((resolve) => {
+    execFile("reg.exe", ["query", PACKAGE_REPOSITORY, "/s", "/f", "OpenAI.Codex_", "/d"], { windowsHide: true, timeout: 5000 },
+      (error, stdout) => resolve(error ? [] : codexPackageRoots(stdout)));
+  });
+}
+
 async function installedArchives(): Promise<string[]> {
   if (process.platform !== "win32") return [];
-  const roots = [path.join(process.env.ProgramFiles ?? "C:\\Program Files", "WindowsApps")];
-  const archives: string[] = [];
-  for (const root of roots) {
-    try {
-      const packages = (await fs.readdir(root)).filter((name) => /^OpenAI\.Codex_/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-      for (const name of packages) archives.push(path.join(root, name, "app", "resources", "app.asar"));
-    } catch { /* An explicit archivePath also works without WindowsApps enumeration. */ }
+  let folders = await registeredPackageRoots();
+  if (!folders.length) {
+    // Listing WindowsApps requires administrator rights; a per-user bridge relies on the registry above.
+    const root = path.join(process.env.ProgramFiles ?? "C:\\Program Files", "WindowsApps");
+    try { folders = (await fs.readdir(root)).filter((name) => /^OpenAI\.Codex_/.test(name)).map((name) => path.join(root, name)); }
+    catch { /* An explicit archivePath also works without package discovery. */ }
   }
-  return archives;
+  return folders.sort((a, b) => path.win32.basename(b).localeCompare(path.win32.basename(a), undefined, { numeric: true }))
+    .map((folder) => path.join(folder, "app", "resources", "app.asar"));
 }
 
 export function encodeDesktopIpc(message: DesktopIpcMessage): Buffer {

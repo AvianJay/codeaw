@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexDesktopIpc, DesktopIpcFrameDecoder, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
+import { CodexDesktopIpc, DesktopIpcFrameDecoder, codexPackageRoots, encodeDesktopIpc, readDesktopIpcVersions } from "../src/backend/codex-desktop-ipc.js";
 import { applyDesktopPatches, desktopRecordChanges, projectDesktopConversation } from "../src/backend/codex-desktop-state.js";
 import { desktopAsyncReply, desktopAsyncRequests, desktopQuestionReplies } from "../src/backend/codex-desktop-questions.js";
 import { desktopConfigOptions, desktopSettingsPatch } from "../src/backend/codex-desktop-settings.js";
@@ -778,6 +778,20 @@ describe("desktop IPC wire and state", () => {
     const user = projectDesktopConversation(conversation).records.find((r) => r.key === "t:steer:0")!.update as any;
     expect(user._meta.codeaw).toMatchObject({ promptId: id, receipt: "read", steered: true });
   });
+  it("finds installed Codex Desktop folders in the user's package registry without listing WindowsApps", () => {
+    const key = "HKEY_CURRENT_USER\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages";
+    const output = [
+      "", `${key}\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0`,
+      "    PackageRootFolder    REG_SZ    C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0",
+      "    PackageID    REG_SZ    OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0", "",
+      `${key}\\OpenAI.CodexPrimaryRuntime.v26_26.1116.1210.0_x64__3k8sg7r9htsxt`,
+      "    PackageRootFolder    REG_SZ    C:\\Program Files\\WindowsApps\\OpenAI.CodexPrimaryRuntime.v26_26.1116.1210.0_x64__3k8sg7r9htsxt", "",
+      // reg.exe prints its localized summary in the console code page.
+      "\uFFFD\uFFFD\uFFFD\uFFFD: 2", "",
+    ].join("\r\n");
+    expect(codexPackageRoots(output)).toEqual(["C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1111.2228.0_x64__2p2nqsd0c76g0"]);
+  });
+
   it("reads method versions from an app archive and handles fragmented UTF-8 frames and concurrent requests", async () => {
     desktop = new DesktopPeer(); desktop.fragment = true; await desktop.start();
     expect(await readDesktopIpcVersions(desktop.archivePath)).toEqual(VERSIONS);
