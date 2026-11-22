@@ -235,4 +235,96 @@ void main() {
     cleanups.add(c.dispose);
     expect((await c.searchFiles('plan')).first.relative, 'notes/plan.md');
   });
+
+  test('presents what an agent shows, suggests and announces through the bridge tools', () async {
+    final client = connect();
+    await client.connected.first.timeout(const Duration(seconds: 15));
+    final hub = SessionHub(client);
+    cleanups.add(hub.dispose);
+    final cwd = info['home'] as String;
+    final resp = await client.request('session/new', {
+      'cwd': cwd,
+      'mcpServers': const [],
+      '_meta': {
+        'codeaw': {'agentId': 'fake'},
+      },
+    }) as Map<String, dynamic>;
+    final id = resp['sessionId'] as String;
+    final c = hub.adopt(id, cwd, resp);
+    Future<void> ask(String text) async {
+      final replies = agentText(c).length;
+      await c.send([
+        {'type': 'text', 'text': text},
+      ]);
+      await until(() => agentText(c).length > replies && c.timeline.state == 'idle');
+    }
+
+    // A file outside every workspace becomes readable once the agent shows it.
+    final outside = Directory.systemTemp.createTempSync('codeaw-e2e-shown-');
+    cleanups.add(() => outside.deleteSync(recursive: true));
+    final report = File('${outside.path}${Platform.pathSeparator}report.txt')..writeAsStringSync('all green');
+    Future<int> status() async {
+      final request = await HttpClient().getUrl(client.httpUri('/api/fs/raw', {'path': report.path}));
+      client.authHeaders.forEach(request.headers.set);
+      final response = await request.close();
+      await response.drain<void>();
+      return response.statusCode;
+    }
+
+    expect(await status(), 403);
+    await ask('mcp show_files ${jsonEncode({
+      'title': 'Results',
+      'files': [
+        {'path': report.path, 'caption': 'Nightly'},
+      ],
+    })}');
+    final files = c.timeline.items.whereType<CardItem>().single;
+    expect(files.kind, 'files');
+    expect(files.card['title'], 'Results');
+    expect(files.files.single, containsPair('name', 'report.txt'));
+    expect(files.files.single, containsPair('size', 9));
+    expect(files.files.single, containsPair('caption', 'Nightly'));
+    expect(await status(), 200);
+    expect((await client.request('_codeaw/fs/read', {'path': files.files.single['path']}) as Map)['text'], 'all green');
+    // Its own tools never ask the user for permission.
+    expect(c.timeline.items.whereType<PermissionItem>(), isEmpty);
+
+    await ask('mcp-perm suggest_replies {"replies":["Yes","No"]}');
+    expect(c.timeline.suggestedReplies, ['Yes', 'No']);
+    expect(c.pending, isEmpty);
+    expect(c.timeline.items.whereType<PermissionItem>(), isEmpty);
+
+    // On another screen of the app: this device is asked to show the notice and confirms.
+    final notices = <Map<String, dynamic>>[];
+    client.onNotice = (notice) {
+      notices.add(notice);
+      return true;
+    };
+    client.setForeground(true);
+    await ask('mcp notify {"message":"Build finished","title":"CI"}');
+    expect(notices.single, containsPair('sessionId', id));
+    expect(notices.single, containsPair('message', 'Build finished'));
+    expect(notices.single, containsPair('title', 'CI'));
+    expect(notices.single, containsPair('agentName', 'Fake'));
+    expect(agentText(c), contains("Sent to the user's connected devices"));
+    // Sending a prompt answered the earlier offer.
+    expect(c.timeline.suggestedReplies, isEmpty);
+
+    // Reading the chat: the card in the conversation is enough.
+    client.setForeground(true, activeSessionId: id);
+    await ask('mcp notify {"message":"Still here"}');
+    expect(notices, hasLength(1));
+    expect(agentText(c), contains('has this chat open'));
+    expect(c.timeline.items.whereType<CardItem>().map((card) => card.kind), ['files', 'replies', 'notice', 'notice']);
+
+    // A second device replays the same cards.
+    final other = connect();
+    await other.connected.first.timeout(const Duration(seconds: 15));
+    final otherHub = SessionHub(other);
+    cleanups.add(otherHub.dispose);
+    final replayed = otherHub.open(id, cwd: cwd);
+    await replayed.attach();
+    await until(() => replayed.timeline.items.whereType<CardItem>().length == 4);
+    expect(replayed.timeline.items.whereType<CardItem>().first.card, files.card);
+  });
 }

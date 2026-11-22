@@ -16,6 +16,10 @@ class LocalNotifier {
   bool _ready = false;
   bool foreground = true;
   StreamSubscription<Map<String, dynamic>>? _sub;
+  BridgeClient? _client;
+
+  /// Shows an agent's notice inside the app, while it is open on another screen.
+  void Function(String sessionId, String title, String body)? onForegroundNotice;
 
   static const _channel = AndroidNotificationDetails(
     'codeaw_attention',
@@ -55,6 +59,8 @@ class LocalNotifier {
 
   void watch(BridgeClient client, String Function(String agentId) agentName, String? Function(String sessionId) title) {
     unwatch();
+    _client = client;
+    client.onNotice = (notice) => _onNotice(notice, agentName);
     _sub = client.activity.listen((a) {
       final id = a['sessionId'] as String?;
       final state = a['state'] as String?;
@@ -72,14 +78,35 @@ class LocalNotifier {
     });
   }
 
+  /// An agent used the `notify` tool. Returns whether this device showed it.
+  bool _onNotice(Map<String, dynamic> notice, String Function(String agentId) agentName) {
+    final id = notice['sessionId'] as String?;
+    final message = notice['message'] as String?;
+    if (id == null || message == null || message.isEmpty) return false;
+    final agent = notice['agentName'] as String? ?? agentName('${notice['agentId'] ?? id.split(':').first}');
+    final title = notice['title'] as String? ?? '$agent 有訊息給你';
+    if (foreground) {
+      final show = onForegroundNotice;
+      if (show == null) return false;
+      show(id, title, message);
+      return true;
+    }
+    if (!_ready) return false;
+    // Its own slot: the turn ending later must not replace what the agent said.
+    unawaited(_show(id, title, message, slot: 'notice'));
+    return true;
+  }
+
   void unwatch() {
+    _client?.onNotice = null;
+    _client = null;
     _sub?.cancel();
     _sub = null;
     _lastState.clear();
   }
 
-  Future<void> _show(String sessionId, String title, String body) => _plugin.show(
-    id: sessionId.hashCode & 0x7fffffff,
+  Future<void> _show(String sessionId, String title, String body, {String slot = ''}) => _plugin.show(
+    id: '$sessionId$slot'.hashCode & 0x7fffffff,
     title: title,
     body: body,
     notificationDetails: const NotificationDetails(android: _channel, iOS: DarwinNotificationDetails()),

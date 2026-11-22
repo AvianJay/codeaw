@@ -18,6 +18,8 @@ const { values } = parseArgs({
 
 const tb = await startTestBridge({
   steering: values.steering,
+  // `mcp <tool> <json>` prompts reach the bridge's tools directly, like Claude Code and Codex do.
+  mcpHttp: true,
   port: values.port ? Number(values.port) : 0,
   hosts: values.host ? [values.host] : ["127.0.0.1"],
 });

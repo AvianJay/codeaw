@@ -27,6 +27,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { listenPrivateHttp, type PrivateHttpListener } from "./remote-desktop/private-http.js";
 import type { BridgeUpdater } from "./updater.js";
+import { McpServer } from "./mcp/server.js";
 
 const log = logger("bridge");
 
@@ -81,6 +82,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
       onHistoryReset: (a, id, updates) => manager.onHistoryReset(a, id, updates),
       onSessionState: (a, id, state) => manager.onSessionState(a, id, state),
       onSessionError: (a, id, message) => manager.onSessionError(a, id, message),
+      agentInstructions: (a) => manager.agentInstructions(a),
     },
     dataDir,
     opts.agentStartTimeoutMs,
@@ -101,12 +103,19 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     privateKeyPath: path.resolve(home, expandHome(liveConfig.privateKeyPath)) } : undefined,
     (id) => devices.list().some((d) => d.id === id), (id) => manager.activitySnapshot(id));
   manager.liveActivity = liveActivity;
+  let mcp: McpServer | undefined;
+  if (config.mcp.enabled) {
+    mcp = new McpServer(manager, { hostName: os.hostname(), instructions: config.mcp.instructions });
+    // Agents work without the bridge's tools; a busy loopback must not stop the bridge.
+    try { await mcp.start(); manager.mcp = mcp; }
+    catch (err) { log.warn(`agents will not get codeaw tools: ${(err as Error).message}`); mcp = undefined; }
+  }
   manager.start();
   const uploads = new UploadStore(dataDir);
   uploads.prune();
   const pruneUploads = setInterval(() => uploads.prune(), 12 * 60 * 60_000);
   pruneUploads.unref();
-  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths, () => [uploads.dir]);
+  const guard = new PathGuard(() => config.workspaces, () => manager.knownCwds(), () => config.filesystem.allowAllPaths, () => [uploads.dir], (file) => manager.isShared(file));
   const terminals = new TerminalManager(guard);
   const desktop = new DesktopManager({ devices, enabled: () => config.remoteDesktop.enabled,
     backendFactory: opts.desktopBackendFactory, ...(opts.desktopBackendFactory ? { available: () => true } : {}) });
@@ -159,6 +168,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     })));
     await manager.shutdown();
     await registry.stopAll();
+    await mcp?.stop();
   })();
 
   const listenPipe = async (pipe: string, registration?: GatewayManifest) => {

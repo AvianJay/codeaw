@@ -19,6 +19,8 @@ import '../common/link_text.dart';
 import '../common/markdown.dart';
 import '../common/image_preview.dart';
 import '../common/markdown_image.dart';
+import 'agent_cards.dart';
+import 'codex_permissions.dart';
 import 'elicitation_sheet.dart';
 import 'subagent_card.dart';
 import 'turn_summary.dart';
@@ -28,7 +30,7 @@ import 'workflow_view.dart';
 /// Thoughts without a matching turn remain visible, including older histories.
 List<TimelineItem> chatTimelineItems(SessionController controller) {
   final timeline = controller.timeline;
-  final roots = timeline.rootItems.where((item) => item is! MessageItem || !item.removed).toList();
+  final roots = timeline.rootItems.where((item) => (item is! MessageItem || !item.removed) && (item is! CardItem || item.inline)).toList();
   if (!controller.thoughtSummary) return roots;
   final grouped = <MessageItem>{
     for (final turn in [...roots.whereType<TurnSummaryItem>(), ?timeline.currentTurn])
@@ -78,8 +80,12 @@ class TimelineItemView extends StatelessWidget {
         PermissionItem p => PermissionCard(p, controller: controller),
         ElicitationItem e => ElicitationCard(e, controller: controller),
         NoticeItem n => _Note(icon: Icons.info_outline_rounded, text: n.description == null ? n.title : '${n.title}\n${n.description}'),
-        ErrorItem e => _Note(icon: Icons.error_outline_rounded, text: e.message, error: true),
+        ErrorItem e => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            _Note(icon: Icons.error_outline_rounded, text: e.message, error: true),
+            if (reportsPolicyBlock(e.message)) CodexPolicyHint(controller),
+          ]),
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
+        CardItem c => AgentCardView(c, controller: controller),
         TurnSummaryItem t => TurnSummaryView(
             turn: t,
             showThoughts: controller.thoughtSummary,
@@ -568,6 +574,7 @@ class _ToolCallCardState extends State<ToolCallCard> {
           ),
           if (open && t.detailsDeferred) _DeferredDetails(t, controller: widget.controller),
           if (open && !t.detailsDeferred) _ToolDetails(t),
+          if (toolReportsPolicyBlock(t)) CodexPolicyHint(widget.controller),
         ]),
       ),
     );

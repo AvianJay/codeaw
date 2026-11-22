@@ -229,6 +229,29 @@ class StopItem extends TimelineItem {
   final String stopReason;
 }
 
+/// Something an agent put into the chat with one of the bridge's own tools (`card` event).
+class CardItem extends TimelineItem {
+  CardItem(super.key, this.cardId, this.card);
+  final String cardId;
+  final Map<String, dynamic> card;
+
+  /// `files`, `replies` or `notice`; a newer bridge may send kinds this app does not know.
+  String get kind => '${card['kind'] ?? ''}';
+
+  List<String> get replies => [
+        for (final reply in card['replies'] as List? ?? const [])
+          if (reply is String && reply.isNotEmpty) reply,
+      ];
+
+  List<Map<String, dynamic>> get files => [
+        for (final file in card['files'] as List? ?? const [])
+          if (file is Map && file['path'] is String) Map<String, dynamic>.from(file),
+      ];
+
+  /// Quick replies are offered above the composer while they are current, not in the conversation.
+  bool get inline => kind != 'replies';
+}
+
 /// One turn's output and wall time, retained after completion and during replay.
 class TurnSummaryItem extends TimelineItem {
   TurnSummaryItem(super.key, {required this.startedAt, this.prompt});
@@ -327,6 +350,20 @@ class Timeline extends ChangeNotifier {
   bool get running => state == 'running' || state == 'requires_action';
   ToolItem? get activeTool => _activeTools.keys.lastOrNull;
   TurnActivity get activity => activeTool == null ? _activity : TurnActivity.tool;
+
+  /// Replies the agent offered for its latest turn. They lapse once the user has
+  /// answered or another turn has finished since.
+  List<String> get suggestedReplies {
+    var turns = 0;
+    for (final item in items.reversed) {
+      if (item is TurnSummaryItem && ++turns > 1) return const [];
+      if (item is MessageItem && item.role == MessageRole.user && item.parentToolCallId == null && !item.removed && item.taskNotification == null) {
+        return const [];
+      }
+      if (item is CardItem && item.kind == 'replies') return item.replies;
+    }
+    return const [];
+  }
 
   /// Preserve the flat log for replay while presenting attributed child activity
   /// under its delegating tool. Missing parents stay visible at the root.
@@ -725,6 +762,7 @@ class Timeline extends ChangeNotifier {
               },
               ErrorItem e => {'type': 'error', 'message': e.message},
               StopItem s => {'type': 'stop', 'reason': s.stopReason},
+              CardItem c => {'type': 'card', 'id': c.cardId, 'card': c.card},
               TurnSummaryItem _ => {'type': 'turn'},
               _ => throw StateError('Unknown timeline item'),
             },
@@ -839,6 +877,8 @@ class Timeline extends ChangeNotifier {
           item = ErrorItem(key, j['message'] as String);
         case 'stop':
           item = StopItem(key, j['reason'] as String);
+        case 'card':
+          item = CardItem(key, j['id'] as String, map(j['card']) ?? const {});
         case 'turn':
           continue; // Resolve references after all messages exist.
         default:
@@ -1217,6 +1257,10 @@ class Timeline extends ChangeNotifier {
         _touch(item);
       case 'error':
         _add(ErrorItem('error:$anonScope${_anon++}', '${e['message'] ?? 'Error'}'));
+      case 'card':
+        final id = '${e['cardId']}';
+        final card = e['card'];
+        if (card is Map<String, dynamic>) _upsert('card:$id', () => CardItem('card:$id', id, card));
       case 'dequeued':
         final mid = 'u-${e['promptId']}';
         final item = _byKey['user_message_chunk:$mid'];
@@ -1297,6 +1341,7 @@ class Timeline extends ChangeNotifier {
               NoticeItem n => {'notice': n.title},
               ErrorItem e => {'error': e.message},
               StopItem s => {'stop': s.stopReason},
+              CardItem c => {'k': c.key, 'card': c.card},
               TurnSummaryItem t => {'k': t.key, 'response': t.responseText, 'tokens': t.estimatedTokens},
               _ => {'k': i.key},
             },

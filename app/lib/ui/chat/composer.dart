@@ -19,6 +19,7 @@ import '../../main.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'codex_permissions.dart';
 import 'items.dart';
 
 class _FileUpload {
@@ -1631,6 +1632,7 @@ class ConfigBar extends StatelessWidget {
 
   Future<void> _pickValue(BuildContext context, ConfigOption o) async {
     final values = o.values;
+    final manual = codexManualApprovalOption(controller, o);
     final picked = await showAdaptiveSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1652,6 +1654,11 @@ class ConfigBar extends StatelessWidget {
                     o.description!,
                     style: TextStyle(color: Theme.of(ctx).colorScheme.outline),
                   ),
+                ),
+              if (manual != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  child: Text('「${o.currentLabel}」不會詢問。要親自處理核准請求，請選「${manual.name}」。'),
                 ),
               if (o.category == 'model' || o.id == 'model')
                 ListTile(

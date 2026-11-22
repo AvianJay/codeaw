@@ -6,6 +6,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show instantiateImageCodec;
 
 import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/app_state.dart';
@@ -22,6 +23,7 @@ import 'package:codeaw/ui/common/markdown.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
 import 'package:codeaw/util/diff.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -180,6 +182,64 @@ void main() {
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'chat');
     token.cancel();
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'chat_dark');
+    await tester.pumpWidget(const SizedBox());
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
+  });
+
+  testWidgets('agent cards: shown files, a notice and quick replies', (tester) async {
+    final h = _Harness();
+    // The test binding blocks HTTP, so the bridge's preview is put into the image cache up front.
+    final picture = File('test/fixtures/markdown_phone.png').readAsBytesSync();
+    final preview = NetworkImage(h.client.httpUri('/api/fs/raw', {'path': r'D:\proj\shop\out\checkout.png'}).toString(), headers: h.client.authHeaders);
+    await tester.runAsync(() async {
+      final frame = await (await instantiateImageCodec(picture)).getNextFrame();
+      imageCache.putIfAbsent(preview, () => OneFrameImageStreamCompleter(SynchronousFuture(ImageInfo(image: frame.image))));
+    });
+    addTearDown(imageCache.clear);
+    const id = 'claude:cards';
+    final c = h.state.hub!.adopt(id, r'D:\proj\shop', {
+      'configOptions': [
+        {'id': 'model', 'name': 'Model', 'category': 'model', 'type': 'select', 'currentValue': 'opus', 'options': [{'value': 'opus', 'name': 'Opus'}]},
+      ],
+      '_meta': {'codeaw': {'lastSeq': 0}},
+    });
+    void update(Map<String, dynamic> u) => c.onMessage(SessionMessage('session/update', {'sessionId': id, 'update': u}));
+    void event(Map<String, dynamic> e) => c.onMessage(SessionMessage('_codeaw/event', {'sessionId': id, 'event': e}));
+    void say(String mid, String text) => update({
+      'sessionUpdate': 'agent_message_chunk',
+      'content': {'type': 'text', 'text': text},
+      '_meta': {'codeaw': {'mid': mid}},
+    });
+    final started = DateTime.now().subtract(const Duration(minutes: 4)).millisecondsSinceEpoch;
+    update({
+      'sessionUpdate': 'user_message_chunk',
+      'content': {'type': 'text', 'text': '跑一次結帳頁的效能測試，結果給我看'},
+      '_meta': {'codeaw': {'mid': 'u-p1', 'promptId': 'p1'}},
+    });
+    event({'type': 'state', 'state': 'running', 'queued': 0, 'turnStartedAt': started, 'turnPromptId': 'p1'});
+    say('a1', '測試跑完了，結帳頁的 P95 從 **820 ms** 降到 **310 ms**。');
+    event({'type': 'card', 'cardId': 'k_1', 'card': {
+      'kind': 'files',
+      'title': '結帳頁效能測試',
+      'files': [
+        {'path': r'D:\proj\shop\out\checkout.png', 'name': 'checkout.png', 'size': 172339, 'mimeType': 'image/png', 'caption': '優化後的結帳頁'},
+        {'path': r'D:\proj\shop\out\latency-report.pdf', 'name': 'latency-report.pdf', 'size': 2411724, 'mimeType': 'application/pdf', 'caption': '完整報告，含各端點的延遲分佈'},
+        {'path': r'D:\proj\shop\out\k6-summary.json', 'name': 'k6-summary.json', 'size': 8312},
+      ],
+    }});
+    event({'type': 'card', 'cardId': 'k_2', 'card': {'kind': 'notice', 'title': '效能測試完成', 'message': 'P95 降到 310 ms，報告已放進聊天。'}});
+    say('a2', '要把這次的改動提交嗎？');
+    event({'type': 'card', 'cardId': 'k_3', 'card': {'kind': 'replies', 'replies': ['好，提交並推上去', '先跑完整測試', '把報告寄給團隊前讓我再看一次數字']}});
+    event({
+      'type': 'state', 'state': 'idle', 'queued': 0, 'stopReason': 'end_turn',
+      'completedTurn': {'promptId': 'p1', 'startedAt': started, 'endedAt': started + 187000},
+    });
+    c.timeline.title = '結帳頁效能優化';
+    c.timeline.flush();
+    await _shoot(tester, h.wrap(ChatPage(sessionId: id, cwd: c.cwd)), 'agent_cards');
+    await _shoot(tester, h.wrap(ChatPage(sessionId: id, cwd: c.cwd), brightness: Brightness.dark), 'agent_cards_dark');
     await tester.pumpWidget(const SizedBox());
     h.state.hub!.dispose();
     h.state.sessions!.dispose();

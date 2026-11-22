@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
+import { DESKTOP_FULL_ACCESS_ASK } from "./codex-defaults.js";
 
 interface Model { id: string; name: string; efforts: string[] }
 
@@ -33,7 +34,9 @@ export function desktopConfigOptions(conversation: any, models: Model[]): acp.Se
   const sandbox = settings.sandboxPolicy?.type;
   const permission = settings.activePermissionProfile?.id;
   const reviewer = settings.approvalsReviewer ?? conversation?.currentPermissions?.approvalsReviewer;
-  const mode = sandbox === "dangerFullAccess" || permission === ":danger-full-access" ? "agent-full-access"
+  const policy = settings.approvalPolicy ?? conversation?.currentPermissions?.approvalPolicy;
+  const mode = sandbox === "dangerFullAccess" || permission === ":danger-full-access"
+    ? (policy === "never" ? "agent-full-access" : policy === "on-request" && (reviewer == null || reviewer === "user") ? DESKTOP_FULL_ACCESS_ASK : "codeaw-custom-full-access")
     : sandbox === "readOnly" || permission === ":read-only" ? "read-only" : reviewer === "auto_review" || reviewer === "guardian_subagent" ? "agent" : "workspace-write";
   const catalog = models.some((entry) => entry.id === model) ? models : [{ id: model, name: model || "目前模型", efforts: [] }, ...models];
   const efforts = models.find((entry) => entry.id === model)?.efforts ?? [];
@@ -43,7 +46,10 @@ export function desktopConfigOptions(conversation: any, models: Model[]): acp.Se
     { id: "reasoning_effort", name: "推理強度", category: "thought_level", type: "select", currentValue: effort, options: values.map((value) => ({ value, name: value })) },
     { id: "mode", name: "權限模式", category: "mode", type: "select", currentValue: mode, options: [
       { value: "read-only", name: "唯讀" }, { value: "workspace-write", name: "工作區存取" },
-      { value: "agent", name: "Auto review" }, { value: "agent-full-access", name: "完整存取", description: "允許 agent 存取工作區外檔案與網路" },
+      { value: "agent", name: "Auto review" },
+      { value: DESKTOP_FULL_ACCESS_ASK, name: "完整存取（手動核准）", description: "檔案與網路不限。只有 Codex 要求核准時才會詢問你；此設定只套用於這個桌面對話。" },
+      { value: "agent-full-access", name: "完整存取", description: "檔案與網路不限，不會顯示核准提示。" },
+      ...(mode === "codeaw-custom-full-access" ? [{ value: mode, name: "完整存取（桌面設定）", description: "這個桌面對話目前的核准規則未對應到 Codeaw 預設。" }] : []),
     ] },
     { id: "collaboration_mode", name: "協作模式", category: "mode", type: "select", currentValue: collaboration?.mode ?? "default", options: [
       { value: "default", name: "Default" }, { value: "plan", name: "Plan" },
@@ -63,7 +69,7 @@ export function desktopSettingsPatch(conversation: any, configId: string, value:
   if (configId === "collaboration_mode" && ["default", "plan"].includes(value))
     return { collaborationMode: { mode: value, settings: { model, reasoning_effort: effort, developer_instructions: null } } };
   if (configId === "mode") {
-    const sandboxPolicy = value === "read-only" ? { type: "readOnly" } : value === "agent-full-access" ? { type: "dangerFullAccess" }
+    const sandboxPolicy = value === "read-only" ? { type: "readOnly" } : value === "agent-full-access" || value === DESKTOP_FULL_ACCESS_ASK ? { type: "dangerFullAccess" }
       : value === "agent" || value === "workspace-write" ? { type: "workspaceWrite", writableRoots: [conversation.cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } : undefined;
     if (sandboxPolicy) return { sandboxPolicy, permissions: null, approvalPolicy: value === "agent-full-access" ? "never" : "on-request", approvalsReviewer: value === "agent" ? "auto_review" : "user" };
   }

@@ -33,6 +33,7 @@ export class FrontendConnection implements ClientHandle {
   readonly id = "c_" + crypto.randomBytes(5).toString("hex");
   foreground = true;
   activeSessionId?: string;
+  notices = false;
   readonly app: acp.AgentApp;
   private ctx?: acp.AgentContext;
   private chain: Promise<void> = Promise.resolve();

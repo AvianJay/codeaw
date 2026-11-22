@@ -17,6 +17,9 @@ import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
 import { NativeActivity } from "./native-activity.js";
+import type { McpServer } from "../mcp/server.js";
+import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
+import { pathKey } from "../util/paths.js";
 import { newEpoch, type SessionStore } from "./store.js";
 import {
   codeawMeta,
@@ -24,6 +27,7 @@ import {
   isChunk,
   noticeKey,
   withCodeawMeta,
+  type Card,
   type CodeawEvent,
   type CompletedTurn,
   type LogEntry,
@@ -39,6 +43,8 @@ export interface ClientHandle {
   readonly deviceName: string;
   foreground: boolean;
   activeSessionId?: string;
+  /** The app reports the chat on screen reliably and can show `_codeaw/notify`. */
+  notices?: boolean;
   /** Sends a notification; calls are delivered in order. */
   notify(method: string, params: unknown): Promise<void>;
   /** Sends a request after everything queued before it; resolves with the client's answer. */
@@ -51,6 +57,11 @@ interface Turn {
   promptId: string;
   startedAt: number;
   done: Promise<acp.PromptResponse>;
+  /** A Claude cycle started by a monitor, cron job or task notification. */
+  autonomous?: {
+    resolve: (result: acp.PromptResponse) => void;
+    reject: (error: Error) => void;
+  };
 }
 
 interface QueuedPrompt {
@@ -178,6 +189,8 @@ function toRequestError(err: unknown): acp.RequestError {
 }
 
 const DEFAULT_PAGE_BYTES = 192 * 1024;
+/** Files one chat keeps readable for paired devices; the oldest grants lapse first. */
+const MAX_SHARED_FILES = 256;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function beforeOf(page: { before?: number }): { before?: number } {
@@ -210,7 +223,7 @@ function cpaProvider(meta: SessionMeta): string | undefined {
   return undefined;
 }
 
-export class SessionManager implements AgentHandlers {
+export class SessionManager implements AgentHandlers, McpHost {
   private readonly sessions = new Map<string, BridgeSession>();
   private readonly deleting = new Set<string>();
   private readonly clients = new Set<ClientHandle>();
@@ -227,9 +240,15 @@ export class SessionManager implements AgentHandlers {
   private readonly recovered = new Map<string, string | null>();
   private sweepTimer?: NodeJS.Timeout;
   private shuttingDown = false;
+  /** Shown file → chats that showed it; built from the saved chats on first use. */
+  private shareIndex?: Map<string, Set<string>>;
   notifier?: PushNotifier;
   liveActivity?: LiveActivityPush;
   cpa?: CpaUsageService;
+  /** The bridge's own tools for agents; absent when disabled in the config. */
+  mcp?: McpServer;
+  /** How long a device has to confirm a notice before the bridge pushes instead. */
+  notifyAckMs = 5000;
 
   constructor(
     private readonly registry: AgentRegistry,
@@ -285,6 +304,10 @@ export class SessionManager implements AgentHandlers {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
     for (const s of this.sessions.values()) {
       if (s.workTimer) clearTimeout(s.workTimer);
+      if (s.turn?.autonomous) {
+        s.turn.autonomous.reject(new Error("Bridge stopped"));
+        s.turn = undefined;
+      }
       for (const q of s.queue.splice(0)) {
         this.appendEvent(s, { type: "dequeued", promptId: q.promptId, cancelled: true });
         q.resolve({ stopReason: "cancelled" });
@@ -339,9 +362,10 @@ export class SessionManager implements AgentHandlers {
     s.lastActivity = Date.now();
   }
 
-  setClientState(c: ClientHandle, params: { foreground?: unknown; activeSessionId?: unknown }): void {
+  setClientState(c: ClientHandle, params: { foreground?: unknown; activeSessionId?: unknown; notices?: unknown }): void {
     if (typeof params.foreground === "boolean") c.foreground = params.foreground;
     c.activeSessionId = typeof params.activeSessionId === "string" ? params.activeSessionId : undefined;
+    c.notices = params.notices === true;
   }
 
   initializeResponse(): acp.InitializeResponse {
@@ -355,8 +379,118 @@ export class SessionManager implements AgentHandlers {
       },
       agentInfo: { name: "codeaw-bridge", title: "codeaw", version: VERSION },
       authMethods: [],
-      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true, editPrompts: true, fileArchives: true } },
+      _meta: { codeaw: { version: 1, host: this.opts.hostName, agents: this.registry.describe(), projectless: true, editPrompts: true, fileArchives: true,
+        ...(this.mcp ? { agentTools: this.mcp.toolNames } : {}) } },
     };
+  }
+
+  // ───────────────────────────── the bridge's own tools (MCP) ─────────────────────────────
+
+  /**
+   * Credentials that connect a chat on this agent to the bridge's MCP server: the chat's
+   * own token, or a new one to `bind` once the agent has named the session.
+   */
+  private mcpToken(agent: AgentBackend, sessionId?: string): string | undefined {
+    if (!this.mcp || !this.givesTools(agent)) return undefined;
+    return sessionId ? this.mcp.tokenFor(sessionId) : this.mcp.issue();
+  }
+
+  private mcpServers(token: string | undefined): acp.McpServer[] {
+    return token && this.mcp ? [this.mcp.entry(token)] : [];
+  }
+
+  /** Whether chats on this agent get the bridge's tools. The Antigravity CLI takes no MCP servers. */
+  private givesTools(agent: AgentBackend): boolean {
+    return !!this.mcp && agent.config.mcp !== false && agent.config.transport !== "agy";
+  }
+
+  /** What this agent's model should be told about codeaw; undefined when its chats get no tools. */
+  agentInstructions(agentId: string): string | undefined {
+    return this.registry.has(agentId) && this.givesTools(this.registry.get(agentId)) ? this.mcp?.instructions : undefined;
+  }
+
+  mcpSession(sessionId: string): { cwd: string } | undefined {
+    if (this.store.isDeleted(sessionId) || this.deleting.has(sessionId)) return undefined;
+    const s = this.sessions.get(sessionId) ?? this.fromDisk(sessionId);
+    return s && { cwd: s.meta.cwd };
+  }
+
+  showCard(sessionId: string, card: Card, share: string[] = []): void {
+    const s = this.requireLoaded(sessionId);
+    if (share.length) {
+      const shared = new Set(s.meta.shared ?? []);
+      for (const file of share) {
+        shared.delete(file);
+        shared.add(file);
+      }
+      s.meta.shared = [...shared].slice(-MAX_SHARED_FILES);
+      this.indexShares(s.id, s.meta.shared);
+      this.saveMeta(s, true);
+    }
+    this.appendEvent(s, { type: "card", cardId: "k_" + crypto.randomBytes(6).toString("hex"), card });
+  }
+
+  async notifyUser(sessionId: string, notice: { title?: string; message: string; urgent: boolean }): Promise<NotifyDelivery> {
+    const s = this.requireLoaded(sessionId);
+    // Older apps neither show these nor say which chat is on screen.
+    const capable = [...this.clients].filter((c) => c.notices);
+    // Someone reading this chat already sees the card it was logged as.
+    if (capable.some((c) => c.foreground && c.activeSessionId === s.id)) return "watching";
+    const agentName = this.registry.has(s.meta.agentId) ? this.requireAgent(s.meta.agentId).config.name : s.meta.agentId;
+    const params = { sessionId: s.id, agentId: s.meta.agentId, agentName, sessionTitle: s.meta.title, ...notice };
+    if (await this.notifyDevices(capable, params)) return "devices";
+    const detail = notice.title ? `${notice.title}\n${notice.message}` : notice.message;
+    const pushed = await this.notifier?.send({ kind: "message", sessionId: s.id, agentName, sessionTitle: s.meta.title, detail, urgent: notice.urgent });
+    return pushed ? "push" : "none";
+  }
+
+  /**
+   * True once a device confirms that it showed the notice. A phone that was just put
+   * away keeps its socket for a while without running the app, so sending is not enough.
+   */
+  private notifyDevices(clients: ClientHandle[], params: unknown): Promise<boolean> {
+    if (clients.length === 0) return Promise.resolve(false);
+    const abort = new AbortController();
+    // Left running after the first confirmation, to withdraw the request from the rest.
+    setTimeout(() => abort.abort(), this.notifyAckMs).unref();
+    return new Promise<boolean>((resolve) => {
+      let waiting = clients.length;
+      // Withdrawing a request only asks the device to answer; it may never do so.
+      abort.signal.addEventListener("abort", () => resolve(false), { once: true });
+      for (const c of clients) {
+        c.request<{ shown?: unknown }>("_codeaw/notify", params, abort.signal).then((answer) => answer?.shown === true, () => false).then((shown) => {
+          if (shown) resolve(true);
+          else if (--waiting === 0) resolve(false);
+        });
+      }
+    });
+  }
+
+  /** Whether an agent showed this file to the user, which lets paired devices read it. */
+  isShared(real: string): boolean {
+    if (!this.shareIndex) {
+      this.shareIndex = new Map();
+      const metas = new Map<string, SessionMeta>();
+      for (const meta of this.store.listMetas()) metas.set(meta.id, meta);
+      for (const s of this.sessions.values()) metas.set(s.id, s.meta);
+      for (const meta of metas.values()) this.indexShares(meta.id, meta.shared);
+    }
+    return this.shareIndex.has(pathKey(real));
+  }
+
+  /** Replaces what one chat contributes to the index of shown files. */
+  private indexShares(sessionId: string, files: string[] | undefined): void {
+    const index = this.shareIndex;
+    if (!index) return;
+    for (const [key, owners] of index) {
+      if (owners.delete(sessionId) && owners.size === 0) index.delete(key);
+    }
+    for (const file of files ?? []) {
+      const key = pathKey(file);
+      let owners = index.get(key);
+      if (!owners) index.set(key, owners = new Set());
+      owners.add(sessionId);
+    }
   }
 
   // ───────────────────────────── agent → bridge ─────────────────────────────
@@ -374,10 +508,50 @@ export class SessionManager implements AgentHandlers {
       return;
     }
     if (s.suppressUpdates) return;
-    if (s.meta.connection !== "desktop" && s.turn && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(params.update.sessionUpdate)) {
+    this.observeAutonomousTurn(s, params.update);
+    if (s.meta.connection !== "desktop" && s.turn && !s.turn.autonomous && ["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"].includes(params.update.sessionUpdate)) {
       this.receipt(s, s.turn.promptId, "read");
     }
     this.ingest(s, params.update);
+    // Claude emits cost only for the SDK's terminal result. Streaming usage,
+    // compaction and rate-limit updates have no cost and do not end a cycle.
+    const update = params.update as any;
+    if (s.turn?.autonomous && !parentToolCallId(update) && update.sessionUpdate === "usage_update" && typeof update.cost?.amount === "number") {
+      this.finishAutonomousTurn(s, "end_turn");
+      this.startNext(s);
+    }
+  }
+
+  private observeAutonomousTurn(s: BridgeSession, update: acp.SessionUpdate): void {
+    if (s.turn || s.meta.connection === "desktop" || parentToolCallId(update) || !this.registry.has(s.meta.agentId)) return;
+    const agent = this.requireAgent(s.meta.agentId);
+    const info = agent.describe().agentInfo as { name?: string } | undefined;
+    // Import/load replays arrive before the session is active in this process.
+    if (!s.backendGen || s.backendGen !== agent.generation || info?.name !== "@agentclientprotocol/claude-agent-acp") return;
+    const active = (update.sessionUpdate === "agent_message_chunk" || update.sessionUpdate === "agent_thought_chunk")
+      ? update.content.type !== "text" || update.content.text.length > 0
+      : update.sessionUpdate === "tool_call" && (update.status === "pending" || update.status === "in_progress");
+    if (!active) return;
+    let resolve!: (result: acp.PromptResponse) => void;
+    let reject!: (error: Error) => void;
+    const done = new Promise<acp.PromptResponse>((res, rej) => { resolve = res; reject = rej; });
+    done.catch(() => undefined);
+    s.turn = { promptId: crypto.randomUUID(), startedAt: Date.now(), done, autonomous: { resolve, reject } };
+    s.work.reset();
+    s.completedTurn = undefined;
+    s.stopReason = undefined;
+    this.emitState(s);
+  }
+
+  private finishAutonomousTurn(s: BridgeSession, stopReason: "end_turn" | "cancelled" | "error"): void {
+    const turn = s.turn;
+    if (!turn?.autonomous) return;
+    s.turn = undefined;
+    const completedTurn = { promptId: turn.promptId, startedAt: turn.startedAt, endedAt: Date.now() };
+    this.emitState(s, stopReason, completedTurn);
+    if (stopReason === "error") turn.autonomous.reject(acp.RequestError.internalError(undefined, "Agent stopped during a background turn"));
+    else turn.autonomous.resolve({ stopReason });
+    this.push(s, stopReason === "error" ? "error" : "turn_end", undefined, () => !s.turn);
   }
 
   /** Desktop snapshots are authoritative; an edited history gets a new replay epoch. */
@@ -517,7 +691,16 @@ export class SessionManager implements AgentHandlers {
   async onPermission(agentId: string, params: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
     const s = this.sessions.get(extId(agentId, params.sessionId));
     if (!s) return { outcome: { outcome: "cancelled" } };
-    if (s.turn) this.receipt(s, s.turn.promptId, "read");
+    if (s.turn && !s.turn.autonomous) this.receipt(s, s.turn.promptId, "read");
+    // The bridge's own tools only present something to the user; asking first would be noise.
+    if (this.mcp) {
+      const id = (params.toolCall as any)?.toolCallId;
+      const logged = this.ensureEntries(s).findLast((e) => e.kind === "update" && e.update.sessionUpdate === "tool_call" && (e.update as any).toolCallId === id);
+      const allow = params.options.find((o) => o.kind === "allow_once") ?? params.options.find((o) => o.kind === "allow_always");
+      if (allow && isOwnToolCall(params.toolCall, logged?.kind === "update" ? logged.update : undefined)) {
+        return { outcome: { outcome: "selected", optionId: allow.optionId } };
+      }
+    }
     const toolTitle = (params.toolCall as any)?.title as string | undefined;
     return this.openRequest(s, {
       kind: "permission",
@@ -534,7 +717,7 @@ export class SessionManager implements AgentHandlers {
     const backendSession = (params as any).sessionId as string | undefined;
     const s = backendSession ? this.sessions.get(extId(agentId, backendSession)) : undefined;
     if (!s) return { action: "decline" } as acp.CreateElicitationResponse;
-    if (s.turn) this.receipt(s, s.turn.promptId, "read");
+    if (s.turn && !s.turn.autonomous) this.receipt(s, s.turn.promptId, "read");
     return this.openRequest(s, {
       kind: "elicitation",
       method: "elicitation/create",
@@ -558,6 +741,7 @@ export class SessionManager implements AgentHandlers {
         q.reject(acp.RequestError.internalError(undefined, `Agent ${detail}`));
       }
       if (s.turn) this.appendEvent(s, { type: "error", message: `Agent process ${detail}` });
+      this.finishAutonomousTurn(s, "error");
     }
   }
 
@@ -1019,7 +1203,9 @@ export class SessionManager implements AgentHandlers {
 
   private async activate(s: BridgeSession, agent: AgentBackend, allowDisconnected = false, override?: { configId: string; value: unknown }): Promise<void> {
     const caps = agent.capabilities;
-    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
+    const desktop = s.meta.connection === "desktop";
+    // A desktop-owned chat runs in the desktop app, which the bridge cannot give tools to.
+    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
     const saved = structuredClone(s.meta);
     let resp: any;
     if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
@@ -1080,7 +1266,8 @@ export class SessionManager implements AgentHandlers {
     const before = this.transcriptTime(agentId, backendId, sessionCwd) ?? info?.updatedAt;
     if (before && !Number.isNaN(Date.parse(before))) s.meta.activityAt = later(s.meta.activityAt, new Date(before).toISOString());
     const caps = agent.capabilities;
-    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: [], ...(s.meta.connection === "desktop" ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
+    const desktop = s.meta.connection === "desktop";
+    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
     s.replaying++;
     try {
@@ -1177,7 +1364,8 @@ export class SessionManager implements AgentHandlers {
     await agent.ensureStarted();
     const projectless = m.projectless === true;
     const cwd = projectless ? this.store.createChatDirectory() : params.cwd;
-    const req: Record<string, unknown> = { cwd, mcpServers: [] };
+    const token = this.mcpToken(agent);
+    const req: Record<string, unknown> = { cwd, mcpServers: this.mcpServers(token) };
     let defaults: Record<string, string>;
     if (!projectless && params.additionalDirectories?.length && agent.capabilities?.sessionCapabilities?.additionalDirectories) {
       req.additionalDirectories = params.additionalDirectories;
@@ -1185,13 +1373,15 @@ export class SessionManager implements AgentHandlers {
     let resp: any;
     let s: BridgeSession;
     try {
-      defaults = codexDefaults(agent);
+      defaults = codexDefaults(agent, m.initialConfig?.mode);
       resp = await agent.request<any>("session/new", req);
       s = this.createSession({ id: extId(agentId, resp.sessionId), agentId, backendId: resp.sessionId, cwd, ...(projectless ? { projectless: true } : {}), origin: "bridge" });
     } catch (error) {
+      if (token) this.mcp?.revoke(token);
       if (projectless) this.store.discardEmptyChatDirectory(cwd);
       throw error;
     }
+    if (token) this.mcp?.bind(token, s.id);
     s.backendGen = agent.generation;
     this.applySetup(s, resp);
     this.flushOrphans(s);
@@ -1546,21 +1736,29 @@ export class SessionManager implements AgentHandlers {
 
   private async fork(s: BridgeSession, messageId: string, prompt: acp.ContentBlock[], promptId: string, replace: boolean): Promise<Record<string, unknown>> {
     const { plan, agent } = await this.checkFork(s, messageId);
+    const token = this.mcpToken(agent);
+    const mcpServers = this.mcpServers(token);
     let resp: any;
-    if (plan.messageId) {
-      resp = await agent.request("session/fork", {
-        sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: [],
-        _meta: { jetbrains: { air: { fork: { version: 1, messageId: plan.messageId } } } },
-      });
-    } else {
-      resp = await agent.request("session/new", { cwd: s.meta.cwd, mcpServers: [] });
+    try {
+      if (plan.messageId) {
+        resp = await agent.request("session/fork", {
+          sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers,
+          _meta: { jetbrains: { air: { fork: { version: 1, messageId: plan.messageId } } } },
+        });
+      } else {
+        resp = await agent.request("session/new", { cwd: s.meta.cwd, mcpServers });
+      }
+      if (typeof resp?.sessionId !== "string" || !resp.sessionId) throw acp.RequestError.internalError(undefined, "The agent did not return the new session");
+    } catch (error) {
+      if (token) this.mcp?.revoke(token);
+      throw error;
     }
-    if (typeof resp?.sessionId !== "string" || !resp.sessionId) throw acp.RequestError.internalError(undefined, "The agent did not return the new session");
     const fork = this.createSession({
       id: extId(s.meta.agentId, resp.sessionId), agentId: s.meta.agentId, backendId: resp.sessionId, cwd: s.meta.cwd,
       ...(s.meta.projectless ? { projectless: true } : {}), origin: "bridge", title: s.meta.title,
       forkedFrom: { sessionId: s.id, messageId, promptId },
     });
+    if (token) this.mcp?.bind(token, fork.id);
     const entries = this.ensureEntries(fork);
     for (const entry of plan.entries) {
       const copy = { ...entry, seq: ++fork.meta.lastSeq } as LogEntry;
@@ -1664,6 +1862,7 @@ export class SessionManager implements AgentHandlers {
   async cancel(_c: ClientHandle, params: acp.CancelNotification): Promise<void> {
     const s = this.sessions.get(params.sessionId);
     if (!s) return;
+    const turn = s.turn;
     for (const pr of [...s.pending.values()]) this.settle(s, pr, pr.cancelValue, undefined);
     for (const q of s.queue.splice(0)) {
       this.appendEvent(s, { type: "dequeued", promptId: q.promptId, cancelled: true });
@@ -1679,6 +1878,10 @@ export class SessionManager implements AgentHandlers {
           this.appendEvent(s, { type: "error", message: errorMessage(error) });
         }
       }
+    }
+    if (turn?.autonomous && s.turn === turn) {
+      this.finishAutonomousTurn(s, "cancelled");
+      this.startNext(s);
     }
   }
 
@@ -1787,6 +1990,8 @@ export class SessionManager implements AgentHandlers {
       this.sessions.delete(id);
       this.nativeInfo.delete(id);
       this.orphans.delete(id);
+      this.mcp?.revoke(id);
+      this.indexShares(id, undefined);
       for (const client of this.clients) void client.notify("_codeaw/activity", { sessionId: id, agentId, deleted: true });
     } finally {
       this.deleting.delete(id);

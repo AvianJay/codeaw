@@ -10,6 +10,7 @@ import '../../data/timeline.dart';
 import '../../data/tool_display.dart';
 import '../common/adaptive.dart';
 import '../common/widgets.dart';
+import 'agent_cards.dart';
 import 'composer.dart';
 import 'chat_header.dart';
 import 'elicitation_sheet.dart';
@@ -276,6 +277,10 @@ class _ChatPageState extends State<ChatPage> {
                             maxWidth: _chatContentWidth,
                             child: _PendingBar(controller: c),
                           ),
+                        ContentWidth(
+                          maxWidth: _chatContentWidth,
+                          child: SuggestedReplies(controller: c),
+                        ),
                         ContentWidth(
                           maxWidth: _chatContentWidth,
                           child: Composer(controller: c),

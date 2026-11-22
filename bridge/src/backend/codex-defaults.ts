@@ -2,9 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { RequestError } from "@agentclientprotocol/sdk";
 import { parse, stringify } from "smol-toml";
 import type { AgentBackend } from "./backend.js";
 import { expandHome } from "../util/paths.js";
+
+// The desktop owner accepts the sandbox and approval policy independently.
+// codex-acp sends one of its fixed presets on every turn.
+export const DESKTOP_FULL_ACCESS_ASK = "codeaw-full-access-on-request";
 
 const MODES: Record<string, Record<string, string>> = {
   "read-only": { sandbox_mode: "read-only", approval_policy: "on-request", approvals_reviewer: "user" },
@@ -86,23 +91,58 @@ function read(file: string): string {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw error; }
 }
 
+/** Windows limits one environment variable to 32,767 characters. */
+const MAX_CONFIG_OVERRIDE_LENGTH = 30_000;
+
+/**
+ * The environment that makes Codex tell its model `instructions`.
+ *
+ * Codex ignores the instructions of an MCP server, and in code mode its model does not
+ * see tool descriptions either. codex-acp applies the JSON in `CODEX_CONFIG` to every
+ * thread it starts or resumes, so the text goes into `developer_instructions`. That
+ * replaces the user's own setting, which is therefore read and put in front; when it
+ * cannot be read, nothing is changed. It is read when the agent starts.
+ */
+export function codexInstructionsEnvironment(agent: AgentBackend, env: NodeJS.ProcessEnv, instructions: string): NodeJS.ProcessEnv {
+  let overrides: Record<string, unknown> = {};
+  if (env.CODEX_CONFIG) {
+    try { overrides = JSON.parse(env.CODEX_CONFIG); } catch { return env; }
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return env;
+  }
+  let own = overrides.developer_instructions;
+  if (own === undefined) {
+    try { own = parse(read(configFile(agent)), { integersAsBigInt: "asNeeded" }).developer_instructions; }
+    catch { return env; }
+  }
+  if (own !== undefined && typeof own !== "string") return env;
+  const value = JSON.stringify({ ...overrides, developer_instructions: [own?.trim(), instructions].filter(Boolean).join("\n\n") });
+  return value.length > MAX_CONFIG_OVERRIDE_LENGTH ? env : { ...env, CODEX_CONFIG: value };
+}
+
 /** Called only for new chats; existing chats restore their own saved settings. */
-export function codexDefaults(agent: AgentBackend): Record<string, string> {
+export function codexDefaults(agent: AgentBackend, requestedMode?: unknown): Record<string, string> {
   if (!isCodex(agent)) return {};
+  let config: Record<string, unknown>;
   try {
-    const config = parse(read(configFile(agent)), { integersAsBigInt: "asNeeded" });
-    const sandbox = config.default_permissions === ":danger-full-access" ? "danger-full-access"
-      : config.default_permissions === ":read-only" ? "read-only"
-      : config.default_permissions === ":workspace" ? "workspace-write" : config.sandbox_mode;
-    const mode = sandbox === "danger-full-access" ? "agent-full-access"
-      : sandbox === "read-only" ? "read-only"
-      : sandbox === "workspace-write" ? (config.approvals_reviewer === "auto_review" || config.approvals_reviewer === "guardian_subagent" ? "agent" : "workspace-write") : undefined;
-    return {
-      ...(typeof config.model === "string" ? { model: config.model } : {}),
-      ...(typeof config.model_reasoning_effort === "string" ? { reasoning_effort: config.model_reasoning_effort } : {}),
-      ...(mode ? { mode } : {}),
-    };
+    config = parse(read(configFile(agent)), { integersAsBigInt: "asNeeded" });
   } catch { throw new Error("Could not read Codex defaults from config.toml"); }
+  const sandbox = config.default_permissions === ":danger-full-access" ? "danger-full-access"
+    : config.default_permissions === ":read-only" ? "read-only"
+    : config.default_permissions === ":workspace" ? "workspace-write" : config.sandbox_mode;
+  const workspace = config.approvals_reviewer === "auto_review" || config.approvals_reviewer === "guardian_subagent" ? "agent" : "workspace-write";
+  let mode: string | undefined;
+  if (typeof requestedMode === "string" && Object.hasOwn(MODES, requestedMode)) mode = requestedMode;
+  else if (sandbox === "danger-full-access") {
+    if (config.approval_policy === "never") mode = "agent-full-access";
+    else if (config.approval_policy === undefined || config.approval_policy === "on-request") mode = workspace;
+    else throw RequestError.invalidRequest(undefined, "codex-acp cannot represent this full-access approval policy. Choose Workspace access in the permissions menu of an existing Codex chat, or set approval_policy to on-request in your Codex config.toml before starting an ACP chat.");
+  } else if (sandbox === "read-only") mode = "read-only";
+  else if (sandbox === "workspace-write") mode = workspace;
+  return {
+    ...(typeof config.model === "string" ? { model: config.model } : {}),
+    ...(typeof config.model_reasoning_effort === "string" ? { reasoning_effort: config.model_reasoning_effort } : {}),
+    ...(mode ? { mode } : {}),
+  };
 }
 
 /** Save explicit user changes only, never a resume, import or fork. */
@@ -111,6 +151,8 @@ export function saveCodexDefaults(agent: AgentBackend, configId: string, options
   const updates: Record<string, string> = {};
   if (configId === "mode") {
     const mode = modeId ?? options.find((o) => o.id === "mode")?.currentValue;
+    // The owner persists this per thread. Do not replace the default used by ACP/CLI.
+    if (mode === DESKTOP_FULL_ACCESS_ASK) return;
     if (!Object.hasOwn(MODES, mode)) throw new Error("Unsupported Codex permission mode");
     Object.assign(updates, MODES[mode]);
   } else {

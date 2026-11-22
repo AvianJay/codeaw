@@ -19,6 +19,7 @@
 - **Windows Codex 桌面同步**：載入桌面 app 持有的 Codex 對話時，bridge 會附加到桌面 owner，雙向同步訊息、工具進度與回合狀態；手機也能插話、停止、批准操作及回覆一般問題。
 - **問題選項／自訂回答**：Codex 桌面的非同步問題會在手機顯示「回答」表單，可點選建議或填入自訂文字，多題一併送出。第一個建議可預選，仍需按「送出」才會回覆；模型工作繼續執行，回答會插入原回合，回合已結束時則接續同一聊天。重連後保留最新回合尚未回答的問題；開始新回合後舊題失效，已回答、取消或失敗回合的問題不再重開。
 - **Claude Code Workflow**：Workflow 卡片顯示名稱、說明、各階段進度，以及每個 agent 的狀態、任務與回傳值；回合結束後，背景執行的 workflow 仍會持續更新，完成後可展開結果、logs 與腳本，也會列在子代理面板。進度來自 bridge 讀取 Claude Code 在電腦上的 workflow 紀錄，App 與 bridge 都需更新；在終端機執行、事後才載入的對話沒有 agent 進度，只依完成通知顯示最後狀態。還有 workflow 在背景執行的對話不會因閒置而被關閉。
+- **agent 主動在 App 呈現內容**：bridge 會把自己的 `codeaw` 工具交給 agent，並告訴它「你正透過 codeaw 被使用，使用者通常在手機上、看不到電腦畫面」。agent 可以把電腦上的圖片與檔案直接放進聊天（圖片內嵌預覽，其他檔案可點開、下載、分享）、在輸入框上方提供可點的快速回覆、在回合進行中通知你的裝置。不需要改任何 agent 設定，也可以加上自己的提示詞；詳見[讓 agent 使用 codeaw](#讓-agent-使用-codeaw工具與提示詞)。App 與 bridge 都需更新。
 - **互動終端機**：從首頁、對話或檔案頁的終端機按鈕，在電腦上的工作目錄操作 shell。支援彩色輸出、中文輸入、貼上、Ctrl+C、Tab 與方向鍵；可在同一目錄新增多個獨立分頁，每個配對裝置最多八個。離開畫面、關閉瀏覽器或斷線不會停止 shell，重新開啟會恢復分頁與近期輸出；手動關閉或 bridge 停止時才結束。網頁版內附等寬字型，讓 Edge 等瀏覽器的字距一致。
 - **遠端桌面**：Android／iOS／Web 可查看及操作 Windows 桌面、輸入中文與切換螢幕，提供一般、高流暢、低流量與極省流量四種模式。電腦端啟用後沿用現有配對；可選安裝進階服務，支援登入前連線、解鎖與 UAC。詳見 [遠端桌面設定與模式](docs/remote-desktop.md)。
 
@@ -103,12 +104,15 @@ Windows 背景 bridge、系統匣與登入啟動由附帶的 `codeaw-launcher.ex
 | `agents.<id>.transport: agy` | 使用 Antigravity CLI 的原生 NDJSON 串流；省略時使用 ACP |
 | `agents.<id>.geminiEnvFile` | 選擇讓 bridge 讀取 CC Switch 的 Gemini `.env`，只匯入 key、endpoint、預設 model |
 | `notifications.ntfy` | 推播設定，見下方 |
+| `mcp.enabled` / `mcp.instructions` / `agents.<id>.mcp` | 給 agent 的 codeaw 工具與提示詞，見[讓 agent 使用 codeaw](#讓-agent-使用-codeaw工具與提示詞) |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
 | `autoUpdateAgents` | 預設 `true`；每天自動更新由 Codeaw 安裝的 ACP adapter，取得新模型。設為 `false` 關閉 |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
 若需瀏覽工作區以外的資料夾，在 Windows 系統匣「設定…」勾選「允許已配對裝置瀏覽所有磁碟與資料夾」，或在 YAML 加入 `filesystem: { allowAllPaths: true }` 後重新載入 bridge。此設定只能從電腦端啟用。**所有已配對裝置都能瀏覽、讀取這個 Windows 帳號可存取的檔案，並在任意資料夾啟動 agent／終端機**，包括私人資料；建議只配對可信任的裝置。不需此功能時取消勾選。資料夾限制不是 agent 或 shell 的安全沙箱，其權限仍由作業系統及 agent 設定決定。不存在的工作目錄會在啟動 agent 前直接回報錯誤。
+
+Codex 對話可從輸入框旁的盾牌選擇權限。一般對話的 **Full access** 不顯示核准提示；想親自處理核准請求，請選 **Workspace access**。已連接 Codex 桌面的對話另提供 **完整存取（手動核准）**，只套用於該對話。這兩個手動模式都只會詢問 Codex 要求核准的動作；政策直接禁止的操作無法核准。切換從下一回合生效，不會重送已被拒絕的指令。
 
 在新對話的「瀏覽…」選好父目錄後，按右上角的「新增資料夾」圖示，輸入名稱並建立。App 會進入新目錄，按「選這裡」即可用它開新對話；專案檔案頁也有相同按鈕。建立只限目前允許存取的目錄，不會覆蓋同名檔案，也不會自動開啟所有磁碟權限。
 
@@ -123,6 +127,45 @@ Windows 背景 bridge、系統匣與登入啟動由附帶的 `codeaw-launcher.ex
 聊天中自己上傳的圖片和 AI 回傳的圖片都可點擊開啟大圖，支援雙指縮放、拖曳、點兩下放大及重設縮放；重新連線後的圖片仍透過已配對 bridge 讀取。
 
 訊息下方一個勾表示 bridge 已收到，兩個勾表示 AI 已開始處理。排隊訊息在真正交給 AI 前保持一個勾；兩個勾不表示 AI 已完成回覆。傳送中或斷線而結果不明會顯示時鐘，請先查看聊天紀錄再重試。已收到的訊息會立即清空輸入欄，斷線、切換對話或回到 App 不會把它填回草稿。
+
+### 讓 agent 使用 codeaw（工具與提示詞）
+
+bridge 內建一個名為 `codeaw` 的 MCP 伺服器，開新對話或重新開啟對話時自動交給 agent，不需要在 agent 自己的設定檔加任何東西：
+
+| 工具 | agent 用它做什麼 |
+|---|---|
+| `show_files` | 把電腦上的檔案放進聊天。圖片內嵌預覽，其他檔案可點開、下載或分享。被展示的檔案即使在工作區之外，已配對裝置也能讀取（只限那個檔案，不含所在資料夾）；刪除對話後失效 |
+| `suggest_replies` | 回合結束時，在輸入框上方顯示可點的快速回覆；點一下就當成你的下一則訊息送出 |
+| `notify` | 回合進行中主動通知你。正在看該對話時只顯示在對話裡；App 開在其他畫面時顯示於 App 內；App 在背景時發系統通知；沒有任何裝置顯示時改走 ntfy。每個對話每分鐘最多 4 則 |
+
+這些工具只是把內容呈現給你，不會動到電腦上的東西，所以不會跳出權限詢問。
+
+bridge 同時會告訴 agent：它正透過 codeaw 被使用、你通常在手機上且看不到電腦畫面，以及這三個工具的用途。要加上自己的提示詞，在 `~/.codeaw/config.yaml` 加入（最多 4000 字元）後重新載入 bridge：
+
+```yaml
+mcp:
+  instructions: |
+    回覆一律用繁體中文，盡量精簡。
+```
+
+各 agent 收到提示詞的方式不同：
+
+- **Claude Code**：透過 MCP 伺服器的 `instructions` 進入 system prompt。
+- **Codex**：Codex 不讀 MCP 的 `instructions`，所以 bridge 啟動 codex-acp 時改用 `developer_instructions` 帶入，並把你在 `~/.codex/config.toml` 自己寫的 `developer_instructions` 放在前面一起保留。bridge 只讀取、不會修改那個檔案；改了它之後要重啟 agent 才會重新讀取。專案資料夾內 `.codex/config.toml` 或 Codex profile 另外寫的 `developer_instructions` 不會併入，會被這一份取代。讀不懂你的 Codex 設定時 bridge 不會動它，此時 Codex 不會收到提示詞（bridge 的記錄會有一則警告）。
+- **其他 agent**：除了 MCP `instructions` 之外，也會附一小段說明在工具說明裡；自訂提示詞太長時，這一段會被截短。agent 是否真的把它交給模型取決於該 agent，可用下方指令確認。
+- **不適用**：由 Codex 桌面 app 持有的對話（桌面同步），以及 Antigravity CLI（`transport: agy`）。
+
+關閉全部：`mcp: { enabled: false }`；只對某個 agent 關閉：`agents.<id>.mcp: false`。
+
+這個 MCP 伺服器只聽 `127.0.0.1` 的隨機埠，不會出現在 Tailscale 位址上；每個對話有自己的 token，和裝置配對的 token 互不通用。
+
+從原始碼確認某個 agent 是否真的拿到工具與提示詞：
+
+```powershell
+cd bridge
+npx tsx scripts/mcp-smoke.ts claude            # 只檢查 agent 是否連上工具，不送訊息
+npx tsx scripts/mcp-smoke.ts codex --prompt    # 再送一則訊息實測工具與提示詞（會消耗該 agent 的額度）
+```
 
 ### ACP agent 安裝器
 

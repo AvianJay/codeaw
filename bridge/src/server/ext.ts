@@ -49,6 +49,8 @@ export class PathGuard {
     private readonly allowAllPaths: () => boolean = () => false,
     /** Readable through `resolveReadable`, never offered as workspaces (device uploads). */
     private readonly readableRoots: () => string[] = () => [],
+    /** Single files an agent showed to the user; takes a resolved path. */
+    private readonly shared: (file: string) => boolean = () => false,
   ) {}
 
   get allowsAllPaths(): boolean { return this.allowAllPaths(); }
@@ -78,9 +80,17 @@ export class PathGuard {
     return this.check(p, this.roots().map((r) => r.path));
   }
 
-  /** Like `resolve`, but also allows files that devices uploaded, for previews. */
+  /** Like `resolve`, but also allows files that devices uploaded or an agent showed, for previews. */
   resolveReadable(p: unknown): string {
-    return this.check(p, [...this.roots().map((r) => r.path), ...this.readableRoots().map(realPath)]);
+    try {
+      return this.check(p, [...this.roots().map((r) => r.path), ...this.readableRoots().map(realPath)]);
+    } catch (error) {
+      if (typeof p === "string" && path.isAbsolute(p)) {
+        const real = realPath(p);
+        if (this.shared(real)) return real;
+      }
+      throw error;
+    }
   }
 
   private check(p: unknown, roots: string[]): string {

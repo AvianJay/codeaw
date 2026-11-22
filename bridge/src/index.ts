@@ -20,6 +20,7 @@ import YAML from "yaml";
 import { writeFileAtomic } from "./util/paths.js";
 import { manageDesktopService } from "./remote-desktop/service.js";
 import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
+import { MCP_STDIO_COMMAND, runMcpStdio } from "./mcp/stdio.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -68,6 +69,8 @@ async function printPairing(pair: Awaited<ReturnType<typeof createPairing>>): Pr
 }
 
 async function main(): Promise<void> {
+  // Started by agents, never by hand: stdout carries MCP messages and nothing else.
+  if (process.argv[2] === MCP_STDIO_COMMAND) return runMcpStdio();
   const { values, positionals } = parseArgs({ allowPositionals: true, options: {
     config: { type: "string", short: "c" }, port: { type: "string", short: "p" },
     background: { type: "boolean" }, tray: { type: "boolean" }, window: { type: "boolean" },

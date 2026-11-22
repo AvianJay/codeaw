@@ -3,7 +3,8 @@ import { logger } from "../util/log.js";
 
 const log = logger("push");
 
-export type PushKind = "permission" | "turn_end" | "error";
+/** `message` is something an agent chose to tell the user (the `notify` tool). */
+export type PushKind = "permission" | "turn_end" | "error" | "message";
 
 export interface PushRequest {
   kind: PushKind;
@@ -11,6 +12,7 @@ export interface PushRequest {
   agentName: string;
   sessionTitle?: string;
   detail?: string;
+  urgent?: boolean;
   /** Re-checked right before sending; return false when the event no longer needs attention. */
   stillRelevant: () => boolean;
 }
@@ -56,7 +58,7 @@ export class PushNotifier {
   async send(req: Omit<PushRequest, "stillRelevant">): Promise<boolean> {
     const cfg = this.cfg;
     if (!cfg) return false;
-    const what = { permission: "需要你的批准", turn_end: "已完成", error: "發生錯誤" }[req.kind];
+    const what = { permission: "需要你的批准", turn_end: "已完成", error: "發生錯誤", message: "有訊息給你" }[req.kind];
     let message = `${req.agentName}${what}`;
     if (cfg.includeDetails) {
       if (req.sessionTitle) message += `\n${req.sessionTitle}`;
@@ -66,8 +68,8 @@ export class PushNotifier {
       topic: cfg.topic,
       title: "codeaw",
       message,
-      tags: [req.kind === "permission" ? "warning" : req.kind === "error" ? "x" : "white_check_mark"],
-      priority: req.kind === "permission" ? 4 : 3,
+      tags: [req.kind === "permission" ? "warning" : req.kind === "error" ? "x" : req.kind === "message" ? "speech_balloon" : "white_check_mark"],
+      priority: req.kind === "permission" || req.urgent ? 4 : 3,
       click: `codeaw://session/${encodeURIComponent(req.sessionId)}`,
     };
     try {

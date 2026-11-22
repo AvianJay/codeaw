@@ -9,12 +9,14 @@ import type { AgentConfig } from "../config.js";
 import { logger, type Logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import type { AgentBackend } from "./backend.js";
+import { codexInstructionsEnvironment, isCodex } from "./codex-defaults.js";
 import type { DesktopState } from "./codex-desktop-state.js";
 import { desktopEnvironment, recoverCodexPath, resolveCommand } from "../util/environment.js";
 import { AcpSubagents } from "./acp-subagents.js";
 import { AgentTempDirectory } from "./agent-temp.js";
 import { ClaudeWorkflows } from "./claude-workflows.js";
 import { agentAuthMethods, agentAuthRequired, type AgentAuthMethod } from "./authentication.js";
+import { resolveMcpServers } from "../mcp/server.js";
 
 export type AgentStatus = "stopped" | "starting" | "ready" | "error";
 
@@ -60,9 +62,13 @@ export interface AgentHandlers {
   onHistoryReset?(agentId: string, sessionId: string, updates: acp.SessionUpdate[]): void;
   onSessionState?(agentId: string, sessionId: string, state: DesktopState): void;
   onSessionError?(agentId: string, sessionId: string, message: string): void;
+  /** What to tell this agent's model about the bridge, for agents that need it at launch. */
+  agentInstructions?(agentId: string): string | undefined;
 }
 
 const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+/** Requests that hand the agent its MCP servers. */
+const SESSION_SETUP = new Set(["session/new", "session/load", "session/resume", "session/fork"]);
 
 interface AgentRun {
   child: ChildProcess;
@@ -192,6 +198,12 @@ export class AgentProcess implements AgentBackend {
     const inherited = desktopEnvironment({ ...process.env, ...env });
     let environment = this.id === "codex" ? recoverCodexPath(inherited) : inherited;
     if (environment.CODEX_PATH !== inherited.CODEX_PATH) this.log.warn("Codex desktop's old WindowsApps executable disappeared; using the current installed Codex CLI");
+    const instructions = isCodex(this) ? this.handlers.agentInstructions?.(this.id) : undefined;
+    if (instructions) {
+      const told = codexInstructionsEnvironment(this, environment, instructions);
+      if (told === environment) this.log.warn("could not add the codeaw instructions to this agent's Codex settings; its model will not be told about the codeaw tools");
+      environment = told;
+    }
     if (!resolveCommand(command, environment)) {
       return this.fail(generation, `ACP executable not found: ${command}. Install this agent from the ACP installer or fix its command in settings.`);
     }
@@ -346,7 +358,12 @@ export class AgentProcess implements AgentBackend {
     try {
       if (method === "session/load") this.subagents.clear(sessionId);
       if (loading) this.loading.add(sessionId);
-      const result = (await conn.agent.request(method, params as never, options)) as T;
+      // Only now is it certain which MCP transports this agent accepts.
+      const servers = (params as { mcpServers?: unknown } | undefined)?.mcpServers;
+      const sent = SESSION_SETUP.has(method) && Array.isArray(servers)
+        ? { ...(params as object), mcpServers: resolveMcpServers(servers, this.init?.agentCapabilities?.mcpCapabilities?.http === true) }
+        : params;
+      const result = (await conn.agent.request(method, sent as never, options)) as T;
       if (method === "session/close" || method === "session/delete") {
         this.subagents.clear(sessionId);
         this.workflows.stop(sessionId);
