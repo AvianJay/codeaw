@@ -505,6 +505,34 @@ void main() {
     );
   });
 
+  test("a Claude subagent's work filed under its launch call stays on its card", () {
+    final t = Timeline();
+    addTearDown(t.dispose);
+    // As bridges before 2026-11-23 stored a background Claude subagent's run.
+    update(t, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'subagent:a215', 'title': 'spawnAgent', 'kind': 'other', 'status': 'completed',
+      'rawInput': {
+        'name': 'Polish UI', 'prompt': 'Polish', 'receiverThreadIds': ['a215'], 'agentThreadId': 'a215',
+        'agentsStates': {'a215': {'status': 'completed'}},
+      },
+    }, seq: 1);
+    const launch = 'subagent:a215:toolu_launch';
+    update(t, {
+      'sessionUpdate': 'tool_call', 'toolCallId': 'subagent:a215:toolu_ls', 'title': 'ls', 'kind': 'execute', 'status': 'completed',
+      '_meta': {'parentToolCallId': launch, 'claudeCode': {'parentToolUseId': launch, 'toolName': 'Bash'}},
+    }, seq: 2);
+    update(t, message('Polished', parent: launch, mid: 'm1'), seq: 3);
+    final card = tool(t, 'subagent:a215');
+    expect(t.childrenOf(card), hasLength(2));
+    // A call the subagent made itself still owns what ran inside it.
+    update(t, message('Inside ls', parent: 'subagent:a215:toolu_ls', mid: 'm2'), seq: 4);
+    expect(t.childrenOf(tool(t, 'subagent:a215:toolu_ls')), hasLength(1));
+    expect(t.childrenOf(card), hasLength(2));
+    // Nothing else is adopted: a parent that names no card stays at the top level.
+    update(t, message('Elsewhere', parent: 'subagent:zzz:toolu_x', mid: 'm3'), seq: 5);
+    expect(t.childrenOf(card), hasLength(2));
+  });
+
   test(
     'Codex status follows later reports and stays correct for compacted sequence order',
     () {

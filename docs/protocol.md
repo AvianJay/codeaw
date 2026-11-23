@@ -798,6 +798,24 @@ Its `instructions` tell the model that the app's other tools (`ccd_session`,
 tools for permissions. `scripts/live-agents-smoke.ts` checks this against a real
 desktop transcript.
 
+One writer at a time: Claude Code lists running sessions in
+`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`. While an entry for the chat's session id
+has `entrypoint: "claude-desktop…"` and its process runs, the bridge treats the
+desktop app as holding the chat. Its housekeeping sweep (every minute) then sends
+`session/close` for the bridge's own copy of that chat when nothing is in flight
+(no turn, permission request, queued prompt or background workflow). Attaching to
+such a chat does not open it in the agent. `session/prompt` fails with
+`invalidRequest` while the entry's `status` is `busy` (the app is mid-turn).
+
+**Claude subagents.** With `clientCapabilities.subagents`, claude-agent-acp reports
+each subagent as a child session. The bridge files the child's work under its
+card, `subagent:<child>`. Claude Code marks that work with the parent's launch
+call (`_meta.claudeCode.parentToolUseId`), which clients are not shown. Only a
+call the child made itself becomes the owner `subagent:<child>:<call>`. Logs that
+bridges before 2026-11-23 stored filed child work under
+`subagent:<child>:<launch call>`; the app places that work on the `subagent:<child>`
+card.
+
 **Permissions.** These tools only present something to the user, so the bridge
 answers an agent's `session/request_permission` for them itself (`allow_once`,
 else `allow_always`) and clients never see the request. A call counts as one of

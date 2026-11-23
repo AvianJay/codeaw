@@ -22,6 +22,7 @@ import { parseArgs } from "node:util";
 import { ConfigSchema, type LoadedConfig } from "../src/config.js";
 import { startBridge } from "../src/bridge.js";
 import { claudeProjectSlug } from "../src/session/native-activity.js";
+import { leaveClaudeSession } from "../src/util/environment.js";
 import { TestClient } from "../test/helpers.js";
 
 const { values } = parseArgs({ options: {
@@ -86,6 +87,9 @@ const config = ConfigSchema.parse({
   },
 });
 const loaded: LoadedConfig = { config, file: path.join(root, "config.yaml"), home: root, dataDir: path.join(root, "data") };
+// As the bridge's own startup does, so a run from inside a Claude Code session behaves like the installed bridge.
+const inherited = leaveClaudeSession();
+if (inherited.length) process.stdout.write(`dropped ${inherited.length} variables of the Claude Code session this runs in\n`);
 const bridge = await startBridge(loaded, { hosts: ["127.0.0.1"], port: 0 });
 const token = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
 bridge.devices.addDeviceWithToken("live-smoke", token);
@@ -151,6 +155,24 @@ try {
       catch { return []; }
     }));
     check("replies came from the chosen model", models.size > 0 && [...models].every((m) => m.toLowerCase().includes(wanted)), [...models]);
+
+    // A subagent's own work must land on its card, so the app's subagent panel can show it.
+    const subStart = c.received.length;
+    const sub: any = await prompt(sessionId, [
+      "Automated check of subagents in the codeaw phone app. Do exactly this:",
+      "1) use the Agent tool once, with subagent_type general-purpose, description \"Echo check\", and this prompt for it:",
+      "\"Run the shell command `echo codeaw-sub` with the Bash tool, then reply with its output.\"",
+      "2) after it returns, reply with the single word SUBDONE.",
+    ].join("\n"));
+    check("subagent turn ended normally", sub.stopReason === "end_turn", sub.stopReason);
+    const subUpdates = updatesSince(sessionId, subStart);
+    const cardIds = new Set(subUpdates.filter((u) => u.sessionUpdate === "tool_call" && /^subagent:[^:]+$/.test(u.toolCallId ?? "")).map((u) => u.toolCallId));
+    check("the subagent got a card", cardIds.size === 1, [...cardIds]);
+    const childTools = new Set(subUpdates.filter((u) => u.sessionUpdate === "tool_call" && /^subagent:[^:]+:/.test(u.toolCallId ?? "")).map((u) => u.toolCallId));
+    const owners = subUpdates.map((u) => u._meta?.parentToolCallId).filter((owner): owner is string => typeof owner === "string" && owner.startsWith("subagent:"));
+    check("the subagent's work is filed under its card", owners.some((owner) => cardIds.has(owner)), owners.slice(0, 5));
+    check("no subagent work points at a call nobody is shown", owners.every((owner) => cardIds.has(owner) || childTools.has(owner)), [...new Set(owners)].filter((owner) => !cardIds.has(owner) && !childTools.has(owner)));
+    check("the subagent ran its command", subUpdates.some((u) => JSON.stringify(u).includes("codeaw-sub")));
   }
 
   if (runAgy) {

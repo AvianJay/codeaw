@@ -8,6 +8,8 @@ interface ChildSession {
   parentToolCallId?: string;
   input: Record<string, unknown>;
   state: string;
+  /** The child's own tool calls, by the adapter's ids. */
+  tools: Set<string>;
 }
 
 const CHILD_ACTIVITY = new Set(["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"]);
@@ -99,7 +101,7 @@ export class AcpSubagents {
     const threadId = id.replace(/:generation:\d+$/, "");
     const child: ChildSession = {
       sessionId: id, rootSessionId: parent?.rootSessionId ?? parentId,
-      threadId, toolCallId: `subagent:${threadId}`, parentToolCallId: parent?.toolCallId, state,
+      threadId, toolCallId: `subagent:${threadId}`, parentToolCallId: parent?.toolCallId, state, tools: new Set(),
       input: { name, prompt: task, receiverThreadIds: [threadId], agentThreadId: threadId },
     };
     this.children.set(id, child);
@@ -125,6 +127,7 @@ export class AcpSubagents {
   }
 
   private tool(child: ChildSession, update: Record<string, any>): Record<string, any> {
+    if (typeof update.toolCallId === "string") child.tools.add(update.toolCallId);
     return {
       ...update, toolCallId: `subagent:${child.sessionId}:${update.toolCallId}`,
       _meta: this.metadata(child, update._meta),
@@ -133,7 +136,10 @@ export class AcpSubagents {
 
   private metadata(child: ChildSession, meta: any): Record<string, unknown> {
     const parent = meta?.claudeCode?.parentToolUseId ?? meta?.parentToolCallId;
-    const owner = parent ? `subagent:${child.sessionId}:${parent}` : child.toolCallId;
+    // Claude Code marks a subagent's own work with the parent's call that launched it, which the
+    // client is not shown; that work belongs on the child's card. Only a call the child made
+    // itself owns what runs inside it.
+    const owner = typeof parent === "string" && child.tools.has(parent) ? `subagent:${child.sessionId}:${parent}` : child.toolCallId;
     return {
       ...meta, parentToolCallId: owner,
       ...(meta?.claudeCode ? { claudeCode: { ...meta.claudeCode, parentToolUseId: owner } } : {}),

@@ -157,6 +157,12 @@ mcp:
 
 **Claude 桌面版開始的對話：** 在 Claude 桌面 app（Code 分頁）開始、再從 codeaw 接續的對話，紀錄裡帶有桌面 app 自己的指示，要求模型每回合用桌面 app 的 `ccd_turn` 工具更新工作清單、收尾；這些工具在 codeaw 不存在，呼叫會失敗。bridge 偵測到 Claude 紀錄由桌面 app 寫入（`entrypoint` 為 `claude-desktop*`）時，另外提供同名的 `ccd_turn` 伺服器：`update_plan` 會顯示在聊天輸入框上方的工作清單（支援 `advance` 逐步推進），`wrap_up` 的按鈕變成快速回覆。它的說明會告訴模型其他桌面工具（開新 session、面板、PR、設定等）在這裡無法使用，以及 `#local_…`、`#terminal/…` 連結在手機上打不開。在 codeaw 新開的 Claude 對話不受影響。需要更新 bridge。
 
+同一個 Claude 對話同時由兩個 Claude Code 寫入時（桌面 app 一個、codeaw 一個），兩邊各自從自己的版本接下去寫，桌面 app 就會把對話當成被別的程式接手。所以 bridge 會讀 Claude Code 的執行中 session 登記（`~/.claude/sessions/<pid>.json`）：
+- 桌面 app 開著這個對話時（登記的 `entrypoint` 為 `claude-desktop*`、程序仍在執行），bridge 在一分鐘內關閉 codeaw 自己替這個對話開的 Claude Code，前提是沒有進行中的回合、權限詢問、排隊訊息或背景 Workflow；只在手機上看、不傳訊息時也不會再開一個。
+- 桌面 app 正在跑回合時，手機傳的訊息會被拒絕並說明原因，等它結束或先在桌面停止。
+
+另外，若 bridge 本身是從 Claude Code session 裡啟動（例如由 Claude 桌面 app 的 agent 重新啟動），它會先移除該 session 帶來的 `CLAUDECODE`、`CLAUDE_CODE_*`、`CLAUDE_AGENT_SDK_*`、`ANTHROPIC_DEFAULT_*_MODEL` 等變數（保留 `CLAUDE_CODE_GIT_BASH_PATH`），否則 agent 會沿用桌面 app 代管的登入，回合以「Authentication required」結束。
+
 關閉全部：`mcp: { enabled: false }`；只對某個 agent 關閉：`agents.<id>.mcp: false`。
 
 這個 MCP 伺服器只聽 `127.0.0.1` 的隨機埠，不會出現在 Tailscale 位址上；每個對話有自己的 token，和裝置配對的 token 互不通用。
