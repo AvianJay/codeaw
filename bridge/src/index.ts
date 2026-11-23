@@ -21,6 +21,7 @@ import { writeFileAtomic } from "./util/paths.js";
 import { manageDesktopService } from "./remote-desktop/service.js";
 import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
 import { MCP_STDIO_COMMAND, runMcpStdio } from "./mcp/stdio.js";
+import { leaveClaudeSession } from "./util/environment.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -79,6 +80,8 @@ async function main(): Promise<void> {
   } });
   if (values.help) { process.stdout.write(HELP); return; }
   if (values.debug) setLogLevel("debug");
+  const inherited = leaveClaudeSession();
+  if (inherited.length) log.info(`started from a Claude Code session; not passing its ${inherited.length} session variables to agents`);
   const file = path.resolve(values.config ?? defaultConfigFile());
   const command = positionals[0] ?? (["win32", "darwin"].includes(process.platform) ? "tray" : "start");
   const port = values.port === undefined ? undefined : Number(values.port);
