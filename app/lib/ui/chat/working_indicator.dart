@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../data/timeline.dart';
+import '../common/app_theme.dart';
 import 'thought_summary.dart';
 import 'turn_summary.dart';
 
@@ -43,7 +44,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
         if (!timeline.running) return const SizedBox.shrink();
         final scheme = Theme.of(context).colorScheme;
         final waiting = timeline.state == 'requires_action';
-        final color = waiting ? Colors.orange.shade800 : scheme.primary;
+        final color = waiting ? scheme.warning : scheme.primary;
         final tool = timeline.activeTool;
         final label = waiting
             ? widget.waitingForInput
@@ -67,13 +68,13 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
         final elapsed = startedAt == null ? Duration.zero : widget.now().difference(startedAt);
         final detail = !waiting && tool?.title?.trim().isNotEmpty == true ? tool!.displayTitle : null;
         return Padding(
-          padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
           child: Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
             decoration: BoxDecoration(
               color: waiting ? color.withValues(alpha: 0.08) : scheme.surfaceContainerLow,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: waiting ? color.withValues(alpha: 0.25) : scheme.outlineVariant),
+              borderRadius: BorderRadius.circular(CodeawRadii.md),
+              border: Border.all(color: waiting ? color.withValues(alpha: 0.35) : scheme.outlineVariant.withValues(alpha: .7)),
             ),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -82,7 +83,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                   padding: const EdgeInsets.only(top: 2),
                   child: waiting
                       ? Icon(Icons.pause_circle_outline_rounded, size: 18, color: color)
-                      : SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: color)),
+                      : SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: color, strokeCap: StrokeCap.round)),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -96,7 +97,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                         children: [
                           Text(
                             label,
-                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: color),
+                            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: color),
                           ),
                           TurnSpeed(turn: timeline.currentTurn, now: widget.now()),
                           Text(
@@ -112,7 +113,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                             detail,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                            style: TextStyle(fontSize: 12.5, height: 1.4, color: scheme.onSurface),
                           ),
                         ),
                       if (timeline.currentTurn case final turn? when widget.showThoughts)
@@ -123,7 +124,7 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                       if (timeline.queued > 0)
                         Padding(
                           padding: const EdgeInsets.only(top: 4),
-                          child: Text('還有 ${timeline.queued} 則排隊', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                          child: Text('還有 ${timeline.queued} 則排隊', style: TextStyle(fontSize: 12, color: scheme.outline)),
                         ),
                     ],
                   ),

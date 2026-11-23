@@ -16,8 +16,9 @@ import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
-import { NativeActivity } from "./native-activity.js";
+import { NativeActivity, type DesktopHolder } from "./native-activity.js";
 import type { McpServer } from "../mcp/server.js";
+import { DESKTOP_TURN_SERVER } from "../mcp/desktop-compat.js";
 import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
 import { pathKey } from "../util/paths.js";
 import { newEpoch, type SessionStore } from "./store.js";
@@ -129,6 +130,8 @@ export interface ManagerOptions {
   idleSessionCloseMs: number;
   idleAgentStopMs: number;
   hostName: string;
+  /** Tests stand in for a running Claude desktop app; see NativeActivity.claudeDesktopHolder. */
+  claudeProcessAlive?: (pid: number) => boolean;
 }
 
 /** Updates that only change session-level snapshot state. They do not split a run of chunks. */
@@ -395,8 +398,28 @@ export class SessionManager implements AgentHandlers, McpHost {
     return sessionId ? this.mcp.tokenFor(sessionId) : this.mcp.issue();
   }
 
-  private mcpServers(token: string | undefined): acp.McpServer[] {
-    return token && this.mcp ? [this.mcp.entry(token)] : [];
+  /** `fromDesktop`: the chat began in the Claude desktop app, whose turn tools it then also gets. */
+  private mcpServers(token: string | undefined, fromDesktop = false): acp.McpServer[] {
+    if (!token || !this.mcp) return [];
+    return fromDesktop ? [this.mcp.entry(token), this.mcp.entry(token, DESKTOP_TURN_SERVER)] : [this.mcp.entry(token)];
+  }
+
+  /** Whether the Claude desktop app wrote this chat's transcript (see desktop-compat.ts). */
+  private fromClaudeDesktop(agentId: string, backendId: string, cwd?: string): boolean {
+    if (!this.registry.has(agentId)) return false;
+    const agent = this.registry.get(agentId);
+    return this.native.fromClaudeDesktop(agent.id, agent.config, backendId, cwd);
+  }
+
+  /**
+   * The Claude desktop app's own Claude Code process for this chat, while the app has it open.
+   * Two Claude Code processes on one chat both append to its transcript, each from its own
+   * copy of the conversation: the app then finds the chat taken over by another program.
+   */
+  private desktopHolder(s: BridgeSession): DesktopHolder | undefined {
+    if (!this.registry.has(s.meta.agentId) || s.meta.connection === "desktop") return undefined;
+    const agent = this.registry.get(s.meta.agentId);
+    return this.native.claudeDesktopHolder(agent.id, agent.config, s.meta.backendId, this.opts.claudeProcessAlive);
   }
 
   /** Whether chats on this agent get the bridge's tools. The Antigravity CLI takes no MCP servers. */
@@ -428,6 +451,16 @@ export class SessionManager implements AgentHandlers, McpHost {
       this.saveMeta(s, true);
     }
     this.appendEvent(s, { type: "card", cardId: "k_" + crypto.randomBytes(6).toString("hex"), card });
+  }
+
+  showPlan(sessionId: string, entries: acp.PlanEntry[]): void {
+    this.ingest(this.requireLoaded(sessionId), { sessionUpdate: "plan", entries });
+  }
+
+  plan(sessionId: string): acp.PlanEntry[] | undefined {
+    const s = this.requireLoaded(sessionId);
+    const last = this.ensureEntries(s).findLast((e) => e.kind === "update" && e.update.sessionUpdate === "plan");
+    return last?.kind === "update" && last.update.sessionUpdate === "plan" ? last.update.entries : undefined;
   }
 
   async notifyUser(sessionId: string, notice: { title?: string; message: string; urgent: boolean }): Promise<NotifyDelivery> {
@@ -982,6 +1015,24 @@ export class SessionManager implements AgentHandlers, McpHost {
 
   activitySnapshots(): ActivitySnapshot[] { return [...this.sessions.values()].map((s) => this.snapshot(s)); }
 
+  /** Stopping this agent's ACP process would not interrupt a turn, request or background job. */
+  agentIdle(agentId: string): boolean {
+    if (!this.registry.has(agentId)) return true;
+    const agent = this.requireAgent(agentId);
+    if (agent.inflight > 0) return false;
+    return ![...this.sessions.values()].some((s) => s.meta.agentId === agentId && s.meta.connection !== "desktop"
+      && (this.isBusy(s) || s.activating !== undefined || agent.hasBackgroundWork?.(s.meta.backendId) === true));
+  }
+
+  /** Reopen chats a client is viewing so their model pickers show the updated adapter's catalog. */
+  async reopenViewed(agentId: string): Promise<void> {
+    for (const s of [...this.sessions.values()]) {
+      if (s.meta.agentId !== agentId || s.meta.connection === "desktop" || !s.subscribers.size || this.isBusy(s)) continue;
+      try { await this.ensureActive(s); }
+      catch (error) { log.warn(`could not reopen ${s.id} after an adapter update: ${(error as Error).message}`); }
+    }
+  }
+
   private snapshot(s: BridgeSession): ActivitySnapshot {
     const native = s.desktop?.turnId ? s.desktop : undefined;
     const disconnected = native?.connected === false;
@@ -1154,6 +1205,15 @@ export class SessionManager implements AgentHandlers, McpHost {
     return this.registry.get(agentId);
   }
 
+  /** Only a message the user sends may reopen a closed Codex Desktop chat. */
+  private async activeForSend(s: BridgeSession): Promise<AgentBackend> {
+    try { return await this.ensureActive(s); }
+    catch (error) {
+      if (s.meta.connection === "desktop" && this.registry.has(s.meta.agentId)) this.requireAgent(s.meta.agentId).reopenForSend?.(s.meta.backendId);
+      throw error;
+    }
+  }
+
   /** Makes sure the agent process holds this session live, resuming it after restarts. */
   private async ensureActive(s: BridgeSession, allowDisconnected = false, override?: { configId: string; value: unknown }): Promise<AgentBackend> {
     const agent = this.requireAgent(s.meta.agentId);
@@ -1178,7 +1238,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     const caps = agent.capabilities;
     const desktop = s.meta.connection === "desktop";
     // A desktop-owned chat runs in the desktop app, which the bridge cannot give tools to.
-    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
+    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id), this.fromClaudeDesktop(s.meta.agentId, s.meta.backendId, s.meta.cwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
     const saved = structuredClone(s.meta);
     let resp: any;
     if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
@@ -1240,7 +1300,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (before && !Number.isNaN(Date.parse(before))) s.meta.activityAt = later(s.meta.activityAt, new Date(before).toISOString());
     const caps = agent.capabilities;
     const desktop = s.meta.connection === "desktop";
-    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
+    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id), this.fromClaudeDesktop(agentId, backendId, sessionCwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
     s.replaying++;
     try {
@@ -1267,7 +1327,7 @@ export class SessionManager implements AgentHandlers, McpHost {
       if (s.meta.connection === "desktop") {
         s.stale = false; // The authoritative desktop snapshot rebuilds history when it arrives.
         await this.ensureActive(s, true);
-      } else if (s.meta.origin === "native" && s.backendGen === 0) await this.ensureActive(s);
+      } else if (s.meta.origin === "native" && s.backendGen === 0 && !this.desktopHolder(s)) await this.ensureActive(s);
       return s;
     }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;
@@ -1523,7 +1583,10 @@ export class SessionManager implements AgentHandlers, McpHost {
       if (s.turn && s.turn.promptId === promptId) return s.turn.done;
       return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
     }
-    const agent = await this.ensureActive(s);
+    if (!s.turn && s.queue.length === 0 && this.desktopHolder(s)?.busy) {
+      throw acp.RequestError.invalidRequest(undefined, "Claude Desktop is working on this chat right now. Send this after its turn there ends, or stop that turn first.");
+    }
+    const agent = await this.activeForSend(s);
     // A removal request can race the asynchronous owner/agent connection.
     if (this.dequeueStates(s).get(promptId)?.cancelled) return { stopReason: "cancelled", _meta: { codeaw: { duplicate: true, promptId } } };
     if (this.receiptStates(s).has(promptId)) {
@@ -1589,7 +1652,7 @@ export class SessionManager implements AgentHandlers, McpHost {
       let result: acp.PromptResponse | undefined;
       let error: unknown;
       try {
-        const agent = await this.ensureActive(s);
+        const agent = await this.activeForSend(s);
         result = await agent.request<acp.PromptResponse>("session/prompt", { sessionId: s.meta.backendId, prompt: this.withImageData(blocks), _meta: { codeaw: { promptId } } });
       } catch (err) {
         error = err;
@@ -1710,7 +1773,8 @@ export class SessionManager implements AgentHandlers, McpHost {
   private async fork(s: BridgeSession, messageId: string, prompt: acp.ContentBlock[], promptId: string, replace: boolean): Promise<Record<string, unknown>> {
     const { plan, agent } = await this.checkFork(s, messageId);
     const token = this.mcpToken(agent);
-    const mcpServers = this.mcpServers(token);
+    // A fork copies the transcript, desktop instructions included.
+    const mcpServers = this.mcpServers(token, plan.messageId ? this.fromClaudeDesktop(s.meta.agentId, s.meta.backendId, s.meta.cwd) : false);
     let resp: any;
     try {
       if (plan.messageId) {
@@ -2006,6 +2070,14 @@ export class SessionManager implements AgentHandlers, McpHost {
       const kept = list.filter((o) => now - o.at < ORPHAN_TTL_MS);
       if (kept.length) this.orphans.set(id, kept);
       else this.orphans.delete(id);
+    }
+    for (const s of this.sessions.values()) {
+      // Once the Claude desktop app has the chat open, only it should write the chat (see desktopHolder).
+      if (s.turn || s.activating || s.pending.size || s.queue.length || !s.backendGen || !this.registry.has(s.meta.agentId)) continue;
+      const agent = this.requireAgent(s.meta.agentId);
+      if (s.backendGen !== agent.generation || agent.hasBackgroundWork?.(s.meta.backendId) || !this.desktopHolder(s)) continue;
+      log.info(`Claude Desktop has ${s.id} open; closing codeaw's Claude Code process for it`);
+      await this.releaseBackend(s);
     }
     for (const s of this.sessions.values()) {
       const idle = !s.turn && !s.activating && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;

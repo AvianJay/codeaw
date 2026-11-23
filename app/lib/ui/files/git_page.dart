@@ -5,6 +5,7 @@ import '../../acp/jsonrpc.dart';
 import '../../app_state.dart';
 import '../../data/models.dart';
 import '../../util/diff.dart';
+import '../common/app_theme.dart';
 import '../common/diff_view.dart';
 import '../common/widgets.dart';
 
@@ -221,11 +222,11 @@ class _FileTile extends StatelessWidget {
     final work = '${f['worktree']}';
     final code = (work != ' ' ? work : index).trim();
     final (String label, Color color) = switch (code) {
-      '?' => ('新增', Colors.green.shade600),
-      'A' => ('新增', Colors.green.shade600),
+      '?' => ('新增', scheme.success),
+      'A' => ('新增', scheme.success),
       'D' => ('刪除', scheme.error),
       'R' => ('改名', scheme.tertiary),
-      _ => ('修改', Colors.orange.shade700),
+      _ => ('修改', scheme.warning),
     };
     final path = '${f['path']}';
     final rel =
@@ -375,7 +376,7 @@ class _DiffPageState extends State<DiffPage> {
                         Text(
                           '+${f.added}',
                           style: TextStyle(
-                            color: Colors.green.shade600,
+                            color: scheme.success,
                             fontSize: 12,
                           ),
                         ),

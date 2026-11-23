@@ -36,6 +36,14 @@ describe("native ACP subagent translation", () => {
     const [activity] = update(router, "child", { sessionUpdate: "tool_call", toolCallId: "read", title: "Read providers", status: "completed" });
     expect(activity.update._meta.parentToolCallId).toBe(started.update.toolCallId);
     expect(activity.update.toolCallId).not.toBe(started.update.toolCallId);
+    // Claude Code marks the child's work with the parent's Agent call, which the client never sees.
+    const launched = { claudeCode: { parentToolUseId: "toolu_launch", toolName: "Bash" } };
+    const [bash] = update(router, "child", { sessionUpdate: "tool_call", toolCallId: "toolu_ls", title: "ls", status: "pending", _meta: launched });
+    const [said] = update(router, "child", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done" }, _meta: launched });
+    for (const routed of [bash, said]) {
+      expect(routed.update._meta.parentToolCallId).toBe(started.update.toolCallId);
+      expect(routed.update._meta.claudeCode.parentToolUseId).toBe(started.update.toolCallId);
+    }
     const [ended] = update(router, "root", { sessionUpdate: "subagent_state_update", subagentSessionId: "child", state: "completed" });
     expect(ended.update.toolCallId).toBe(started.update.toolCallId);
     expect(ended.update.rawInput.agentsStates.child.status).toBe("completed");
@@ -53,8 +61,10 @@ describe("native ACP subagent translation", () => {
     const [message] = update(router, "a", { sessionUpdate: "agent_message_chunk", messageId: "same", content: { type: "text", text: "Working" } });
     expect(message.update.messageId).toBe("a:same");
     expect(message.update._meta.parentToolCallId).toBe("subagent:a");
+    update(router, "a", { sessionUpdate: "tool_call", toolCallId: "delegate", title: "Task", status: "in_progress", _meta: { claudeCode: { parentToolUseId: "launch-a" } } });
     const [attributed] = update(router, "a", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Nested tool" }, _meta: { claudeCode: { parentToolUseId: "delegate" } } });
     expect(attributed.update._meta.claudeCode.parentToolUseId).toBe("subagent:a:delegate");
+    expect(update(router, "a", { sessionUpdate: "tool_call_update", toolCallId: "delegate", status: "completed", _meta: { claudeCode: { parentToolUseId: "launch-a" } } })[0].update._meta.parentToolCallId).toBe("subagent:a");
     expect(update(router, "a", { sessionUpdate: "config_option_update", configOptions: [] })).toEqual([]);
   });
 

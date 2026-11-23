@@ -64,8 +64,8 @@ class ChatHeaderTitle extends StatelessWidget {
         return Row(
           children: [
             if (bars.isEmpty || constraints.maxWidth >= 210) ...[
-              AgentAvatar(agentId: agentId, label: agentName, size: 28),
-              const SizedBox(width: 8),
+              AgentAvatar(agentId: agentId, label: agentName, size: 30),
+              const SizedBox(width: 10),
             ],
             Expanded(
               child: Column(
@@ -76,7 +76,11 @@ class ChatHeaderTitle extends StatelessWidget {
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 16),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      height: 1.3,
+                    ),
                   ),
                   Text(
                     subtitle,
@@ -84,6 +88,8 @@ class ChatHeaderTitle extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      height: 1.3,
                       color: Theme.of(context).colorScheme.outline,
                     ),
                   ),

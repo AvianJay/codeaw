@@ -106,6 +106,7 @@ Windows 背景 bridge、系統匣與登入啟動由附帶的 `codeaw-launcher.ex
 | `notifications.ntfy` | 推播設定，見下方 |
 | `mcp.enabled` / `mcp.instructions` / `agents.<id>.mcp` | 給 agent 的 codeaw 工具與提示詞，見[讓 agent 使用 codeaw](#讓-agent-使用-codeaw工具與提示詞) |
 | `idleSessionCloseMinutes` / `idleAgentStopMinutes` | 閒置多久後釋放 agent 資源（需要時會自動恢復） |
+| `autoUpdateAgents` | 預設 `true`；每天自動更新由 Codeaw 安裝的 ACP adapter，取得新模型。設為 `false` 關閉 |
 
 其他指令：`codeaw-bridge pair`（再配對一台裝置）、`codeaw-bridge devices`（列出已配對裝置）、`codeaw-bridge revoke <id>`（撤銷裝置）。
 
@@ -154,6 +155,14 @@ mcp:
 - **其他 agent**：除了 MCP `instructions` 之外，也會附一小段說明在工具說明裡；自訂提示詞太長時，這一段會被截短。agent 是否真的把它交給模型取決於該 agent，可用下方指令確認。
 - **不適用**：由 Codex 桌面 app 持有的對話（桌面同步），以及 Antigravity CLI（`transport: agy`）。
 
+**Claude 桌面版開始的對話：** 在 Claude 桌面 app（Code 分頁）開始、再從 codeaw 接續的對話，紀錄裡帶有桌面 app 自己的指示，要求模型每回合用桌面 app 的 `ccd_turn` 工具更新工作清單、收尾；這些工具在 codeaw 不存在，呼叫會失敗。bridge 偵測到 Claude 紀錄由桌面 app 寫入（`entrypoint` 為 `claude-desktop*`）時，另外提供同名的 `ccd_turn` 伺服器：`update_plan` 會顯示在聊天輸入框上方的工作清單（支援 `advance` 逐步推進），`wrap_up` 的按鈕變成快速回覆。它的說明會告訴模型其他桌面工具（開新 session、面板、PR、設定等）在這裡無法使用，以及 `#local_…`、`#terminal/…` 連結在手機上打不開。在 codeaw 新開的 Claude 對話不受影響。需要更新 bridge。
+
+同一個 Claude 對話同時由兩個 Claude Code 寫入時（桌面 app 一個、codeaw 一個），兩邊各自從自己的版本接下去寫，桌面 app 就會把對話當成被別的程式接手。所以 bridge 會讀 Claude Code 的執行中 session 登記（`~/.claude/sessions/<pid>.json`）：
+- 桌面 app 開著這個對話時（登記的 `entrypoint` 為 `claude-desktop*`、程序仍在執行），bridge 在一分鐘內關閉 codeaw 自己替這個對話開的 Claude Code，前提是沒有進行中的回合、權限詢問、排隊訊息或背景 Workflow；只在手機上看、不傳訊息時也不會再開一個。
+- 桌面 app 正在跑回合時，手機傳的訊息會被拒絕並說明原因，等它結束或先在桌面停止。
+
+另外，若 bridge 本身是從 Claude Code session 裡啟動（例如由 Claude 桌面 app 的 agent 重新啟動），它會先移除該 session 帶來的 `CLAUDECODE`、`CLAUDE_CODE_*`、`CLAUDE_AGENT_SDK_*`、`ANTHROPIC_DEFAULT_*_MODEL` 等變數（保留 `CLAUDE_CODE_GIT_BASH_PATH`），否則 agent 會沿用桌面 app 代管的登入，回合以「Authentication required」結束。
+
 關閉全部：`mcp: { enabled: false }`；只對某個 agent 關閉：`agents.<id>.mcp: false`。
 
 這個 MCP 伺服器只聽 `127.0.0.1` 的隨機埠，不會出現在 Tailscale 位址上；每個對話有自己的 token，和裝置配對的 token 互不通用。
@@ -164,6 +173,13 @@ mcp:
 cd bridge
 npx tsx scripts/mcp-smoke.ts claude            # 只檢查 agent 是否連上工具，不送訊息
 npx tsx scripts/mcp-smoke.ts codex --prompt    # 再送一則訊息實測工具與提示詞（會消耗該 agent 的額度）
+```
+
+實測 Claude 桌面版對話的 `ccd_turn` 工具與 Antigravity CLI（會消耗額度；從原始碼啟動暫時的 bridge，把桌面對話複製到私有的 `CLAUDE_CONFIG_DIR`，不寫入你的 Claude／AGY 紀錄；金鑰只從環境變數讀取、不會印出）：
+
+```powershell
+cd bridge
+npx tsx scripts/live-agents-smoke.ts --claude-command <claude-agent-acp> --desktop-transcript <桌面對話.jsonl> --claude-model haiku --agy-command agy --agy-model "Gemini 3.8 Flash Low (CPA)"
 ```
 
 ### ACP agent 安裝器
@@ -180,10 +196,13 @@ codeaw-bridge agents install claude-acp
 codeaw-bridge agents install codex-acp
 codeaw-bridge agents install kimi
 codeaw-bridge agents install antigravity-acp
+codeaw-bridge agents update   # 立即檢查 ACP adapter 更新（平常每天自動檢查）
 codeaw-bridge restart    # bridge 已啟動時，重新啟動以套用安裝；會中止執行中的回合
 ```
 
 agent 安裝在設定檔旁的 `agents/`（預設 `~/.codeaw/agents/`），不需要管理員權限或修改 PATH。npm agent 需要本機 Node.js 與 npm，Python agent 需要 [uv](https://docs.astral.sh/uv/)；二進位 agent 直接下載符合平台的 ZIP、tar.gz 或執行檔，registry 提供 SHA-256 時會驗證。安裝失敗可重試，原版本與設定保持可用；更新會保留 YAML 註解、agent 環境變數、自訂名稱與啟用狀態。登入、API key 與其他 agent 設定仍沿用本機設定。DeepSeek Harness 目前仍使用上方的 npm 安裝方式；Hermes Agent 目前不在 ACP registry，請依下方指引安裝。
+
+**每日自動更新（新模型）**：新模型通常隨 adapter 新版發佈。bridge 執行時，啟動約 2 分鐘後與之後每天（本機日期）檢查一次 ACP registry，自動更新所有由 Codeaw 安裝在 `agents/` 的 ACP adapter（含停用中的），不更動自行安裝的 adapter、AGY 等原生傳輸與 Codex Desktop。新版本先安裝到新目錄，並完成一次 ACP initialize 才寫入設定；失敗時保留原版本，每小時重試。執行中的 agent 等到它的所有對話都沒有進行中的回合、權限詢問、排隊訊息或背景工作時，才單獨切換到新版本，不重啟 bridge、不中斷終端機或遠端桌面；手機正在看的對話會自動重新開啟，模型選單即顯示新清單。保留目前與前一版安裝，更舊且超過一天未用的版本會自動刪除。狀態記錄在 `agent-updates.json`。
 
 macOS 的 npm 安裝器會先檢查 Node.js／npm；若缺少或損壞，會下載官方 Node 24、驗證 SHA-256，放在設定旁的 `runtime/node/`，不更動 Homebrew 或系統 Node。新設定只列出真正找到的 ACP 執行檔，不再自動加入未安裝的 Claude。
 
@@ -259,6 +278,8 @@ agents:
 ```
 
 bridge 將官方 [headless NDJSON](https://antigravity.google/docs/cli/headless/) 轉成手機使用的 ACP 訊息。每個聊天有獨立程序；串流文字、工具參數／結果、token 用量及原生 conversation ID 都會保留。關閉或重啟 bridge 後以同一 ID 續聊。模型／推理強度／Plan 設定作用於下一回合，重新啟動該聊天的 CLI 並接續原對話，不中斷正在執行的回合。模型清單讀取 `agy models`，亦可輸入 AGY 支援的自訂模型名稱。
+
+工具列會依實際操作顯示：讀取、寫入、編輯的檔案顯示檔名並附上路徑，指令顯示指令本身，輸出去掉 AGY 加上的時間前言（非 0 的結束碼會保留）。聊天標題取自第一則訊息。供應商錯誤會改寫為「供應商回應 HTTP 狀態：原始訊息」並附建議，例如路由不支援該模型時提示改選其他模型（含 `customModelsConfig` 自訂模型）。AGY 設定為 `"modelProvider": "gemini"` 卻拿不到 `GEMINI_API_KEY` 時（例如 CC Switch 的 Gemini 目前選「Google Official」，`geminiEnvFile` 被清空），bridge 不啟動 AGY，直接說明原因與修正方式；檔案不存在視為空白。
 
 AGY headless 只接受文字及文字檔案參照；沒有 inline 圖片、即時權限批准、一般問題表單或回合中插話的控制介面。後續訊息會排到下一回合；需批准但本機規則未允許的工具由 AGY 拒絕。bridge 不會自動加入 `--dangerously-skip-permissions`，請在 AGY 的 `permissions.allow` 設定需要的規則。停止只終止該聊天的程序，其他聊天繼續。此 transport 只列出經 Codeaw 建立的聊天，既有 TUI 聊天請在 AGY 使用 `/resume`。
 

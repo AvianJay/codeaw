@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type * as acp from "@agentclientprotocol/sdk";
 import { mimeFor } from "../server/ext.js";
 import type { Card, CardFile } from "../session/types.js";
 import { expandHome, realPath } from "../util/paths.js";
@@ -17,6 +18,10 @@ export interface McpHost {
   /** Adds a card to the chat. `share` lists files paired devices may now read. */
   showCard(sessionId: string, card: Card, share?: string[]): void;
   notifyUser(sessionId: string, notice: { title?: string; message: string; urgent: boolean }): Promise<NotifyDelivery>;
+  /** Replaces the task list shown above the composer. */
+  showPlan(sessionId: string, entries: acp.PlanEntry[]): void;
+  /** The task list the chat shows now, if any. */
+  plan(sessionId: string): acp.PlanEntry[] | undefined;
 }
 
 /** A mistake in the call that the model can correct; returned as a tool error, not a protocol error. */
@@ -197,8 +202,18 @@ export const MCP_TOOLS: McpTool[] = [
 ];
 
 const TOOL_NAMES = new Set(MCP_TOOLS.map((tool) => tool.name));
+/**
+ * Every MCP server the bridge answers, with its tools. `ccd_turn` stands in for the Claude
+ * desktop app's server of that name (see desktop-compat.ts, whose tool list a test compares).
+ */
+export const OWN_SERVERS: Readonly<Record<string, ReadonlySet<string>>> = {
+  [MCP_SERVER_NAME]: TOOL_NAMES,
+  ccd_turn: new Set(["update_plan", "wrap_up"]),
+};
 // Claude Code, Kimi and DeepSeek Harness report `mcp__<server>__<tool>`; codex-acp reports `mcp.<server>.<tool>`.
-const TOOL_ID = new RegExp(`^mcp(?:__|\\.)${MCP_SERVER_NAME}(?:__|\\.)([a-z_]+)$`);
+const TOOL_ID = /^mcp(?:__|\.)([a-z_]+?)(?:__|\.)([a-z_]+)$/;
+const ownTool = (server: unknown, tool: unknown) =>
+  typeof server === "string" && typeof tool === "string" && Object.hasOwn(OWN_SERVERS, server) && OWN_SERVERS[server].has(tool);
 
 /**
  * True when a tool call reported by an agent is one of this server's tools. They only
@@ -209,7 +224,7 @@ export function isOwnToolCall(...toolCalls: unknown[]): boolean {
   const calls = toolCalls.filter((call): call is { title?: unknown; name?: unknown; kind?: unknown; rawInput?: any; _meta?: any } => !!call && typeof call === "object");
   const own = (id: unknown) => {
     const match = typeof id === "string" ? TOOL_ID.exec(id) : null;
-    return !!match && TOOL_NAMES.has(match[1]);
+    return !!match && ownTool(match[1], match[2]);
   };
   const input = (call: { rawInput?: any }) => call.rawInput && typeof call.rawInput === "object" ? call.rawInput : {};
   for (const call of calls) {
@@ -221,7 +236,7 @@ export function isOwnToolCall(...toolCalls: unknown[]): boolean {
   }
   return calls.some((call) => {
     // codex-acp reports MCP calls as `execute`, with the server and tool in the input.
-    if (input(call).server === MCP_SERVER_NAME && TOOL_NAMES.has(input(call).tool)) return true;
+    if (ownTool(input(call).server, input(call).tool)) return true;
     if (own(call._meta?.claudeCode?.toolName)) return true;
     return call.kind !== "execute" && (own(call.name) || own(call.title));
   });

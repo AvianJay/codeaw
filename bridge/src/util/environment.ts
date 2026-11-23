@@ -11,6 +11,35 @@ export function desktopEnvironment(env: NodeJS.ProcessEnv = process.env, platfor
   return { ...env, PATH: [...new Set(directories.filter(Boolean))].join(path.delimiter) };
 }
 
+/**
+ * What a Claude Code session (the CLI, or the Claude desktop app's Code tab) sets for the
+ * commands it runs: its own identity, and the desktop app's host-managed login, which tells
+ * a Claude Code started from that environment to wait for credentials only the app can give
+ * ("Not logged in" / "Authentication required"). Also the default-model aliases the app maps
+ * to its own gateway, and the codeaw MCP endpoint of a chat that started this bridge.
+ */
+const CLAUDE_SESSION_VARIABLE = /^(?:CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT|CLAUDE_CHROME_\w+|CLAUDE_CODE_\w+|CLAUDE_AGENT_SDK_\w+|ANTHROPIC_DEFAULT_\w+_MODEL|CODEAW_MCP_(?:URL|TOKEN))$/i;
+/** Settings people give every Claude Code themselves, which a session passes on unchanged. */
+const USER_CLAUDE_VARIABLES = new Set(["CLAUDE_CODE_GIT_BASH_PATH"]);
+
+/** The variables to drop when this process was started from inside a Claude Code session. */
+export function claudeSessionVariables(env: NodeJS.ProcessEnv): string[] {
+  const names = Object.keys(env);
+  const inside = names.some((name) => /^(?:CLAUDECODE|CLAUDE_CODE_ENTRYPOINT)$/i.test(name) && !!env[name]);
+  return inside ? names.filter((name) => CLAUDE_SESSION_VARIABLE.test(name) && !USER_CLAUDE_VARIABLES.has(name.toUpperCase())) : [];
+}
+
+/**
+ * A bridge started from a Claude Code session (by an agent, or a terminal it opened) must not
+ * hand that session's variables to the agents, terminals and updates it starts. Returns the
+ * names removed.
+ */
+export function leaveClaudeSession(env: NodeJS.ProcessEnv = process.env): string[] {
+  const names = claudeSessionVariables(env);
+  for (const name of names) delete env[name];
+  return names;
+}
+
 export function resolveCommand(command: string, env = desktopEnvironment()): string | undefined {
   // Copying process.env makes a plain object: Windows' Path/PATHEXT lookups
   // must remain case-insensitive after config environment variables are merged.

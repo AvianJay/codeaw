@@ -156,14 +156,23 @@ class _MarkdownText extends StatelessWidget {
         height: height,
       ),
       // System monospace (like code blocks) instead of the bundled Latin-only font, so CJK in `code` renders.
-      inlineCodeStyle: const InlineCodeStyle(
+      inlineCodeStyle: InlineCodeStyle(
         fontFamily: 'monospace',
-        fontFamilyFallback: ['Roboto Mono', 'Noto Sans Mono'],
+        fontFamilyFallback: const ['Roboto Mono', 'Noto Sans Mono'],
+        fontSizeFactor: .9,
+        // A soft fill, without the default outline, keeps prose calm.
+        backgroundColor: Theme.of(context).colorScheme.onSurface.withValues(
+          alpha: Theme.of(context).brightness == Brightness.dark ? .1 : .07,
+        ),
+        borderColor: Colors.transparent,
+        borderWidth: 0,
+        borderRadius: const Radius.circular(5),
+        padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 1),
       ),
       onLinkTap: (url, title) =>
           openLink(context, url, client: client, basePath: basePath),
       codeBuilder: (context, name, code, closed) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
+        padding: const EdgeInsets.symmetric(vertical: 6),
         child: CodeBlock(
           code: code,
           language: name.isEmpty ? null : name,

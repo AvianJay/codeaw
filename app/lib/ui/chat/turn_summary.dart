@@ -25,7 +25,7 @@ class TurnSpeed extends StatelessWidget {
         speed == null ? '— TPS' : '≈${speed.toStringAsFixed(1)} TPS',
         style: TextStyle(
           fontSize: 12,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
+          color: Theme.of(context).colorScheme.outline,
           fontFeatures: const [FontFeature.tabularFigures()],
         ),
       ),
@@ -53,15 +53,18 @@ class TurnSummaryView extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final response = turn.responseText;
     final now = turn.endedAt ?? turn.startedAt;
+    final actionStyle = IconButton.styleFrom(
+      foregroundColor: scheme.outline,
+      minimumSize: const Size.square(40),
+      fixedSize: const Size.square(40),
+      padding: EdgeInsets.zero,
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
+      padding: const EdgeInsets.fromLTRB(16, 0, 10, 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Divider(
-            height: 12,
-            color: scheme.outlineVariant.withValues(alpha: 0.6),
-          ),
           LayoutBuilder(
             builder: (context, constraints) {
               final metrics = Wrap(
@@ -74,7 +77,8 @@ class TurnSummaryView extends StatelessWidget {
                     '耗時 ${formatTurnElapsed(turn.elapsedAt(now))}',
                     style: TextStyle(
                       fontSize: 12,
-                      color: scheme.onSurfaceVariant,
+                      color: scheme.outline,
+                      fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
                 ],
@@ -84,19 +88,22 @@ class TurnSummaryView extends StatelessWidget {
                 children: [
                   IconButton(
                     tooltip: '複製回覆',
-                    icon: const Icon(Icons.copy_rounded, size: 18),
+                    style: actionStyle,
+                    icon: const Icon(Icons.copy_rounded, size: 17),
                     onPressed: response.isEmpty
                         ? null
                         : () => _copy(context, response, '已複製回覆'),
                   ),
                   IconButton(
                     tooltip: '重新使用提示',
-                    icon: const Icon(Icons.refresh_rounded, size: 20),
+                    style: actionStyle,
+                    icon: const Icon(Icons.refresh_rounded, size: 19),
                     onPressed: onReusePrompt,
                   ),
                   PopupMenuButton<String>(
                     tooltip: '更多回合操作',
-                    icon: const Icon(Icons.more_horiz_rounded, size: 20),
+                    style: actionStyle,
+                    icon: const Icon(Icons.more_horiz_rounded, size: 19),
                     onSelected: (value) => _copy(
                       context,
                       value == 'thought' ? turn.thoughtText : turn.transcript,
@@ -117,7 +124,7 @@ class TurnSummaryView extends StatelessWidget {
                   ),
                 ],
               );
-              if (constraints.maxWidth < 400 ||
+              if (constraints.maxWidth < 300 ||
                   MediaQuery.textScalerOf(context).scale(12) > 16) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -127,6 +134,7 @@ class TurnSummaryView extends StatelessWidget {
               return Row(
                 children: [
                   Expanded(child: metrics),
+                  const SizedBox(width: 8),
                   actions,
                 ],
               );

@@ -466,6 +466,19 @@ class Timeline extends ChangeNotifier {
     return messages.isEmpty ? null : messages.join('\n\n');
   }
 
+  /// The tool call `id` names as a parent. Bridges before 2026-11-23 filed a Claude subagent's
+  /// own work under `subagent:<child>:<the parent's launch call>`, a call no card has; that work
+  /// belongs on the child's card, `subagent:<child>`.
+  TimelineItem? _parentTool(String? id) {
+    if (id == null) return null;
+    final direct = _byKey['tool:$id'];
+    if (direct != null || !id.startsWith('subagent:')) return direct;
+    for (var end = id.lastIndexOf(':'); end > 'subagent:'.length; end = id.lastIndexOf(':', end - 1)) {
+      if (_byKey['tool:${id.substring(0, end)}'] case final ToolItem card when card.subagent != null) return card;
+    }
+    return null;
+  }
+
   void _rebuildHierarchy() {
     _hierarchyDirty = false;
     _parents.clear();
@@ -494,13 +507,13 @@ class Timeline extends ChangeNotifier {
         final owner = _subagentOwners[item.toolCallId];
         if (owner != null && owner != item) continue;
       }
-      final candidate = item.parentToolCallId == null ? null : _byKey['tool:${item.parentToolCallId}'];
+      final candidate = _parentTool(item.parentToolCallId);
       ToolItem? parent = candidate is ToolItem ? _subagentOwners[candidate.toolCallId] ?? candidate : null;
       TimelineItem? ancestor = parent;
       final seen = {item.key};
       while (ancestor != null) {
         if (!seen.add(ancestor.key)) { parent = null; break; }
-        final next = ancestor.parentToolCallId == null ? null : _byKey['tool:${ancestor.parentToolCallId}'];
+        final next = _parentTool(ancestor.parentToolCallId);
         ancestor = next is ToolItem ? _subagentOwners[next.toolCallId] ?? next : next;
       }
       if (parent == null) {

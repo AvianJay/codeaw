@@ -13,6 +13,7 @@ import { BridgeRuntime, type DesktopPage } from "./desktop/runtime.js";
 import { manageService } from "./desktop/service.js";
 import { loginStartupEnabled, setLoginStartup } from "./desktop/autostart.js";
 import { AgentInstaller, type InstallStatus } from "./agents/install.js";
+import type { AgentUpdateStatus } from "./agents/auto-update.js";
 import { BridgeUpdater, type BridgeUpdateStatus } from "./updater.js";
 import fs from "node:fs";
 import YAML from "yaml";
@@ -20,6 +21,7 @@ import { writeFileAtomic } from "./util/paths.js";
 import { manageDesktopService } from "./remote-desktop/service.js";
 import { gatewayRegistration } from "./remote-desktop/gateway-config.js";
 import { MCP_STDIO_COMMAND, runMcpStdio } from "./mcp/stdio.js";
+import { leaveClaudeSession } from "./util/environment.js";
 
 const log = logger("main");
 const HELP = `codeaw-bridge ${VERSION}
@@ -33,7 +35,7 @@ Commands:
   restart          Reload config and restart the running bridge
   status           Show bridge status and connected device count
   settings         Open the desktop settings window
-  agents <action>  list / install <id> (ACP registry agents)
+  agents <action>  list / install <id> / update (ACP registry agents; updates also run daily)
   update <action>  check / download / install (verified bridge updates)
   autostart <action> install / uninstall / status (Windows/macOS login tray)
   init             Write a starter config if none exists
@@ -78,6 +80,8 @@ async function main(): Promise<void> {
   } });
   if (values.help) { process.stdout.write(HELP); return; }
   if (values.debug) setLogLevel("debug");
+  const inherited = leaveClaudeSession();
+  if (inherited.length) log.info(`started from a Claude Code session; not passing its ${inherited.length} session variables to agents`);
   const file = path.resolve(values.config ?? defaultConfigFile());
   const command = positionals[0] ?? (["win32", "darwin"].includes(process.platform) ? "tray" : "start");
   const port = values.port === undefined ? undefined : Number(values.port);
@@ -149,11 +153,25 @@ async function main(): Promise<void> {
     case "agents": {
       if (values.window) { await showDesktop("agents"); return; }
       const action = positionals[1] ?? "list";
-      if (!["list", "install"].includes(action) || (action === "install" && !positionals[2])) {
-        throw new Error("Usage: codeaw-bridge agents <list|install <id>>");
+      if (!["list", "install", "update"].includes(action) || (action === "install" && !positionals[2])) {
+        throw new Error("Usage: codeaw-bridge agents <list|install <id>|update>");
       }
       ensureConfig(file);
       const running = await runningStatus(file);
+      if (action === "update") {
+        if (!running) throw new Error("Start codeaw-bridge first; it checks for ACP adapter updates daily while running.");
+        let found = await requestControl<AgentUpdateStatus>(file, { command: "checkAgentUpdates" });
+        process.stdout.write("Checking the ACP registry…\n");
+        while (found.checking) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          found = await requestControl<AgentUpdateStatus>(file, { command: "agentUpdateStatus" });
+        }
+        const results = Object.entries(found.results);
+        if (!results.length) process.stdout.write("No Codeaw-installed ACP adapters to update.\n");
+        for (const [id, result] of results) process.stdout.write(`${id.padEnd(24)} ${result.version} · ${result.message}\n`);
+        process.stdout.write(`Last complete check: ${found.checkedDay ?? "never"}${found.enabled ? "" : " · daily updates are off (autoUpdateAgents: false)"}\n`);
+        return;
+      }
       const installer = new AgentInstaller(file);
       if (action === "list") {
         const agents = running ? await requestControl<Awaited<ReturnType<AgentInstaller["list"]>>>(file, { command: "agentCatalog" }) : await installer.list();

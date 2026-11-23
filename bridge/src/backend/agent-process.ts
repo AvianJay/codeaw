@@ -98,7 +98,7 @@ export function bridgeClientCapabilities(): acp.ClientCapabilities {
  */
 export class AgentProcess implements AgentBackend {
   readonly id: string;
-  readonly config: AgentConfig;
+  config: AgentConfig;
   generation = 0;
   status: AgentStatus = "stopped";
   lastError?: string;
@@ -391,6 +391,15 @@ export class AgentProcess implements AgentBackend {
   /** Closes stdin (agents exit on EOF), then kills the whole process tree if it lingers. */
   stop(reason = "stopped"): Promise<void> {
     return this.stopping ??= this.stopRun(reason).finally(() => { this.stopping = undefined; });
+  }
+
+  /** Launch a new installation next time; the caller ensures no session has work in this process. */
+  async retarget(config: AgentConfig): Promise<boolean> {
+    if (this.running) await this.stop("adapter updated");
+    // Something may have restarted the process while it stopped; try again later.
+    if (this.running || this.starting) return false;
+    this.config = config;
+    return true;
   }
 
   private async stopRun(reason: string): Promise<void> {

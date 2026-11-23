@@ -18,6 +18,7 @@ import '../../data/upload_progress.dart';
 import '../../main.dart';
 import '../../util/image_clipboard.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 import '../common/widgets.dart';
 import 'codex_permissions.dart';
 import 'items.dart';
@@ -868,12 +869,16 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
             color: scheme.surfaceContainerLow,
             shape: wide
                 ? RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(CodeawRadii.xl - 4),
                     side: BorderSide(
                       color: scheme.outlineVariant.withValues(alpha: .7),
                     ),
                   )
-                : null,
+                : Border(
+                    top: BorderSide(
+                      color: scheme.outlineVariant.withValues(alpha: .6),
+                    ),
+                  ),
             clipBehavior: Clip.antiAlias,
             child: SafeArea(
               top: false,
@@ -961,7 +966,9 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                               child: Stack(
                                 children: [
                                   ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
+                                    borderRadius: BorderRadius.circular(
+                                      CodeawRadii.md,
+                                    ),
                                     child: Image.memory(
                                       img.bytes,
                                       width: 60,
@@ -987,7 +994,7 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                       ),
                     ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(4, 4, 8, 8),
+                    padding: const EdgeInsets.fromLTRB(4, 4, 10, 10),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
@@ -1027,32 +1034,39 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                                     : '輸入訊息，@ 檔案、/ 指令',
                                 hintMaxLines: 1,
                                 filled: true,
-                                fillColor: scheme.surfaceContainerLowest,
+                                fillColor:
+                                    Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? scheme.surfaceContainer
+                                    : scheme.surfaceContainerLowest,
                                 isDense: true,
                                 contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 10,
+                                  horizontal: 16,
+                                  vertical: 11,
                                 ),
                                 border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(14),
+                                  borderRadius: BorderRadius.circular(
+                                    CodeawRadii.xl - 2,
+                                  ),
                                   borderSide: BorderSide(
-                                    color: scheme.outlineVariant.withValues(
-                                      alpha: .7,
-                                    ),
+                                    color: scheme.outlineVariant,
                                   ),
                                 ),
                                 enabledBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(14),
+                                  borderRadius: BorderRadius.circular(
+                                    CodeawRadii.xl - 2,
+                                  ),
                                   borderSide: BorderSide(
-                                    color: scheme.outlineVariant.withValues(
-                                      alpha: .7,
-                                    ),
+                                    color: scheme.outlineVariant,
                                   ),
                                 ),
                                 focusedBorder: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(14),
+                                  borderRadius: BorderRadius.circular(
+                                    CodeawRadii.xl - 2,
+                                  ),
                                   borderSide: BorderSide(
-                                    color: scheme.primary.withValues(alpha: .6),
+                                    color: scheme.primary.withValues(alpha: .7),
+                                    width: 1.2,
                                   ),
                                 ),
                               ),
@@ -1067,10 +1081,13 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                             onPressed: _dismissKeyboard,
                           ),
                         if (running)
-                          IconButton.filledTonal(
-                            tooltip: '停止',
-                            icon: const Icon(Icons.stop_rounded),
-                            onPressed: c.cancel,
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: IconButton.filledTonal(
+                              tooltip: '停止',
+                              icon: const Icon(Icons.stop_rounded),
+                              onPressed: c.cancel,
+                            ),
                           ),
                         TooltipTheme(
                           data: const TooltipThemeData(
@@ -1082,9 +1099,10 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                                 : null,
                             child: IconButton.filled(
                               style: IconButton.styleFrom(
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
+                                shape: const CircleBorder(),
+                                disabledBackgroundColor:
+                                    scheme.surfaceContainerHighest,
+                                disabledForegroundColor: scheme.outline,
                               ),
                               tooltip: editing
                                   ? '送出編輯'
@@ -1364,9 +1382,12 @@ class _AttachMenu extends StatelessWidget {
           ),
           child: Material(
             elevation: 3,
-            color: scheme.surfaceContainer,
+            color: scheme.surfaceContainerHigh,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(CodeawRadii.lg),
+              side: BorderSide(
+                color: scheme.outlineVariant.withValues(alpha: .6),
+              ),
             ),
             clipBehavior: Clip.antiAlias,
             child: ConstrainedBox(
@@ -1444,8 +1465,11 @@ class _UploadChip extends StatelessWidget {
             compact ? 4 : 8,
           ),
           decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
+            color: scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(CodeawRadii.md),
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: .7),
+            ),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -1551,10 +1575,10 @@ class ConfigBar extends StatelessWidget {
     if (options.isEmpty && usage == null) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
     return SizedBox(
-      height: 40,
+      height: 42,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        padding: const EdgeInsets.fromLTRB(10, 6, 10, 2),
         children: [
           for (final o in options)
             Padding(
@@ -1562,17 +1586,18 @@ class ConfigBar extends StatelessWidget {
               child: o.type == 'boolean'
                   ? FilterChip(
                       visualDensity: VisualDensity.compact,
+                      shape: const StadiumBorder(),
                       label: Text(o.name, style: const TextStyle(fontSize: 12)),
                       selected: o.currentValue == true,
                       onSelected: (v) => controller.setConfig(o, v),
                     )
                   : ActionChip(
                       visualDensity: VisualDensity.compact,
-                      backgroundColor: Colors.transparent,
-                      side: BorderSide.none,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(9),
+                      backgroundColor: scheme.surfaceContainerHigh.withValues(
+                        alpha: .7,
                       ),
+                      side: BorderSide.none,
+                      shape: const StadiumBorder(),
                       avatar: o.category == 'model'
                           ? AgentAvatar(agentId: controller.agentId, size: 18)
                           : Icon(
@@ -1580,6 +1605,7 @@ class ConfigBar extends StatelessWidget {
                               size: 15,
                               color: scheme.onSurfaceVariant,
                             ),
+                      labelPadding: const EdgeInsets.only(left: 2, right: 4),
                       label: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
@@ -1610,7 +1636,11 @@ class ConfigBar extends StatelessWidget {
                 child: Text(
                   '${compactTokens(usage['used'] as num? ?? 0)}/${compactTokens(usage['size'] as num)}'
                   '${usage['cost'] is Map ? ' · \$${((usage['cost'] as Map)['amount'] as num?)?.toStringAsFixed(2) ?? ''}' : ''}',
-                  style: TextStyle(fontSize: 11.5, color: scheme.outline),
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    color: scheme.outline,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
               ),
             ),

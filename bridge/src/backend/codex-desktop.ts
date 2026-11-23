@@ -10,6 +10,9 @@ import { applyDesktopPatches, codexInput, inputBlocks, desktopRecordChanges, des
 import { desktopConfigOptions, desktopModels, desktopRestoreMessage, desktopSettingsPatch } from "./codex-desktop-settings.js";
 import { desktopAsyncReply, desktopAsyncRequests, type DesktopAsyncQuestion } from "./codex-desktop-questions.js";
 
+const MIN_RECOVERY_DELAY_MS = 2_000;
+const MAX_RECOVERY_DELAY_MS = 5 * 60_000;
+
 interface DesktopSession {
   id: string;
   owner?: string;
@@ -22,6 +25,8 @@ interface DesktopSession {
   childChangedAt?: number;
   configOptions?: acp.SessionConfigOption[];
   connected: boolean;
+  /** The last attach found no Codex Desktop pipe or no window owning this chat. */
+  ownerMissing?: boolean;
   attaching?: Promise<void>;
   loadingHistory?: Promise<void>;
   snapshotWaiters: Set<{ revision: number; resolve: () => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>;
@@ -43,8 +48,9 @@ export class CodexDesktopBackend implements AgentBackend {
   private closed = false;
   private lastActivity = Date.now();
   private recoveryTimer?: NodeJS.Timeout;
+  private recoveryDelay = MIN_RECOVERY_DELAY_MS;
 
-  constructor(readonly id: string, readonly config: AgentConfig, private readonly handlers: AgentHandlers, logDir: string, startTimeoutMs?: number) {
+  constructor(readonly id: string, public config: AgentConfig, private readonly handlers: AgentHandlers, logDir: string, startTimeoutMs?: number) {
     this.acp = new AgentProcess(id, config, handlers, logDir, startTimeoutMs);
     this.ipc = new CodexDesktopIpc(typeof config.desktopSync === "object" ? config.desktopSync : {});
     // A reboot leaves the owner absent until Codex Desktop is opened; reopen
@@ -147,7 +153,11 @@ export class CodexDesktopBackend implements AgentBackend {
         return {} as T;
       }
       if (!session) throw new Error("Reconnect this Codex desktop session before sending");
-      await this.attach(session);
+      try { await this.attach(session); }
+      catch (error) {
+        if (method === "session/prompt" || method === "_session/steering") this.reopenForSend(id);
+        throw error;
+      }
       if (method === "session/prompt") return await this.prompt(session, params.prompt, params._meta?.codeaw?.promptId) as T;
       if (method === "session/set_config_option" || method === "session/set_mode") {
         const patch = desktopSettingsPatch(session.conversation, method === "session/set_mode" ? "mode" : params.configId, method === "session/set_mode" ? params.modeId : params.value);
@@ -169,6 +179,16 @@ export class CodexDesktopBackend implements AgentBackend {
       throw new Error("This operation is not available for a desktop-linked session");
     }
     return this.acp.request<T>(method, raw, options);
+  }
+
+  /**
+   * Opening Codex Desktop is a visible, heavy action: only a message the user
+   * sends to a chat whose owner is closed may do it — never a load, a reconnect,
+   * background recovery or a settings change.
+   */
+  reopenForSend(id: string): void {
+    const session = this.sessions.get(id);
+    if (session && !session.connected && session.ownerMissing) this.launcher.resume(id);
   }
 
   private desktopSession(id: string): DesktopSession {
@@ -200,9 +220,8 @@ export class CodexDesktopBackend implements AgentBackend {
         try {
           await this.ipc.ensureReady();
         } catch (error) {
-          // The pipe is absent until Codex Desktop runs: after a reboot the
-          // bridge can restart the app and reopen this chat on its own.
-          this.launcher.resume(session.id);
+          // The pipe is absent until Codex Desktop runs. Only a send reopens it.
+          session.ownerMissing = true;
           throw error;
         }
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
@@ -215,11 +234,11 @@ export class CodexDesktopBackend implements AgentBackend {
         });
         if (this.closed || this.sessions.get(session.id) !== session) throw new Error("Desktop synchronization was detached");
         if (!owner?.handledByClientId) {
-          // Desktop can be running without this thread open. Reopen this thread
-          // without creating a new session or resubmitting any prompt.
-          this.launcher.resume(session.id);
+          // Desktop can be running without this thread open; only a send reopens it.
+          session.ownerMissing = true;
           throw new Error("Codex desktop session owner is unavailable");
         }
+        session.ownerMissing = false;
         session.owner = owner.handledByClientId;
         session.revision = -1;
         const snapshot = this.waitForRevision(session, 0);
@@ -230,6 +249,7 @@ export class CodexDesktopBackend implements AgentBackend {
           const state = session.conversation;
           const incomplete = state?.turnHistory?.kind === "canonical" ? state.turnHistory.history?.isComplete === false : state?.turnsPagination?.hasLoadedOldest === false;
           session.connected = true;
+          this.recoveryDelay = MIN_RECOVERY_DELAY_MS;
           this.ipc.setReconnectWanted(true);
           this.publishState(session);
           // Show the current snapshot immediately; older turns can arrive afterwards.
@@ -588,13 +608,24 @@ export class CodexDesktopBackend implements AgentBackend {
 
   private scheduleRecovery(): void {
     if (this.closed || this.recoveryTimer || ![...this.sessions.values()].some((session) => !session.connected)) return;
+    // Each attempt asks Codex Desktop about every disconnected chat; back off
+    // so chats whose owner stays closed do not keep loading the desktop app.
+    const delay = this.recoveryDelay;
+    this.recoveryDelay = Math.min(this.recoveryDelay * 2, MAX_RECOVERY_DELAY_MS);
     this.recoveryTimer = setTimeout(() => {
       this.recoveryTimer = undefined;
       for (const session of this.sessions.values()) {
         if (!session.connected && !session.attaching) void this.attach(session).catch(() => this.scheduleRecovery());
       }
-    }, 2000);
+    }, delay);
     this.recoveryTimer.unref();
+  }
+
+  /** Only the ACP fallback process is replaced; linked desktop conversations stay attached. */
+  async retarget(config: AgentConfig): Promise<boolean> {
+    if (!await this.acp.retarget(config)) return false;
+    this.config = config;
+    return true;
   }
 
   async stop(reason?: string): Promise<void> {

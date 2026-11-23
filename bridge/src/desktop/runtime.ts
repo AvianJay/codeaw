@@ -8,6 +8,7 @@ import { createAppLaunch, createPairing } from "./pairing.js";
 import { desktopSettings, saveDesktopSettings } from "./settings.js";
 import { loginStartupEnabled, setLoginStartup } from "./autostart.js";
 import { AgentInstaller, registerDetectedAgents, registerInstalledAgent } from "../agents/install.js";
+import { AgentAutoUpdater } from "../agents/auto-update.js";
 import { BridgeUpdater, verifiedBridgeInstaller } from "../updater.js";
 import { VERSION, BUILD_NUMBER, UPDATE_CHANNEL } from "../version.js";
 import { manageDesktopService } from "../remote-desktop/service.js";
@@ -27,11 +28,16 @@ export class BridgeRuntime {
   private readonly autoUpdate: boolean;
   readonly installer: AgentInstaller;
   readonly updater: BridgeUpdater;
+  readonly agentUpdater: AgentAutoUpdater;
 
   constructor(public loaded: LoadedConfig, private options: BridgeOptions = {}, private onQuit: () => void = () => undefined) {
     this.installer = new AgentInstaller(loaded.file, (agent) => this.serialize(async () => registerInstalledAgent(loaded.file, agent)));
     this.updater = new BridgeUpdater(loaded.file);
     this.autoUpdate = options.autoUpdate ?? true;
+    this.agentUpdater = new AgentAutoUpdater(loaded.file, {
+      live: () => this.state === "running" ? this.bridge : undefined,
+      commit: (agent) => this.serialize(async () => registerInstalledAgent(loaded.file, agent)),
+    });
     this.options = { ...options, updater: this.updater };
   }
 
@@ -40,7 +46,10 @@ export class BridgeRuntime {
     try {
       this.bridge = await startBridge(this.loaded, this.options);
       this.state = "running";
-      if (this.autoUpdate) this.automaticUpdate = this.runAutomaticUpdate();
+      if (this.autoUpdate) {
+        this.automaticUpdate = this.runAutomaticUpdate();
+        this.agentUpdater.start();
+      }
     }
     catch (err) { await this.stop(); throw err; }
   }
@@ -114,6 +123,8 @@ export class BridgeRuntime {
         return this.installer.start(request.id);
       }
       case "installerStatus": return this.installer.getStatus();
+      case "agentUpdateStatus": return this.agentUpdater.status();
+      case "checkAgentUpdates": void this.agentUpdater.run(true); return this.agentUpdater.status();
       case "updaterStatus": return this.updater.getStatus();
       case "checkUpdate": return this.updater.check();
       case "setUpdateChannel": return this.updater.setChannel(request.channel);
@@ -162,6 +173,7 @@ export class BridgeRuntime {
   stop(): Promise<void> {
     return this.stopping ??= (async () => {
       await this.installer.stop();
+      await this.agentUpdater.stop();
       await this.updater.stop();
       await this.automaticUpdate?.catch(() => undefined);
       await this.serialize(async () => {

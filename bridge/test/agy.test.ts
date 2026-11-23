@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigSchema } from "../src/config.js";
-import { AgyBackend, geminiProviderEnvironment } from "../src/backend/agy.js";
+import { AgyBackend, agyErrorMessage, agyTitle, agyToolCall, agyToolOutput, geminiProviderEnvironment } from "../src/backend/agy.js";
 import { AgentRegistry } from "../src/backend/registry.js";
 import type { AgentHandlers } from "../src/backend/agent-process.js";
 import { startBridge } from "../src/bridge.js";
@@ -21,7 +21,8 @@ const handlers = (updates: any[] = []): AgentHandlers => ({ onUpdate: (_id, p) =
 function backend(root = home(), updates: any[] = [], extra: Record<string, unknown> = {}) {
   const config = ConfigSchema.parse({ agents: { agy: { name: "AGY", command: process.execPath, args: [fixture], transport: "agy",
     env: { AGY_FIXTURE_HOME: root, GEMINI_API_KEY: "synthetic-private-key" }, ...extra } } }).agents.agy;
-  const agent = new AgyBackend("agy", config, handlers(updates), path.join(root, "logs"), 1000);
+  // AGY's own settings file is per user; tests must not read this computer's.
+  const agent = new AgyBackend("agy", config, handlers(updates), path.join(root, "logs"), 1000, path.join(root, "agy-settings.json"));
   backends.push(agent);
   return agent;
 }
@@ -52,7 +53,7 @@ describe("AGY NDJSON backend", () => {
     const result = await prompt(a, first.sessionId, "tools");
     expect(result.usage).toMatchObject({ inputTokens: 200, outputTokens: 14, thoughtTokens: 6 });
     expect(updates.filter((u) => u.sessionId === first.sessionId && u.update.sessionUpdate === "agent_message_chunk").map((u) => u.update.content.text).join("")).toBe("remember 蘋果\n工具完成🙂\n");
-    expect(updates.find((u) => u.update.sessionUpdate === "tool_call").update).toMatchObject({ kind: "execute", status: "in_progress", rawInput: { CommandLine: "echo hello_headless_demo" } });
+    expect(updates.find((u) => u.update.sessionUpdate === "tool_call").update).toMatchObject({ title: "echo hello_headless_demo", kind: "execute", status: "in_progress", rawInput: { CommandLine: "echo hello_headless_demo" } });
     expect(updates.find((u) => u.update.sessionUpdate === "tool_call_update").update).toMatchObject({ status: "completed", rawOutput: "hello_headless_demo\r\n" });
     await a.stop(); a = backend(root, updates);
     await a.request("session/resume", { sessionId: first.sessionId, cwd: root });
@@ -118,7 +119,8 @@ describe("AGY NDJSON backend", () => {
     await waitFor(() => fs.existsSync(path.join(root, "launches.jsonl")));
     await a.notify("session/cancel", { sessionId: s.sessionId });
     expect((await starting).stopReason).toBe("cancelled");
-    expect(updates).toHaveLength(0);
+    // Only the title taken from the message; nothing from a turn.
+    expect(updates.map((u) => u.update.sessionUpdate)).toEqual(["session_info_update"]);
     expect(a.inflight).toBe(0);
     await prompt(a, s.sessionId, "after cancel");
     expect(updates.at(-2).update.content.text).toBe("after cancel");
@@ -143,6 +145,65 @@ describe("AGY NDJSON backend", () => {
     fs.writeFileSync(file, "export GEMINI_API_KEY=\"test-two\"\nGOOGLE_GEMINI_BASE_URL=https://second.example # switched\n");
     await prompt(a, s.sessionId, "second");
     expect(launches(root).map((l) => l.endpoint)).toEqual(["https://first.example", "https://second.example"]);
+  });
+
+  it("explains a Gemini API provider without a key before launching AGY", async () => {
+    const root = home(); const updates: any[] = [];
+    const file = path.join(root, "gemini.env");
+    fs.writeFileSync(file, "");
+    fs.writeFileSync(path.join(root, "agy-settings.json"), JSON.stringify({ modelProvider: "gemini" }));
+    const a = backend(root, updates, { env: { AGY_FIXTURE_HOME: root }, geminiEnvFile: file });
+    const s = await a.request<any>("session/new", { cwd: root });
+    await expect(prompt(a, s.sessionId, "hello")).rejects.toThrow(/"modelProvider": "gemini".*gemini\.env has no GEMINI_API_KEY.*CC Switch.*agents\.agy\.env/s);
+    expect(fs.existsSync(path.join(root, "launches.jsonl"))).toBe(false);
+    // Selecting the provider in CC Switch fills the file; the next message works.
+    fs.writeFileSync(file, "GEMINI_API_KEY=switched-key\nGOOGLE_GEMINI_BASE_URL=https://proxy.example\n");
+    await prompt(a, s.sessionId, "hello");
+    expect(launches(root).map((l) => l.endpoint)).toEqual(["https://proxy.example"]);
+    // Google sign-in needs no key, and a missing file is not an error by itself.
+    fs.writeFileSync(path.join(root, "agy-settings.json"), JSON.stringify({}));
+    const b = backend(root, [], { env: { AGY_FIXTURE_HOME: root }, geminiEnvFile: path.join(root, "absent.env") });
+    const t = await b.request<any>("session/new", { cwd: root });
+    await prompt(b, t.sessionId, "signed in");
+    expect(geminiProviderEnvironment(path.join(root, "absent.env"))).toEqual({});
+  });
+
+  it("titles a conversation once, from its first message", async () => {
+    const root = home(); const updates: any[] = []; let a = backend(root, updates);
+    const s = await a.request<any>("session/new", { cwd: root });
+    await prompt(a, s.sessionId, "\n  Fix   the login page\nand more details");
+    await prompt(a, s.sessionId, "second message");
+    await a.stop(); a = backend(root, updates);
+    await prompt(a, s.sessionId, "after restart");
+    expect(updates.filter((u) => u.update.sessionUpdate === "session_info_update").map((u) => u.update.title)).toEqual(["Fix the login page"]);
+    expect(agyTitle("x".repeat(80))).toHaveLength(60);
+    expect(agyTitle(" \n ")).toBeUndefined();
+  });
+
+  it("names tool calls by what they touch and keeps only what a command printed", () => {
+    expect(agyToolCall("read_file", { Path: "C:\\work\\notes.txt" })).toEqual({ title: "Read notes.txt", kind: "read", locations: [{ path: "C:\\work\\notes.txt" }] });
+    expect(agyToolCall("view_file", { AbsolutePath: "/tmp/a.ts" })).toMatchObject({ title: "Read a.ts", kind: "read" });
+    expect(agyToolCall("edit_file", { Path: "C:\\work\\notes.txt" })).toMatchObject({ title: "Edit notes.txt", kind: "edit" });
+    expect(agyToolCall("write_to_file", { TargetFile: "/w/hello.txt" })).toMatchObject({ title: "Write hello.txt", kind: "edit", locations: [{ path: "/w/hello.txt" }] });
+    expect(agyToolCall("run_command", { CommandLine: "echo done", Cwd: "C:\\work" })).toEqual({ title: "echo done", kind: "execute", locations: [{ path: "C:\\work" }] });
+    expect(agyToolCall("grep_search", { Query: "beta", SearchPath: "/w" })).toMatchObject({ title: "Search beta", kind: "search" });
+    expect(agyToolCall("list_dir", { DirectoryPath: "/w" })).toMatchObject({ title: "List /w", kind: "read" });
+    expect(agyToolCall("search_web", { query: "acp" })).toMatchObject({ title: "Search the web: acp", kind: "fetch" });
+    expect(agyToolCall("browser_click_element", {})).toEqual({ title: "Browser click element", kind: "other" });
+    // As AGY 1.5 reports a finished command.
+    const ran = "Created At: 2026-11-23T09:08:05+08:00\nCompleted At: 2026-11-23T09:08:06+08:00\nCommand exited with code 0.\n\nCommand output:\ndone\r\n";
+    expect(agyToolOutput("run_command", ran)).toBe("done");
+    expect(agyToolOutput("run_command", ran.replace("code 0", "code 2"))).toBe("Exit code 2\ndone");
+    expect(agyToolOutput("run_command", "no preamble")).toBe("no preamble");
+    expect(agyToolOutput("read_file", "2 lines, 11 bytes")).toBe("2 lines, 11 bytes");
+  });
+
+  it("turns provider failures into the provider's own words with a hint", () => {
+    const raw = 'agent executor error: generating and executing: Error 400, Message: {"error":{"message":"unknown provider for model gemini-3.8-flash","type":"invalid_request_error","code":"model_not_found","param":"model"}}, Status: 400 Bad Request, Details: []';
+    expect(agyErrorMessage(raw)).toBe("The model provider answered HTTP 400: unknown provider for model gemini-3.8-flash. This provider does not serve that model: pick another one in the model menu. Custom models from AGY's customModelsConfig are listed there too.");
+    expect(agyErrorMessage(raw.replace("400", "429").replace("unknown provider for model gemini-3.8-flash", "quota exceeded").replace("model_not_found", "rate_limited"))).toContain("HTTP 429: quota exceeded. The provider is rate limiting");
+    expect(agyErrorMessage("agent executor error: generating and executing: connection reset")).toBe("connection reset");
+    expect(agyErrorMessage("Invalid API key [REDACTED]")).toBe("Invalid API key [REDACTED]");
   });
 
   it("uses the explicit transport selector and allows ACP registry installs to remain ACP", () => {

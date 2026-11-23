@@ -3,6 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/session_controller.dart';
 import '../../data/timeline.dart';
+import '../common/app_theme.dart';
 import '../common/image_preview.dart';
 import '../common/markdown_image.dart';
 import '../common/widgets.dart';
@@ -37,16 +38,29 @@ class _FilesCard extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
       child: Material(
         color: scheme.surfaceContainerLow,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(CodeawRadii.lg),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: .7)),
+        ),
         clipBehavior: Clip.antiAlias,
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          if (title != null && title.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-              child: Text(title, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-            ),
-          for (final file in files) _SharedFile(file, controller: controller),
-        ]),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (title != null && title.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 14, 2),
+                child: Row(children: [
+                  Icon(Icons.attach_file_rounded, size: 16, color: scheme.primary),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(title, style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: scheme.onSurface))),
+                ]),
+              ),
+            for (final (i, file) in files.indexed) ...[
+              if (i > 0) Divider(height: 1, indent: 62, endIndent: 14, color: scheme.outlineVariant.withValues(alpha: .6)),
+              _SharedFile(file, controller: controller),
+            ],
+          ]),
+        ),
       ),
     );
   }
@@ -77,13 +91,13 @@ class _SharedFile extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       if (preview != null)
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
           child: Align(
             alignment: Alignment.centerLeft,
             child: DeferredImage(
               provider: preview,
               builder: (context) => ClipRRect(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(CodeawRadii.md),
                 child: InkWell(
                   onTap: () => showImagePreview(context, preview),
                   child: ConstrainedBox(
@@ -104,18 +118,30 @@ class _SharedFile extends StatelessWidget {
       InkWell(
         onTap: () => context.push(Uri(path: '/file', queryParameters: {'path': path}).toString()),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
           child: Row(children: [
-            Icon(fileIcon(name), size: 20, color: scheme.onSurfaceVariant),
-            const SizedBox(width: 10),
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: scheme.primary.withValues(alpha: .1),
+                borderRadius: BorderRadius.circular(CodeawRadii.sm + 2),
+              ),
+              child: Icon(fileIcon(name), size: 19, color: scheme.primary),
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500)),
+                Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                 if (detail.isNotEmpty)
-                  Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Text(detail, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, height: 1.35, color: scheme.onSurfaceVariant)),
+                  ),
               ]),
             ),
-            Icon(Icons.chevron_right_rounded, size: 18, color: scheme.outline),
+            const SizedBox(width: 6),
+            Icon(Icons.chevron_right_rounded, size: 20, color: scheme.outline),
           ]),
         ),
       ),
@@ -132,25 +158,37 @@ class _NoticeCard extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final title = item.card['title'] as String?;
     final urgent = item.card['urgent'] == true;
+    final accent = urgent ? scheme.error : scheme.primary;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Icon(
-          urgent ? Icons.notification_important_outlined : Icons.notifications_none_rounded,
-          size: 16,
-          color: urgent ? scheme.error : scheme.primary,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(12, 10, 14, 10),
+        decoration: BoxDecoration(
+          color: accent.withValues(alpha: .07),
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
+          border: Border.all(color: accent.withValues(alpha: .2)),
         ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: SelectableText.rich(
-            TextSpan(children: [
-              if (title != null && title.isNotEmpty) TextSpan(text: '$title\n', style: const TextStyle(fontWeight: FontWeight.w600)),
-              TextSpan(text: '${item.card['message'] ?? ''}'),
-            ]),
-            style: TextStyle(fontSize: 12.5, color: scheme.onSurfaceVariant, height: 1.35),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 1),
+            child: Icon(
+              urgent ? Icons.notification_important_outlined : Icons.notifications_none_rounded,
+              size: 17,
+              color: accent,
+            ),
           ),
-        ),
-      ]),
+          const SizedBox(width: 10),
+          Expanded(
+            child: SelectableText.rich(
+              TextSpan(children: [
+                if (title != null && title.isNotEmpty) TextSpan(text: '$title\n', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: scheme.onSurface)),
+                TextSpan(text: '${item.card['message'] ?? ''}'),
+              ]),
+              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant, height: 1.45),
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }
@@ -171,17 +209,17 @@ class SuggestedReplies extends StatelessWidget {
       // Long replies wrap; they never push the conversation off a phone screen.
       constraints: const BoxConstraints(maxHeight: 148),
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 2),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
         child: Align(
           alignment: Alignment.centerLeft,
-          child: Wrap(spacing: 8, runSpacing: 6, children: [
+          child: Wrap(spacing: 8, runSpacing: 8, children: [
             for (final reply in replies)
               Semantics(
                 button: true,
                 hint: '送出這則回覆',
                 child: Material(
-                  color: scheme.secondaryContainer,
-                  shape: const StadiumBorder(),
+                  color: scheme.primary.withValues(alpha: .07),
+                  shape: StadiumBorder(side: BorderSide(color: scheme.primary.withValues(alpha: .35))),
                   clipBehavior: Clip.antiAlias,
                   child: InkWell(
                     onTap: () => controller.send([
@@ -193,7 +231,7 @@ class SuggestedReplies extends StatelessWidget {
                         reply,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 13.5, color: scheme.onSecondaryContainer, height: 1.25),
+                        style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: scheme.primary, height: 1.3),
                       ),
                     ),
                   ),
