@@ -780,12 +780,31 @@ model, so it is sent three ways:
 
 `scripts/mcp-smoke.ts <agentId> --prompt` checks an installed agent end to end.
 
+**Chats begun in the Claude desktop app.** Their Claude Code transcript carries
+the app's own instructions, which require the app's `ccd_turn` MCP tools every
+turn. When the transcript has a line written by the app (`"entrypoint":
+"claude-desktop…"`), `session/load`, `session/resume` and a fork from a message
+also get a second entry on the same chat token, named `ccd_turn`, at
+`/mcp/ccd_turn`:
+
+| tool | arguments | effect |
+|---|---|---|
+| `update_plan` | `items: [{content, status}]` (≤ 50; also accepted JSON-encoded), `advance?`, `scope?` (ignored) | a `plan` session update; `advance` completes the step in progress and starts the next pending one |
+| `wrap_up` | `recap`, `question?`, `buttons?: string[]` (≤ 4) | `buttons` become a `replies` card; a step still in progress is marked completed |
+
+Its `instructions` tell the model that the app's other tools (`ccd_session`,
+`ccd_view`, `ccd_pr`, …) do not exist here and that `#local_…` and
+`#terminal/…` links do not open on a phone. These calls count as the bridge's own
+tools for permissions. `scripts/live-agents-smoke.ts` checks this against a real
+desktop transcript.
+
 **Permissions.** These tools only present something to the user, so the bridge
 answers an agent's `session/request_permission` for them itself (`allow_once`,
 else `allow_always`) and clients never see the request. A call counts as one of
 them when the agent names the tool (`_meta.claudeCode.toolName`, or
 `rawInput: {server: "codeaw", tool}` as codex-acp reports it), or its title is
-`mcp__codeaw__<tool>` on a call that is not a shell command.
+`mcp__codeaw__<tool>` (or `mcp__ccd_turn__update_plan` / `wrap_up`) on a call
+that is not a shell command.
 
 Config: `mcp.enabled: false` turns the server off; `agents.<id>.mcp: false`
 keeps it from one agent; `mcp.instructions` (at most 4000 characters) adds text.

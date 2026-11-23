@@ -25,6 +25,38 @@ export function transcriptKind(agentId: string, config: Pick<AgentConfig, "comma
   return undefined;
 }
 
+/** `claude-desktop`, and `claude-desktop-3p` when the app uses a third-party API. */
+const DESKTOP_ENTRYPOINT = Buffer.from('"entrypoint":"claude-desktop');
+
+/** Whether `needle` occurs in the first MAX_SCAN bytes of `file`, read in chunks. */
+function transcriptMentions(file: string, needle: Buffer): boolean {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return false;
+  }
+  try {
+    const buffer = Buffer.alloc(CHUNK + needle.length);
+    let carried = 0;
+    for (let offset = 0; offset < MAX_SCAN;) {
+      const read = fs.readSync(fd, buffer, carried, CHUNK, offset);
+      if (read <= 0) return false;
+      const filled = carried + read;
+      if (buffer.subarray(0, filled).includes(needle)) return true;
+      // Keep the tail so a match across two chunks is still found.
+      carried = Math.min(needle.length - 1, filled);
+      buffer.copy(buffer, 0, filled - carried, filled);
+      offset += read;
+    }
+    return false;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 /** Claude Code names a project directory after its cwd, with every other character as a dash. */
 export function claudeProjectSlug(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, "-");
@@ -108,6 +140,7 @@ export function lastTranscriptActivity(file: string, kind: TranscriptKind): stri
 export class NativeActivity {
   private readonly cache = new Map<string, { mtimeMs: number; size: number; at: string | undefined }>();
   private readonly indexes = new Map<string, { builtAt: number; files: Map<string, string> }>();
+  private readonly desktop = new Map<string, { size: number; found: boolean }>();
 
   /** ISO time of the last real message, or undefined when this agent's transcript is unknown. */
   lastMessageAt(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): string | undefined {
@@ -126,6 +159,28 @@ export class NativeActivity {
     const at = lastTranscriptActivity(file, kind);
     this.cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, at });
     return at;
+  }
+
+  /**
+   * Whether the Claude desktop app has written to this chat's transcript. Such a transcript
+   * carries the app's own instructions, which name tools (`mcp__ccd_*`) that exist only there.
+   */
+  fromClaudeDesktop(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): boolean {
+    if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return false;
+    const file = this.claudeFile(config, backendId, cwd);
+    if (!file) return false;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      return false;
+    }
+    const cached = this.desktop.get(file);
+    // Lines are only appended, so a match stays one.
+    if (cached && (cached.found || cached.size === stat.size)) return cached.found;
+    const found = transcriptMentions(file, DESKTOP_ENTRYPOINT);
+    this.desktop.set(file, { size: stat.size, found });
+    return found;
   }
 
   private claudeFile(config: Pick<AgentConfig, "env">, backendId: string, cwd?: string): string | undefined {

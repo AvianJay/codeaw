@@ -18,6 +18,7 @@ import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity
 import type { CpaUsageService } from "../server/cpa.js";
 import { NativeActivity } from "./native-activity.js";
 import type { McpServer } from "../mcp/server.js";
+import { DESKTOP_TURN_SERVER } from "../mcp/desktop-compat.js";
 import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
 import { pathKey } from "../util/paths.js";
 import { newEpoch, type SessionStore } from "./store.js";
@@ -395,8 +396,17 @@ export class SessionManager implements AgentHandlers, McpHost {
     return sessionId ? this.mcp.tokenFor(sessionId) : this.mcp.issue();
   }
 
-  private mcpServers(token: string | undefined): acp.McpServer[] {
-    return token && this.mcp ? [this.mcp.entry(token)] : [];
+  /** `fromDesktop`: the chat began in the Claude desktop app, whose turn tools it then also gets. */
+  private mcpServers(token: string | undefined, fromDesktop = false): acp.McpServer[] {
+    if (!token || !this.mcp) return [];
+    return fromDesktop ? [this.mcp.entry(token), this.mcp.entry(token, DESKTOP_TURN_SERVER)] : [this.mcp.entry(token)];
+  }
+
+  /** Whether the Claude desktop app wrote this chat's transcript (see desktop-compat.ts). */
+  private fromClaudeDesktop(agentId: string, backendId: string, cwd?: string): boolean {
+    if (!this.registry.has(agentId)) return false;
+    const agent = this.registry.get(agentId);
+    return this.native.fromClaudeDesktop(agent.id, agent.config, backendId, cwd);
   }
 
   /** Whether chats on this agent get the bridge's tools. The Antigravity CLI takes no MCP servers. */
@@ -428,6 +438,16 @@ export class SessionManager implements AgentHandlers, McpHost {
       this.saveMeta(s, true);
     }
     this.appendEvent(s, { type: "card", cardId: "k_" + crypto.randomBytes(6).toString("hex"), card });
+  }
+
+  showPlan(sessionId: string, entries: acp.PlanEntry[]): void {
+    this.ingest(this.requireLoaded(sessionId), { sessionUpdate: "plan", entries });
+  }
+
+  plan(sessionId: string): acp.PlanEntry[] | undefined {
+    const s = this.requireLoaded(sessionId);
+    const last = this.ensureEntries(s).findLast((e) => e.kind === "update" && e.update.sessionUpdate === "plan");
+    return last?.kind === "update" && last.update.sessionUpdate === "plan" ? last.update.entries : undefined;
   }
 
   async notifyUser(sessionId: string, notice: { title?: string; message: string; urgent: boolean }): Promise<NotifyDelivery> {
@@ -1205,7 +1225,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     const caps = agent.capabilities;
     const desktop = s.meta.connection === "desktop";
     // A desktop-owned chat runs in the desktop app, which the bridge cannot give tools to.
-    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
+    const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id), this.fromClaudeDesktop(s.meta.agentId, s.meta.backendId, s.meta.cwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
     const saved = structuredClone(s.meta);
     let resp: any;
     if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
@@ -1267,7 +1287,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (before && !Number.isNaN(Date.parse(before))) s.meta.activityAt = later(s.meta.activityAt, new Date(before).toISOString());
     const caps = agent.capabilities;
     const desktop = s.meta.connection === "desktop";
-    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
+    const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id), this.fromClaudeDesktop(agentId, backendId, sessionCwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
     s.replaying++;
     try {
@@ -1737,7 +1757,8 @@ export class SessionManager implements AgentHandlers, McpHost {
   private async fork(s: BridgeSession, messageId: string, prompt: acp.ContentBlock[], promptId: string, replace: boolean): Promise<Record<string, unknown>> {
     const { plan, agent } = await this.checkFork(s, messageId);
     const token = this.mcpToken(agent);
-    const mcpServers = this.mcpServers(token);
+    // A fork copies the transcript, desktop instructions included.
+    const mcpServers = this.mcpServers(token, plan.messageId ? this.fromClaudeDesktop(s.meta.agentId, s.meta.backendId, s.meta.cwd) : false);
     let resp: any;
     try {
       if (plan.messageId) {

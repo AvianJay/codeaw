@@ -7,7 +7,8 @@ import { logger } from "../util/log.js";
 import { VERSION } from "../version.js";
 import { mcpInstructions, mcpToolNote } from "./instructions.js";
 import { MCP_STDIO_COMMAND, MCP_TOKEN_ENV, MCP_URL_ENV } from "./stdio.js";
-import { MCP_SERVER_NAME, MCP_TOOLS, ToolError, type McpHost } from "./tools.js";
+import { DESKTOP_TURN_SERVER, DESKTOP_TURN_TOOLS, desktopTurnInstructions } from "./desktop-compat.js";
+import { MCP_SERVER_NAME, MCP_TOOLS, ToolError, type McpHost, type McpTool } from "./tools.js";
 
 const log = logger("mcp");
 
@@ -33,6 +34,16 @@ interface JsonRpcMessage {
 
 class RpcError extends Error {
   constructor(readonly code: number, message: string) { super(message); }
+}
+
+/** A server the bridge answers on its own path: the chat's token works for each. */
+interface Profile {
+  name: string;
+  title: string;
+  tools: McpTool[];
+  instructions(): string;
+  /** Whether the first tool's description carries the note for clients that drop `instructions`. */
+  noted: boolean;
 }
 
 interface TokenEntry {
@@ -70,8 +81,14 @@ export class McpServer {
   private server?: http.Server;
   private port = 0;
 
+  private readonly profiles: Map<string, Profile>;
+
   constructor(private readonly host: McpHost, private readonly opts: { hostName: string; instructions?: string }) {
     this.instructions = mcpInstructions(opts.hostName, opts.instructions);
+    this.profiles = new Map([
+      [MCP_SERVER_NAME, { name: MCP_SERVER_NAME, title: "codeaw", tools: MCP_TOOLS, instructions: () => this.instructions, noted: true }],
+      [DESKTOP_TURN_SERVER, { name: DESKTOP_TURN_SERVER, title: "codeaw (Claude desktop turn tools)", tools: DESKTOP_TURN_TOOLS, instructions: desktopTurnInstructions, noted: false }],
+    ]);
   }
 
   async start(): Promise<void> {
@@ -156,18 +173,20 @@ export class McpServer {
    * The ACP `mcpServers` entry for a chat. It carries both transports;
    * `resolveMcpServers` keeps the one the agent supports.
    */
-  entry(token: string): acp.McpServer {
+  entry(token: string, server: string = MCP_SERVER_NAME): acp.McpServer {
+    if (!this.profiles.has(server)) throw new Error(`Unknown MCP server ${server}`);
     const self = bridgeInvocation();
+    const url = server === MCP_SERVER_NAME ? this.url : `${this.url}/${server}`;
     return {
       type: "http",
-      name: MCP_SERVER_NAME,
-      url: this.url,
+      name: server,
+      url,
       headers: [{ name: "Authorization", value: `Bearer ${token}` }],
       _meta: { codeaw: { stdio: {
-        name: MCP_SERVER_NAME,
+        name: server,
         command: self.executable,
         args: [...self.args, MCP_STDIO_COMMAND],
-        env: [{ name: MCP_URL_ENV, value: this.url }, { name: MCP_TOKEN_ENV, value: token }],
+        env: [{ name: MCP_URL_ENV, value: url }, { name: MCP_TOKEN_ENV, value: token }],
       } } },
     };
   }
@@ -192,7 +211,8 @@ export class McpServer {
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== "/mcp") return this.send(res, 404, { error: "Not found" });
+    const profile = url.pathname === "/mcp" ? this.profiles.get(MCP_SERVER_NAME) : url.pathname.startsWith("/mcp/") ? this.profiles.get(url.pathname.slice(5)) : undefined;
+    if (!profile) return this.send(res, 404, { error: "Not found" });
     // Agents are not browsers. A page that reached this port through DNS rebinding is.
     if (req.headers.origin) return this.send(res, 403, { error: "Forbidden" });
     const header = req.headers.authorization;
@@ -209,7 +229,7 @@ export class McpServer {
     if (messages.length === 0) return this.send(res, 400, { jsonrpc: "2.0", id: null, error: { code: INVALID_REQUEST, message: "Invalid request" } });
     const responses: unknown[] = [];
     for (const message of messages) {
-      const response = await this.dispatch(message, entry);
+      const response = await this.dispatch(message, entry, profile);
       if (response) responses.push(response);
     }
     // Notifications and responses from the client are only acknowledged.
@@ -217,7 +237,7 @@ export class McpServer {
     this.send(res, 200, batch ? responses : responses[0]);
   }
 
-  private async dispatch(message: JsonRpcMessage, entry: TokenEntry): Promise<unknown> {
+  private async dispatch(message: JsonRpcMessage, entry: TokenEntry, profile: Profile): Promise<unknown> {
     if (!message || typeof message !== "object" || message.jsonrpc !== "2.0") {
       return { jsonrpc: "2.0", id: null, error: { code: INVALID_REQUEST, message: "Invalid request" } };
     }
@@ -225,7 +245,7 @@ export class McpServer {
     const isRequest = typeof message.id === "string" || typeof message.id === "number";
     if (!isRequest) return undefined;
     try {
-      return { jsonrpc: "2.0", id: message.id, result: await this.call(message.method, message.params ?? {}, entry) };
+      return { jsonrpc: "2.0", id: message.id, result: await this.call(message.method, message.params ?? {}, entry, profile) };
     } catch (error) {
       if (error instanceof RpcError) return { jsonrpc: "2.0", id: message.id, error: { code: error.code, message: error.message } };
       log.error(`${message.method} failed`, error);
@@ -233,35 +253,36 @@ export class McpServer {
     }
   }
 
-  private async call(method: string, params: any, entry: TokenEntry): Promise<unknown> {
+  private async call(method: string, params: any, entry: TokenEntry, profile: Profile): Promise<unknown> {
     switch (method) {
       case "initialize": {
         const requested = params?.protocolVersion;
         const name = params?.clientInfo?.name;
-        entry.client = typeof name === "string" && name ? name.slice(0, 80) : "unknown";
-        log.debug(`${entry.client} connected${entry.sessionId ? ` for ${entry.sessionId}` : ""}`);
+        // Each server of a chat connects on its own; the main one names the client.
+        if (profile.noted || !entry.client) entry.client = typeof name === "string" && name ? name.slice(0, 80) : "unknown";
+        log.debug(`${entry.client} connected to ${profile.name}${entry.sessionId ? ` for ${entry.sessionId}` : ""}`);
         return {
           protocolVersion: PROTOCOL_VERSIONS.includes(requested) ? requested : PROTOCOL_VERSIONS[0],
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: MCP_SERVER_NAME, title: "codeaw", version: VERSION },
-          instructions: this.instructions,
+          serverInfo: { name: profile.name, title: profile.title, version: VERSION },
+          instructions: profile.instructions(),
         };
       }
       case "ping":
         return {};
       case "tools/list":
         return {
-          tools: MCP_TOOLS.map((tool, index) => ({
+          tools: profile.tools.map((tool, index) => ({
             name: tool.name,
             title: tool.title,
-            description: index === 0 ? this.withNote(tool.description, entry.client) : tool.description,
+            description: index === 0 && profile.noted ? this.withNote(tool.description, entry.client) : tool.description,
             inputSchema: tool.inputSchema,
             // They present something to the user and change nothing on the computer.
             annotations: { title: tool.title, readOnlyHint: true, destructiveHint: false, openWorldHint: false },
           })),
         };
       case "tools/call": {
-        const tool = MCP_TOOLS.find((candidate) => candidate.name === params?.name);
+        const tool = profile.tools.find((candidate) => candidate.name === params?.name);
         if (!tool) throw new RpcError(INVALID_PARAMS, `Unknown tool: ${String(params?.name)}`);
         const args = params.arguments ?? {};
         if (typeof args !== "object" || Array.isArray(args)) throw new RpcError(INVALID_PARAMS, "arguments must be an object");
