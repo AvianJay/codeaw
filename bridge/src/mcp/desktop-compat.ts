@@ -46,8 +46,22 @@ function parseItems(raw: unknown): Array<{ content: string; status: acp.PlanEntr
   });
 }
 
+/**
+ * Claude Code defers MCP tool schemas, so a model may call before it has read this one and
+ * send `{"items": [{"advance": true}]}` for `{"advance": true}`. Seen with Haiku 5.5.
+ */
+function advanceInItems(raw: unknown): boolean {
+  let value = raw;
+  if (typeof value === "string") {
+    try { value = JSON.parse(value); } catch { return false; }
+  }
+  return Array.isArray(value) && value.length > 0 &&
+    value.every((item) => !!item && typeof item === "object" && (item as Record<string, unknown>).advance === true && !("content" in item));
+}
+
 function updatePlan(args: Record<string, unknown>, sessionId: string, host: McpHost): string {
   if (!host.mcpSession(sessionId)) throw new ToolError("This chat no longer exists in codeaw");
+  if (advanceInItems(args.items)) args = { ...args, items: undefined, advance: true };
   const given = args.items !== undefined && args.items !== null && args.items !== "";
   let steps = given ? parseItems(args.items) : (host.plan(sessionId) ?? []).map(({ content, status }) => ({ content, status }));
   if (!steps.length) throw new ToolError("There is no plan yet; send items with the whole list first");

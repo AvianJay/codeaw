@@ -60,7 +60,8 @@ it("shows the task list in the chat, accepts a JSON-encoded list and advances st
   const items = JSON.stringify([{ content: "Map backends", status: "in_progress" }, { content: "Fix AGY", status: "pending" }, { content: "Test", status: "pending" }]);
   expect((await call(sessionId, "update_plan", { scope: "continuation", items })).result.content[0].text).toBe("Plan shown (3 steps).");
   expect((await call(sessionId, "update_plan", { advance: true })).result.content[0].text).toBe("Plan updated: step 2 of 3 is in progress.");
-  await call(sessionId, "update_plan", { advance: true });
+  // As Haiku 5.5 sends it before loading the tool's schema.
+  expect((await call(sessionId, "update_plan", { items: [{ advance: true }] })).result.content[0].text).toBe("Plan updated: step 3 of 3 is in progress.");
   expect((await call(sessionId, "update_plan", { advance: true })).result.content[0].text).toBe("Plan updated: all 3 steps are done.");
   await c.waitFor(() => plans(c, sessionId).length === 4);
   expect(plans(c, sessionId)).toEqual([
