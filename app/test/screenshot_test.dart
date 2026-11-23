@@ -17,6 +17,7 @@ import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/sessions_model.dart';
 import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
+import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/ui/chat/items.dart';
 import 'package:codeaw/ui/chat/working_indicator.dart';
 import 'package:codeaw/ui/common/app_theme.dart';
@@ -406,6 +407,96 @@ Web build 與測試通過。遠端使用可執行 `tailscale serve -bg 7860`，�
     h.state.sessions!.dispose();
     h.client.dispose();
   });
+
+  testWidgets('agent reply typography on a tablet', (tester) async {
+    final h = _Harness();
+    const reply = '''
+Both problems are fixed and the new bridge is installed. I couldn't watch it on this chat: the bridge waits while Claude Desktop is mid-turn.
+
+## What was wrong
+- **Not syncing:** the bridge only noticed new Desktop turns when you reopened the chat, so an open chat never updated.
+- **Subagent card at the bottom:** Claude Code repeats the last status of a subagent that finished long ago.
+  - The phone drew it as a new card below the latest message.
+
+### 檢查結果
+1. **測試：** bridge 測試通過（412 個），app 測試通過（438 個）。
+2. **建置：** GitHub Actions 在所有平台都成功，包含 Windows 安裝程式測試。
+
+> 手機開著對話時，桌面 app 跑完的回合會在幾秒內出現。
+
+| 項目 | 結果 |
+|---|---|
+| Bridge | `0c417ed` 已安裝 |
+| 驗證 | 在對話副本上通過 |
+
+```ts
+const turn = this.native.lastTurn(agent.id, agent.config, s.meta.backendId);
+```
+
+---
+Run `flutter test` again after `git pull`, then reopen the chat. 從電腦重新載入歷史 also works now.
+''';
+    final app = h.wrap(
+      Scaffold(
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 24, 16, 24),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 760),
+              child: AgentMessageView(MessageItem('m', MessageRole.agent, 'm')..parts.add({'type': 'text', 'text': reply}), streaming: false),
+            ),
+          ),
+        ),
+      ),
+      brightness: Brightness.dark,
+    );
+    await _shoot(tester, app, 'markdown_reply_tablet', size: const Size(1640, 2360), ratio: 2);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    h.state.hub!.dispose();
+    h.state.sessions!.dispose();
+    h.client.dispose();
+  });
+
+  for (final (name, size, ratio) in [('model_picker_tablet', const Size(1640, 2360), 2.0), ('model_picker_phone', const Size(1080, 2340), 2.625)]) {
+    testWidgets('model picker $name', (tester) async {
+      final h = _Harness();
+      final c = h.state.hub!.adopt('claude:picker', r'D:\proj\codeaw', {
+        'configOptions': [
+          {
+            'id': 'model', 'name': 'Model', 'description': 'AI model to use', 'category': 'model', 'type': 'select', 'currentValue': 'opus',
+            'options': [
+              {'value': 'default', 'name': 'Default (recommended)', 'description': 'Opus'},
+              {'value': 'opus', 'name': 'Opus 5.5', 'description': r'Opus 5.5 · Best for everyday, complex tasks · $4/$20 per Mtok'},
+              {'value': 'claude-fable-5-2[1m]', 'name': 'Fable 5.2', 'description': r'Fable 5.2 · Most capable for your hardest and longest-running tasks · $8/$40 per Mtok'},
+              {'value': 'sonnet', 'name': 'Sonnet 5.5', 'description': r'Sonnet 5.5 · Efficient for routine tasks · $2/$10 per Mtok'},
+              {'value': 'haiku', 'name': 'Haiku 5.5', 'description': r'Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok ($0.50/$2.50 for prompts over 100k)'},
+            ],
+          },
+          {'id': 'effort', 'name': 'Effort', 'category': 'thought_level', 'type': 'select', 'currentValue': 'xhigh', 'options': [{'value': 'xhigh', 'name': 'Xhigh'}]},
+        ],
+        '_meta': {'codeaw': {'lastSeq': 0}},
+      });
+      final app = h.wrap(
+        Scaffold(body: Column(children: [const Spacer(), ListenableBuilder(listenable: c, builder: (_, _) => ConfigBar(controller: c)), const SizedBox(height: 80)])),
+        brightness: Brightness.dark,
+      );
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = ratio;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(app);
+      await tester.tap(find.text('Opus 5.5'));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 120));
+      }
+      await _capture(tester, name);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+      h.state.hub!.dispose();
+      h.state.sessions!.dispose();
+      h.client.dispose();
+    });
+  }
 
   testWidgets('diff view', (tester) async {
     final h = _Harness();

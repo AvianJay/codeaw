@@ -240,6 +240,23 @@ class _PanelHarness {
 }
 
 void main() {
+  test('a Claude child session\'s agent type is shown as its type, not its task', () {
+    SubagentInfo? card(String prompt) => SubagentInfo.fromTool(
+      title: 'spawnAgent',
+      input: {'name': 'Polish the app UI', 'prompt': prompt, 'receiverThreadIds': ['child']},
+    );
+    for (final type in ['general-purpose', 'Explore', 'statusline-setup']) {
+      expect(card(type)?.role, type);
+      expect(card(type)?.task, isNull);
+      expect(card(type)?.name, 'Polish the app UI');
+    }
+    // A task, even a one-word one, stays the task.
+    for (final task in ['Audit', 'Review the bridge diff for races']) {
+      expect(card(task)?.task, task);
+      expect(card(task)?.role, isNull);
+    }
+  });
+
   test(
     'identifies delegation from adapter fields without classifying ordinary tasks',
     () {

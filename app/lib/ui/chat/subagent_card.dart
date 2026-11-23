@@ -67,7 +67,7 @@ class _SubagentCardState extends State<SubagentCard> {
         color: scheme.surfaceContainerLow,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(CodeawRadii.lg),
-          side: BorderSide(color: scheme.primary.withValues(alpha: 0.22)),
+          side: BorderSide(color: scheme.outlineVariant),
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -99,14 +99,14 @@ class _SubagentCardState extends State<SubagentCard> {
                           children: [
                             Text(
                               workflow != null ? 'Workflow' : '子代理${info?.role == null ? '' : ' · ${info!.role}'}',
-                              style: TextStyle(fontSize: 11, letterSpacing: .2, color: scheme.primary, fontWeight: FontWeight.w600),
+                              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontWeight: FontWeight.w500),
                             ),
                             const SizedBox(height: 3),
                             Text(
                               info?.name ?? tool.title ?? '子代理',
                               maxLines: _open ? 4 : 2,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 14.5, height: 1.35, fontWeight: FontWeight.w600),
+                              style: const TextStyle(fontSize: 15, height: 1.35, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 7),
                             Wrap(
@@ -155,12 +155,12 @@ class _SubagentCardState extends State<SubagentCard> {
                     children: [
                       Text(
                         workflow == null ? '任務' : '說明',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.primary),
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: scheme.onSurfaceVariant),
                       ),
                       const SizedBox(height: 5),
                       ConstrainedBox(
                         constraints: const BoxConstraints(maxHeight: 180),
-                        child: SingleChildScrollView(child: SelectableText(task, style: const TextStyle(fontSize: 13))),
+                        child: SingleChildScrollView(child: SelectableText(task, style: TextStyle(fontSize: 13.5, height: 1.45, color: scheme.onSurface))),
                       ),
                     ],
                   ),
@@ -170,7 +170,7 @@ class _SubagentCardState extends State<SubagentCard> {
                   padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
                   child: Text(
                     '${workflow == null ? '活動紀錄' : 'Agent'} · ${children.length}',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.primary),
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: scheme.onSurfaceVariant),
                   ),
                 ),
                 ConstrainedBox(

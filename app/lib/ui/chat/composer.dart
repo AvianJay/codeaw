@@ -842,8 +842,6 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
     final screen = MediaQuery.sizeOf(context);
     // Only a phone on its side is short of room; a tablet keeps its selectors above the keyboard.
     final compact = screen.shortestSide < 600 && screen.height - keyboardInset < 430;
-    // A hardware keyboard's shortcut bar also reports a small inset.
-    final touchKeyboard = keyboardInset > 120;
     return Padding(
       padding: wide
           ? const EdgeInsets.fromLTRB(16, 8, 16, 16)
@@ -1121,14 +1119,6 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                       ],
                     ),
                   ),
-                  if (wide && !touchKeyboard)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Text(
-                        'Ctrl / ⌘ + Enter 傳送 · Enter 換行',
-                        style: TextStyle(fontSize: 11, color: scheme.outline),
-                      ),
-                    ),
                 ],
               ),
             ),
@@ -1661,92 +1651,298 @@ class ConfigBar extends StatelessWidget {
         };
 
   Future<void> _pickValue(BuildContext context, ConfigOption o) async {
-    final values = o.values;
     final manual = codexManualApprovalOption(controller, o);
     final picked = await showAdaptiveSheet<String>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(ctx).height * 0.7,
-          ),
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                child: Text(o.name, style: Theme.of(ctx).textTheme.titleMedium),
-              ),
-              if (o.description != null)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                  child: Text(
-                    o.description!,
-                    style: TextStyle(color: Theme.of(ctx).colorScheme.outline),
-                  ),
-                ),
-              if (manual != null)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                  child: Text('「${o.currentLabel}」不會詢問。要親自處理核准請求，請選「${manual.name}」。'),
-                ),
-              if (o.category == 'model' || o.id == 'model')
-                ListTile(
-                  leading: const Icon(Icons.edit_outlined),
-                  title: const Text('自訂模型名稱'),
-                  onTap: () async {
-                    final value = await showDialog<String>(
-                      context: ctx,
-                      builder: (_) => _CustomModelDialog(
-                        currentValue: o.currentValue as String? ?? '',
-                      ),
-                    );
-                    if (ctx.mounted && value != null) {
-                      Navigator.pop(ctx, value);
-                    }
-                  },
-                ),
-              RadioGroup<String>(
-                groupValue: '${o.currentValue}',
-                onChanged: (v) => Navigator.pop(ctx, v),
-                child: Column(
-                  children: [
-                    for (var i = 0; i < values.length; i++) ...[
-                      if (values[i].group != null &&
-                          (i == 0 || values[i - 1].group != values[i].group))
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(20, 12, 20, 2),
-                          child: Align(
-                            alignment: Alignment.centerLeft,
-                            child: Text(
-                              values[i].group!,
-                              style: Theme.of(ctx).textTheme.labelMedium,
-                            ),
-                          ),
-                        ),
-                      RadioListTile<String>(
-                        value: values[i].value,
-                        title: Text(values[i].name),
-                        subtitle: values[i].description == null
-                            ? null
-                            : Text(
-                                values[i].description!,
-                                maxLines: 3,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+      builder: (ctx) => _OptionSheet(
+        option: o,
+        agentId: controller.agentId,
+        icon: _categoryIcon(o),
+        note: manual == null
+            ? null
+            : '「${o.currentLabel}」不會詢問。要親自處理核准請求，請選「${manual.name}」。',
       ),
     );
     if (picked != null && picked != '${o.currentValue}') {
       await controller.setConfig(o, picked);
     }
+  }
+}
+
+/// The choices of one config option: the current one marked, each with its
+/// summary and price on their own lines rather than one dotted string.
+class _OptionSheet extends StatelessWidget {
+  const _OptionSheet({
+    required this.option,
+    required this.agentId,
+    required this.icon,
+    this.note,
+  });
+  final ConfigOption option;
+  final String agentId;
+  final IconData icon;
+  final String? note;
+
+  bool get _model => option.category == 'model' || option.id == 'model';
+
+  Future<void> _custom(BuildContext context) async {
+    final value = await showDialog<String>(
+      context: context,
+      builder: (_) => _CustomModelDialog(
+        currentValue: option.currentValue as String? ?? '',
+      ),
+    );
+    if (context.mounted && value != null) Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final values = option.values;
+    final current = '${option.currentValue}';
+    final custom = _model &&
+        option.currentValue is String &&
+        current.isNotEmpty &&
+        !values.any((v) => v.value == current);
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * .75,
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 0, 8, 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHigh,
+                      borderRadius: BorderRadius.circular(CodeawRadii.sm + 2),
+                    ),
+                    child: _model
+                        ? AgentAvatar(agentId: agentId, size: 22)
+                        : Icon(icon, size: 19, color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(option.name, style: theme.textTheme.titleMedium),
+                        if (option.description case final String description)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              description,
+                              style: TextStyle(
+                                fontSize: 13,
+                                height: 1.35,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (note case final String note)
+              Container(
+                margin: const EdgeInsets.fromLTRB(4, 0, 4, 10),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: scheme.warning.withValues(alpha: .1),
+                  borderRadius: BorderRadius.circular(CodeawRadii.md),
+                ),
+                child: Text(
+                  note,
+                  style: TextStyle(fontSize: 13, height: 1.4, color: scheme.onSurface),
+                ),
+              ),
+            if (custom)
+              _OptionRow(
+                name: current,
+                summary: '自訂模型',
+                selected: true,
+                onTap: () => Navigator.pop(context),
+              ),
+            for (var i = 0; i < values.length; i++) ...[
+              if (values[i].group != null &&
+                  (i == 0 || values[i - 1].group != values[i].group))
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 14, 12, 4),
+                  child: Text(
+                    values[i].group!,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              _OptionRow.of(
+                values[i],
+                selected: values[i].value == current,
+                onTap: () => Navigator.pop(context, values[i].value),
+              ),
+            ],
+            if (_model) ...[
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Divider(height: 1, color: scheme.outlineVariant),
+              ),
+              _OptionRow(
+                name: '自訂模型名稱',
+                summary: '輸入代理支援的模型 ID',
+                leading: Icons.edit_outlined,
+                selected: false,
+                onTap: () => _custom(context),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OptionRow extends StatelessWidget {
+  const _OptionRow({
+    required this.name,
+    required this.selected,
+    required this.onTap,
+    this.summary,
+    this.price,
+    this.leading,
+  });
+
+  /// Agents pack a choice's description as "Name · summary · price": the name
+  /// repeats the title, and the price reads better on its own line.
+  factory _OptionRow.of(
+    ConfigValue value, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final parts = (value.description ?? '')
+        .split(' · ')
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.length > 1 && parts.first == value.name) parts.removeAt(0);
+    final at = parts.indexWhere((p) => RegExp(r'^\$\d').hasMatch(p));
+    final price = at < 0 ? null : parts.removeAt(at);
+    return _OptionRow(
+      name: value.name,
+      summary: parts.isEmpty ? null : parts.join(' · '),
+      price: price,
+      selected: selected,
+      onTap: onTap,
+    );
+  }
+
+  final String name;
+  final String? summary;
+  final String? price;
+  final IconData? leading;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Semantics(
+        selected: selected,
+        button: true,
+        child: Material(
+          color: selected
+              ? scheme.secondaryContainer.withValues(alpha: dark ? .55 : .75)
+              : Colors.transparent,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(CodeawRadii.md),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+              child: Row(
+                children: [
+                  if (leading != null) ...[
+                    Icon(leading, size: 20, color: scheme.onSurfaceVariant),
+                    const SizedBox(width: 12),
+                  ],
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          style: TextStyle(
+                            fontSize: 15,
+                            height: 1.3,
+                            fontWeight:
+                                selected ? FontWeight.w600 : FontWeight.w500,
+                            color: scheme.onSurface,
+                          ),
+                        ),
+                        if (summary != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              summary!,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 13,
+                                height: 1.35,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        if (price != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 3),
+                            child: Text(
+                              price!,
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.3,
+                                color: scheme.outline,
+                                fontFeatures: const [
+                                  FontFeature.tabularFigures(),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  SizedBox(
+                    width: 22,
+                    child: selected
+                        ? Icon(Icons.check_rounded, size: 20, color: scheme.primary)
+                        : null,
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

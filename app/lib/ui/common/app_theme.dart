@@ -37,6 +37,29 @@ extension CodeawColors on ColorScheme {
   Color get userBubble => _dark ? const Color(0xFF30355A) : primaryContainer;
 }
 
+/// Material's type scale adds up to 0.5 px between letters. The platform fonts
+/// are already spaced for reading, and Chinese text looks split apart with more.
+TextTheme _untracked(TextTheme t) {
+  TextStyle? plain(TextStyle? style) => style?.copyWith(letterSpacing: 0);
+  return TextTheme(
+    displayLarge: plain(t.displayLarge),
+    displayMedium: plain(t.displayMedium),
+    displaySmall: plain(t.displaySmall),
+    headlineLarge: plain(t.headlineLarge),
+    headlineMedium: plain(t.headlineMedium),
+    headlineSmall: plain(t.headlineSmall),
+    titleLarge: plain(t.titleLarge),
+    titleMedium: plain(t.titleMedium),
+    titleSmall: plain(t.titleSmall),
+    bodyLarge: plain(t.bodyLarge),
+    bodyMedium: plain(t.bodyMedium),
+    bodySmall: plain(t.bodySmall),
+    labelLarge: plain(t.labelLarge),
+    labelMedium: plain(t.labelMedium),
+    labelSmall: plain(t.labelSmall),
+  );
+}
+
 /// Shared neutral surfaces and restrained indigo accents, for all app screens.
 ///
 /// [fontFamily] and [fontFamilyFallback] override the platform fonts (the
@@ -83,7 +106,7 @@ ThemeData codeawTheme(
     fontFamily: fontFamily,
     fontFamilyFallback: fontFamilyFallback,
   );
-  final text = base.textTheme;
+  final text = _untracked(base.textTheme);
   RoundedRectangleBorder rounded(double radius) =>
       RoundedRectangleBorder(borderRadius: BorderRadius.circular(radius));
   OutlineInputBorder field(Color color, [double width = 1]) =>
@@ -96,6 +119,7 @@ ThemeData codeawTheme(
   return base.copyWith(
     scaffoldBackgroundColor: scheme.surface,
     canvasColor: scheme.surface,
+    primaryTextTheme: _untracked(base.primaryTextTheme),
     textTheme: text.copyWith(
       titleLarge: text.titleLarge?.copyWith(fontWeight: FontWeight.w600),
       titleMedium: text.titleMedium?.copyWith(fontWeight: FontWeight.w600),

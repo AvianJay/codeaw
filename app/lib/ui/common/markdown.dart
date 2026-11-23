@@ -4,6 +4,7 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/bridge_client.dart';
+import 'app_theme.dart';
 import 'code_view.dart';
 import 'link_text.dart';
 import 'markdown_blocks.dart';
@@ -124,6 +125,67 @@ class Markdown extends StatelessWidget {
   }
 }
 
+/// Markdown styles sized for chat. The package's defaults are page headlines
+/// (up to 32 px, regular weight) and full-contrast table and divider lines.
+GptMarkdownThemeData markdownTheme(BuildContext context, TextStyle? base) {
+  final theme = Theme.of(context);
+  final scheme = theme.colorScheme;
+  final dark = theme.brightness == Brightness.dark;
+  final size = base?.fontSize ?? 14;
+  TextStyle heading(double scale, FontWeight weight, [Color? color]) =>
+      TextStyle(
+        fontSize: size * scale,
+        fontWeight: weight,
+        height: 1.35,
+        letterSpacing: 0,
+        color: color ?? scheme.onSurface,
+      );
+  final line = scheme.outlineVariant.withValues(alpha: dark ? 1 : .9);
+  return GptMarkdownTheme.of(context).copyWith(
+    h1: heading(1.4, FontWeight.w700),
+    h2: heading(1.25, FontWeight.w700),
+    h3: heading(1.12, FontWeight.w600),
+    h4: heading(1.04, FontWeight.w600),
+    h5: heading(1, FontWeight.w600),
+    h6: heading(.95, FontWeight.w600, scheme.onSurfaceVariant),
+    hrLineThickness: 1,
+    hrLineColor: line,
+    hrLinePadding: const EdgeInsets.symmetric(vertical: 8),
+    autoAddDividerLineAfterH1: false,
+    styleSheet: GptMarkdownStyleSheet(
+      heading: const HeadingStyle(padding: EdgeInsets.only(top: 6, bottom: 2)),
+      list: ListStyle(
+        bulletSize: 5,
+        bulletColor: scheme.onSurfaceVariant.withValues(alpha: .8),
+        markerTextStyle: TextStyle(
+          color: scheme.onSurfaceVariant,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+      blockQuote: BlockQuoteStyle(
+        barWidth: 3,
+        barColor: scheme.primary.withValues(alpha: .55),
+        barRadius: const Radius.circular(2),
+        padding: const EdgeInsetsDirectional.only(start: 12, top: 2, bottom: 2),
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        textStyle: TextStyle(color: scheme.onSurfaceVariant),
+      ),
+      table: TableStyle(
+        borderColor: line,
+        borderRadius: const Radius.circular(CodeawRadii.sm),
+        cellPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        headerBackground: scheme.surfaceContainerHigh,
+        headerTextStyle: const TextStyle(fontWeight: FontWeight.w600),
+      ),
+      hr: HrStyle(
+        color: line,
+        thickness: 1,
+        padding: const EdgeInsets.symmetric(vertical: 8),
+      ),
+    ),
+  );
+}
+
 class _MarkdownText extends StatelessWidget {
   const _MarkdownText({
     super.key,
@@ -141,11 +203,18 @@ class _MarkdownText extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final base =
+        style ?? Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.45);
+    return GptMarkdownTheme(
+      gptThemeData: markdownTheme(context, base),
+      child: _markdown(context, base),
+    );
+  }
+
+  Widget _markdown(BuildContext context, TextStyle? base) {
     return GptMarkdown(
       data,
-      style:
-          style ??
-          Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.45),
+      style: base,
       isStreaming: streaming,
       followLinkColor: true,
       imageBuilder: (context, source, width, height) => MarkdownImage(

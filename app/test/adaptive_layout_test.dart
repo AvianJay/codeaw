@@ -515,7 +515,7 @@ void main() {
     h.showSelectors();
     await tester.pumpAndSettle();
     expect(find.text('Full access'), findsOneWidget);
-    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsOneWidget);
+    expect(find.textContaining('Enter 傳送'), findsNothing);
 
     await tester.tap(_input);
     tester.view.viewInsets = const FakeViewPadding(bottom: 420);
@@ -524,8 +524,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Full access'), findsOneWidget);
     expect(find.text('GPT'), findsOneWidget);
-    // A touch keyboard has no Ctrl key; the hint gives its line back to the chat.
-    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsNothing);
     expect(
       tester.getBottomRight(find.byType(Composer)).dy,
       lessThanOrEqualTo(834 - 420),
@@ -535,7 +533,6 @@ void main() {
     tester.view.viewInsets = const FakeViewPadding();
     await tester.pumpAndSettle();
     expect(find.text('Full access'), findsOneWidget);
-    expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsOneWidget);
     expect(tester.widget<TextField>(_input).controller!.text, '這是段文字');
     expect(tester.takeException(), isNull);
     await h.close(tester);
@@ -573,7 +570,6 @@ void main() {
         final h = _Harness();
         await h.show(tester, size, location: sessionRoute(_first));
         expect(find.byType(NavigationRail), findsNothing);
-        expect(find.text('Ctrl / ⌘ + Enter 傳送 · Enter 換行'), findsNothing);
         expect(tester.widget<TextField>(_input).focusNode!.hasFocus, isFalse);
         await tester.enterText(_input, '第一行\n第二行\n第三行\n第四行');
         tester.view.viewInsets = const FakeViewPadding(bottom: 180);

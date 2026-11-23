@@ -23,6 +23,9 @@ SubagentStatus subagentStatusOf(Object? value) => switch (value) {
   _ => SubagentStatus.unknown,
 };
 
+/// Claude Code's agent type names: kebab-case (`general-purpose`) or its built-in `Explore` and `Plan`.
+final _claudeAgentType = RegExp(r'^(?:[a-z0-9]+(?:-[a-z0-9]+)+|Explore|Plan)$');
+
 class SubagentInfo {
   const SubagentInfo({
     required this.name,
@@ -68,7 +71,14 @@ class SubagentInfo {
         nonEmptyString(raw['subagent_type']) == null) {
       return null;
     }
-    final role = nonEmptyString(raw['subagent_type']) ?? nonEmptyString(raw['agent_type']) ?? nonEmptyString(response['subagentType']);
+    var role = nonEmptyString(raw['subagent_type']) ?? nonEmptyString(raw['agent_type']) ?? nonEmptyString(response['subagentType']);
+    var task = nonEmptyString(raw['prompt']) ?? nonEmptyString(raw['message']);
+    // Claude Code reports a child session's agent type (`general-purpose`, `Explore`) as its
+    // description, which arrives here as the prompt. A task is a sentence, not a type name.
+    if (spawn && role == null && task != null && _claudeAgentType.hasMatch(task)) {
+      role = task;
+      task = null;
+    }
     final path = nonEmptyString(raw['agentPath']);
     final pathName = path?.split('/').where((s) => s.isNotEmpty).lastOrNull;
     final label =
@@ -91,7 +101,7 @@ class SubagentInfo {
         const ['async_launched', 'launched'].contains(response['status']);
     return SubagentInfo(
       name: label ?? '子代理',
-      task: nonEmptyString(raw['prompt']) ?? nonEmptyString(raw['message']),
+      task: task,
       role: role,
       model: nonEmptyString(raw['model']),
       threadIds: ids.toList(),
