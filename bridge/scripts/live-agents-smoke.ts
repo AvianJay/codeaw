@@ -53,6 +53,7 @@ const work = path.join(root, "work");
 fs.mkdirSync(work);
 const claudeHome = path.join(root, "claude");
 const desktopId = randomUUID();
+let clonedLines = 0;
 if (runClaude) {
   // The clone gets its own id and folder; Claude Code finds it by cwd and id.
   const dir = path.join(claudeHome, "projects", claudeProjectSlug(work));
@@ -66,6 +67,14 @@ if (runClaude) {
     return JSON.stringify(entry);
   });
   fs.writeFileSync(path.join(dir, `${desktopId}.jsonl`), lines.join("\n") + "\n");
+  clonedLines = lines.length;
+  // Provider settings (e.g. ANTHROPIC_BASE_URL) usually live in the user's settings.json, which
+  // newer adapters check before a turn. Only its `env` is copied; the folder is deleted afterwards.
+  const own = path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude"), "settings.json");
+  try {
+    const env = JSON.parse(fs.readFileSync(own, "utf8")).env;
+    if (env && typeof env === "object") fs.writeFileSync(path.join(claudeHome, "settings.json"), JSON.stringify({ env }), { mode: 0o600 });
+  } catch { /* none: credentials come from this process's environment */ }
   check("cloned transcript was written by the Claude desktop app", original.includes('"entrypoint":"claude-desktop'));
 }
 
@@ -89,9 +98,15 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, what: string) =>
   Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms))]);
 const prompt = (sessionId: string, text: string) =>
   withTimeout(c.request("session/prompt", { sessionId, prompt: [{ type: "text", text }] }), 240_000, "prompt");
-const toolCalls = (sessionId: string) => {
+/** Updates after `from` (an index into `c.received`), so history replayed on open is left out. */
+const updatesSince = (sessionId: string, from: number) =>
+  c.received.slice(from).filter((r) => r.method === "session/update" && r.params.sessionId === sessionId).map((r) => r.params.update);
+const replyText = (sessionId: string, from: number) =>
+  updatesSince(sessionId, from).filter((u) => u.sessionUpdate === "agent_message_chunk" && u.content?.type === "text").map((u) => u.content.text).join("");
+const contentText = (call: any) => (call.content ?? []).map((item: any) => item.content?.text ?? "").join(" ").trim();
+const toolCalls = (sessionId: string, from = 0) => {
   const calls = new Map<string, any>();
-  for (const u of c.updates(sessionId).map((p) => p.update)) {
+  for (const u of updatesSince(sessionId, from)) {
     if (u.sessionUpdate === "tool_call") calls.set(u.toolCallId, { ...u });
     else if (u.sessionUpdate === "tool_call_update" && calls.has(u.toolCallId)) Object.assign(calls.get(u.toolCallId), Object.fromEntries(Object.entries(u).filter(([, v]) => v !== undefined && v !== null)));
   }
@@ -109,6 +124,7 @@ try {
       model?.options?.find((o: any) => `${o.value} ${o.name} ${o.description ?? ""}`.toLowerCase().includes(wanted));
     check("chosen Claude model is offered", !!choice, model?.options?.map((o: any) => `${o.value}=${o.name}`));
     if (choice) await c.request("session/set_config_option", { sessionId, configId: model.id, value: choice.value });
+    const turnStart = c.received.length;
     const result: any = await prompt(sessionId, [
       "Automated check of how this chat works from the codeaw phone app. Use no other tools and do exactly this, in order:",
       "1) call mcp__ccd_turn__update_plan with items [{\"content\": \"Say ALPHA\", \"status\": \"in_progress\"}, {\"content\": \"Say BETA\", \"status\": \"pending\"}];",
@@ -117,16 +133,24 @@ try {
       "4) reply with the single word DONE.",
     ].join("\n"));
     check("Claude turn ended normally", result.stopReason === "end_turn", result.stopReason);
-    const calls = toolCalls(sessionId);
+    const calls = toolCalls(sessionId, turnStart);
     const turnCalls = calls.filter((call) => /ccd_turn/.test(String(toolName(call))));
     check("model called the desktop turn tools", turnCalls.length >= 3, calls.map((call) => `${toolName(call)}:${call.status}`));
-    check("every desktop turn tool call succeeded", turnCalls.length > 0 && turnCalls.every((call) => call.status === "completed"), turnCalls.map((call) => `${toolName(call)}:${call.status}`));
+    check("every desktop turn tool call succeeded", turnCalls.length > 0 && turnCalls.every((call) => call.status === "completed"),
+      turnCalls.map((call) => `${toolName(call)}:${call.status}${call.status === "completed" ? "" : ` ${JSON.stringify(call.rawInput)} → ${contentText(call)}`}`));
     const plans = c.updates(sessionId).filter((p) => p.update.sessionUpdate === "plan").map((p) => p.update.entries.map((e: any) => `${e.status}:${e.content}`).join(","));
     check("task list reached the chat and advanced", plans.length >= 2 && plans.some((p) => p.startsWith("completed:Say ALPHA,in_progress:Say BETA")), plans);
     const cards = c.events(sessionId, "card").map((e) => e.event.card);
     check("wrap-up buttons became quick replies", cards.some((card) => card.kind === "replies" && card.replies.join("|") === "Yes|No"), cards);
     check("no permission prompt for the stand-in tools", !c.received.some((r) => r.method === "session/request_permission" && /ccd_turn/.test(JSON.stringify(r.params.toolCall))));
-    check("final reply says DONE", /\bDONE\b/.test(c.text(sessionId)), c.text(sessionId).slice(-200));
+    check("final reply says DONE", /\bDONE\b/.test(replyText(sessionId, turnStart)), replyText(sessionId, turnStart).slice(-200));
+    // Claude Code records the model that wrote each reply; a fallback model would show here.
+    const transcript = path.join(claudeHome, "projects", claudeProjectSlug(work), `${desktopId}.jsonl`);
+    const models = new Set(fs.readFileSync(transcript, "utf8").split("\n").slice(clonedLines).flatMap((line) => {
+      try { const entry = JSON.parse(line); return entry.type === "assistant" && entry.message?.model && entry.message.model !== "<synthetic>" ? [entry.message.model] : []; }
+      catch { return []; }
+    }));
+    check("replies came from the chosen model", models.size > 0 && [...models].every((m) => m.toLowerCase().includes(wanted)), [...models]);
   }
 
   if (runAgy) {
