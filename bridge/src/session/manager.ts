@@ -16,7 +16,7 @@ import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
-import { NativeActivity } from "./native-activity.js";
+import { NativeActivity, type DesktopHolder } from "./native-activity.js";
 import type { McpServer } from "../mcp/server.js";
 import { DESKTOP_TURN_SERVER } from "../mcp/desktop-compat.js";
 import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
@@ -130,6 +130,8 @@ export interface ManagerOptions {
   idleSessionCloseMs: number;
   idleAgentStopMs: number;
   hostName: string;
+  /** Tests stand in for a running Claude desktop app; see NativeActivity.claudeDesktopHolder. */
+  claudeProcessAlive?: (pid: number) => boolean;
 }
 
 /** Updates that only change session-level snapshot state. They do not split a run of chunks. */
@@ -407,6 +409,17 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (!this.registry.has(agentId)) return false;
     const agent = this.registry.get(agentId);
     return this.native.fromClaudeDesktop(agent.id, agent.config, backendId, cwd);
+  }
+
+  /**
+   * The Claude desktop app's own Claude Code process for this chat, while the app has it open.
+   * Two Claude Code processes on one chat both append to its transcript, each from its own
+   * copy of the conversation: the app then finds the chat taken over by another program.
+   */
+  private desktopHolder(s: BridgeSession): DesktopHolder | undefined {
+    if (!this.registry.has(s.meta.agentId) || s.meta.connection === "desktop") return undefined;
+    const agent = this.registry.get(s.meta.agentId);
+    return this.native.claudeDesktopHolder(agent.id, agent.config, s.meta.backendId, this.opts.claudeProcessAlive);
   }
 
   /** Whether chats on this agent get the bridge's tools. The Antigravity CLI takes no MCP servers. */
@@ -1314,7 +1327,7 @@ export class SessionManager implements AgentHandlers, McpHost {
       if (s.meta.connection === "desktop") {
         s.stale = false; // The authoritative desktop snapshot rebuilds history when it arrives.
         await this.ensureActive(s, true);
-      } else if (s.meta.origin === "native" && s.backendGen === 0) await this.ensureActive(s);
+      } else if (s.meta.origin === "native" && s.backendGen === 0 && !this.desktopHolder(s)) await this.ensureActive(s);
       return s;
     }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;
@@ -1569,6 +1582,9 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (this.receiptStates(s).has(promptId)) {
       if (s.turn && s.turn.promptId === promptId) return s.turn.done;
       return { stopReason: "end_turn", _meta: { codeaw: { duplicate: true, promptId } } };
+    }
+    if (!s.turn && s.queue.length === 0 && this.desktopHolder(s)?.busy) {
+      throw acp.RequestError.invalidRequest(undefined, "Claude Desktop is working on this chat right now. Send this after its turn there ends, or stop that turn first.");
     }
     const agent = await this.activeForSend(s);
     // A removal request can race the asynchronous owner/agent connection.
@@ -2054,6 +2070,14 @@ export class SessionManager implements AgentHandlers, McpHost {
       const kept = list.filter((o) => now - o.at < ORPHAN_TTL_MS);
       if (kept.length) this.orphans.set(id, kept);
       else this.orphans.delete(id);
+    }
+    for (const s of this.sessions.values()) {
+      // Once the Claude desktop app has the chat open, only it should write the chat (see desktopHolder).
+      if (s.turn || s.activating || s.pending.size || s.queue.length || !s.backendGen || !this.registry.has(s.meta.agentId)) continue;
+      const agent = this.requireAgent(s.meta.agentId);
+      if (s.backendGen !== agent.generation || agent.hasBackgroundWork?.(s.meta.backendId) || !this.desktopHolder(s)) continue;
+      log.info(`Claude Desktop has ${s.id} open; closing codeaw's Claude Code process for it`);
+      await this.releaseBackend(s);
     }
     for (const s of this.sessions.values()) {
       const idle = !s.turn && !s.activating && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { spawnSync } from "node:child_process";
 import type { AgentConfig } from "../config.js";
 
 /**
@@ -57,9 +58,60 @@ function transcriptMentions(file: string, needle: Buffer): boolean {
   }
 }
 
+/** A Claude Code process the Claude desktop app runs for a chat. */
+export interface DesktopHolder {
+  pid: number;
+  /** In the middle of a turn. */
+  busy: boolean;
+}
+
+const REGISTRY_ENTRY = /^\d+\.json$/;
+const REGISTRY_MAX_BYTES = 1024 * 1024;
+const REGISTRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/** Whether `pid` is a running Claude Code. A dead process's id can be reused by any program. */
+export function isClaudeProcess(pid: number): boolean {
+  try { process.kill(pid, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EPERM") return false; }
+  if (process.platform !== "win32") return true;
+  const listed = spawnSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+  return /^"claude[^"]*\.exe"/im.test(listed.stdout ?? "");
+}
+
+/**
+ * The Claude desktop app's own Claude Code process for this chat, from Claude Code's registry
+ * of running sessions (`<config dir>/sessions/<pid>.json`). The app keeps one running while
+ * the chat is open there, and for a while after; it writes that chat's transcript.
+ */
+export function claudeDesktopHolder(configDir: string, backendId: string, alive: (pid: number) => boolean = isClaudeProcess, now = Date.now()): DesktopHolder | undefined {
+  const dir = path.join(configDir, "sessions");
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return undefined; }
+  for (const name of names) {
+    if (!REGISTRY_ENTRY.test(name)) continue;
+    let entry: any;
+    try {
+      const file = path.join(dir, name);
+      if (fs.statSync(file).size > REGISTRY_MAX_BYTES) continue;
+      entry = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch { continue; }
+    if (entry?.sessionId !== backendId || !Number.isInteger(entry.pid) || entry.pid <= 1) continue;
+    // `claude-desktop`, `claude-desktop-3p`; the app also names its own session.
+    const desktop = typeof entry.entrypoint === "string" ? entry.entrypoint.startsWith("claude-desktop") : typeof entry.hostSessionId === "string";
+    const seen = typeof entry.updatedAt === "number" ? entry.updatedAt : entry.startedAt;
+    if (!desktop || typeof seen !== "number" || now - seen > REGISTRY_MAX_AGE_MS || !alive(entry.pid)) continue;
+    return { pid: entry.pid, busy: entry.status === "busy" };
+  }
+  return undefined;
+}
+
 /** Claude Code names a project directory after its cwd, with every other character as a dash. */
 export function claudeProjectSlug(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+function claudeConfigDir(config: Pick<AgentConfig, "env">): string {
+  return config.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 }
 
 function isActivity(kind: TranscriptKind, line: string): string | undefined {
@@ -183,8 +235,14 @@ export class NativeActivity {
     return found;
   }
 
+  /** See claudeDesktopHolder. */
+  claudeDesktopHolder(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, alive?: (pid: number) => boolean): DesktopHolder | undefined {
+    if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return undefined;
+    return claudeDesktopHolder(claudeConfigDir(config), backendId, alive);
+  }
+
   private claudeFile(config: Pick<AgentConfig, "env">, backendId: string, cwd?: string): string | undefined {
-    const root = path.join(config.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude"), "projects");
+    const root = path.join(claudeConfigDir(config), "projects");
     if (cwd) {
       const direct = path.join(root, claudeProjectSlug(cwd), `${backendId}.jsonl`);
       if (fs.existsSync(direct)) return direct;

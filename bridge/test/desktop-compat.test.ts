@@ -4,8 +4,8 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { DESKTOP_TURN_SERVER, DESKTOP_TURN_TOOLS } from "../src/mcp/desktop-compat.js";
 import { isOwnToolCall, OWN_SERVERS } from "../src/mcp/tools.js";
-import { claudeProjectSlug, NativeActivity } from "../src/session/native-activity.js";
-import { newFakeSession, startTestBridge, TestClient, type TestBridge } from "./helpers.js";
+import { claudeDesktopHolder, claudeProjectSlug, NativeActivity } from "../src/session/native-activity.js";
+import { newFakeSession, promptText, startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 let tb: TestBridge | undefined;
 const clients: TestClient[] = [];
@@ -134,4 +134,71 @@ it("recognizes transcripts the Claude desktop app wrote, including a marker spli
   // A CLI chat later opened in the desktop app counts once the app writes to it.
   fs.appendFileSync(path.join(dir, "cli.jsonl"), line("claude-desktop"));
   expect(native.fromClaudeDesktop("claude", claude, "cli", cwd)).toBe(true);
+});
+
+/** One entry of Claude Code's registry of running sessions, as the Claude desktop app's process writes it. */
+function register(configDir: string, pid: number, entry: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(configDir, "sessions"), { recursive: true });
+  fs.writeFileSync(path.join(configDir, "sessions", `${pid}.json`), JSON.stringify({ pid, kind: "interactive", startedAt: Date.now(), updatedAt: Date.now(), ...entry }));
+}
+
+it("finds the Claude desktop app's own running process for a chat, and nobody else's", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-desktop-holder-"));
+  scratch.push(root);
+  const id = "11111111-2222-3333-4444-555555555555";
+  const running = new Set([101, 102, 103, 104]);
+  const alive = (pid: number) => running.has(pid);
+  expect(claudeDesktopHolder(root, id, alive)).toBeUndefined();
+  register(root, 101, { sessionId: "another-chat", entrypoint: "claude-desktop-3p", status: "busy" });
+  register(root, 102, { sessionId: id, entrypoint: "sdk-ts", status: "busy" }); // codeaw's own Claude Code
+  register(root, 103, { sessionId: id, entrypoint: "claude-desktop", status: "busy", updatedAt: Date.now() - 2 * 86_400_000 });
+  register(root, 105, { sessionId: id, entrypoint: "claude-desktop-3p", status: "busy" }); // exited; its id may be reused
+  fs.writeFileSync(path.join(root, "sessions", "106.json"), "{not json");
+  expect(claudeDesktopHolder(root, id, alive)).toBeUndefined();
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "idle" });
+  expect(claudeDesktopHolder(root, id, alive)).toEqual({ pid: 104, busy: false });
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "busy" });
+  expect(claudeDesktopHolder(root, id, alive)).toEqual({ pid: 104, busy: true });
+  const native = new NativeActivity();
+  expect(native.claudeDesktopHolder("claude", { command: "claude-agent-acp", env: { CLAUDE_CONFIG_DIR: root } }, id, alive)).toEqual({ pid: 104, busy: true });
+  expect(native.claudeDesktopHolder("codex", { command: "codex-acp", env: { CLAUDE_CONFIG_DIR: root } }, id, alive)).toBeUndefined();
+  expect(native.claudeDesktopHolder("claude", { command: "claude-agent-acp", env: { CLAUDE_CONFIG_DIR: root } }, "../x", alive)).toBeUndefined();
+});
+
+it("leaves a chat to the Claude desktop app while the app has it open", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codeaw-desktop-handover-"));
+  scratch.push(home);
+  const claudeDir = path.join(home, "claude");
+  const running = new Set<number>();
+  tb = await startTestBridge({
+    home, agentId: "claude-fake", claudeProcessAlive: (pid) => running.has(pid),
+    agent: { env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_MCP: "stdio", CLAUDE_CONFIG_DIR: claudeDir } },
+  });
+  const c = await TestClient.connect(tb.url, tb.tokenFor("phone"));
+  clients.push(c);
+  const { sessionId } = await c.request("session/new", { cwd: home, mcpServers: [], _meta: { codeaw: { agentId: "claude-fake" } } });
+  const backendId = sessionId.slice("claude-fake:".length);
+  const held = () => (tb!.bridge.manager as any).sessions.get(sessionId).backendGen > 0;
+  await c.request("session/prompt", promptText(sessionId, "from the phone"));
+  expect(held()).toBe(true);
+
+  // The app opens the chat and starts a turn there.
+  running.add(4242);
+  register(claudeDir, 4242, { sessionId: backendId, entrypoint: "claude-desktop-3p", hostSessionId: "local_y", status: "busy" });
+  await expect(c.request("session/prompt", promptText(sessionId, "while the app works"))).rejects.toThrow(/Claude Desktop is working on this chat/);
+  // codeaw lets go of its own Claude Code process once its turn is over.
+  await tb.bridge.manager.sweep();
+  expect(held()).toBe(false);
+
+  // Idle in the app: the phone may continue, and codeaw lets go again afterwards.
+  register(claudeDir, 4242, { sessionId: backendId, entrypoint: "claude-desktop-3p", hostSessionId: "local_y", status: "idle" });
+  expect((await c.request("session/prompt", promptText(sessionId, "after the app's turn"))).stopReason).toBe("end_turn");
+  await tb.bridge.manager.sweep();
+  expect(held()).toBe(false);
+
+  // Closed in the app: codeaw keeps its process between turns again.
+  running.clear();
+  await c.request("session/prompt", promptText(sessionId, "app closed"));
+  await tb.bridge.manager.sweep();
+  expect(held()).toBe(true);
 });

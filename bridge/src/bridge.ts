@@ -47,6 +47,8 @@ export interface BridgeOptions {
   gatewayPipe?: string;
   /** Runtime-owned updater used to report automatic bridge updates to clients. */
   updater?: BridgeUpdater;
+  /** Tests stand in for a running Claude desktop app. */
+  claudeProcessAlive?: (pid: number) => boolean;
 }
 
 export interface Bridge {
@@ -91,6 +93,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     idleSessionCloseMs: config.idleSessionCloseMinutes * 60_000,
     idleAgentStopMs: config.idleAgentStopMinutes * 60_000,
     hostName: os.hostname(),
+    claudeProcessAlive: opts.claudeProcessAlive,
   });
   const cpa = new CpaUsageService(opts.fetchImpl, Date.now, new FileCpaSettingsStore(dataDir));
   manager.cpa = cpa;

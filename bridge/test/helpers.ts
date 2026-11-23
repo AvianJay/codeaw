@@ -40,6 +40,9 @@ export interface TestBridgeOptions {
   mcp?: Record<string, unknown>;
   /** Extra fields of the fake agent's config entry. */
   agent?: Record<string, unknown>;
+  /** The fake agent's id, default `fake`; an id with "claude" in it reads Claude Code's files. */
+  agentId?: string;
+  claudeProcessAlive?: (pid: number) => boolean;
 }
 
 export interface TestBridge {
@@ -57,7 +60,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
   const config = ConfigSchema.parse({
     workspaces: [home],
     agents: {
-      fake: {
+      [opts.agentId ?? "fake"]: {
         name: "Fake",
         command: process.execPath,
         args: ["--import", "tsx", FAKE_AGENT],
@@ -72,7 +75,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
   });
   const dataDir = path.join(home, opts.freshData ? `data-${Date.now()}` : "data");
   const loaded: LoadedConfig = { config, file: path.join(home, "config.yaml"), home, dataDir };
-  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot });
+  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot, claudeProcessAlive: opts.claudeProcessAlive });
   const tokens = new Map<string, string>();
   return {
     bridge,
