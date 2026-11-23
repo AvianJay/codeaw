@@ -49,6 +49,23 @@ describe("native ACP subagent translation", () => {
     expect(ended.update.rawInput.agentsStates.child.status).toBe("completed");
   });
 
+  it("leaves out a repeated report that changes nothing, as Claude Code sends after a history load", () => {
+    const router = new AcpSubagents();
+    const [started] = spawn(router, "child");
+    const idle = { sessionUpdate: "subagent_update", sessionId: "child", state: { state: "idle", stopReason: "end_turn" } };
+    const [ended] = update(router, "root", idle);
+    expect(ended.update).toMatchObject({ sessionUpdate: "tool_call_update", toolCallId: started.update.toolCallId, status: "completed" });
+    expect(update(router, "root", idle)).toEqual([]);
+    expect(update(router, "root", { sessionUpdate: "subagent_state_update", subagentSessionId: "child", state: "completed" })).toEqual([]);
+    // A real change still goes out.
+    const [renamed] = update(router, "root", { ...idle, title: "Renamed" });
+    expect(renamed.update.rawInput.name).toBe("Renamed");
+    // A load starts the chat's cards over, so the card is reported again.
+    router.clear("root");
+    expect(spawn(router, "child")).toHaveLength(1);
+    expect(update(router, "root", idle)).toHaveLength(1);
+  });
+
   it("scopes parallel tool/message IDs and attributes nested children", () => {
     const router = new AcpSubagents();
     spawn(router, "a"); spawn(router, "b");

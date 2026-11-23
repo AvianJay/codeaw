@@ -565,7 +565,11 @@ Image data in logged user messages is replaced by
 fetch the bytes from `/api/blobs/<sha256>`.
 
 `epoch` changes when a log is rebuilt (re-import); a client holding an older
-epoch gets a `full` replay.
+epoch gets a `full` replay. A client attached while the bridge rebuilds the log
+on its own (a reload from the computer, a chat continued in another app) gets no
+part of the import as live updates. It gets a `full` replay of the new log and
+then `_codeaw/replay {mode: "complete", epoch, lastSeq, before?}`, which ends that
+replay as a load response would.
 
 ## Prompts
 
@@ -807,6 +811,29 @@ desktop app as holding the chat. Its housekeeping sweep (every minute) then send
 such a chat does not open it in the agent. `session/prompt` fails with
 `invalidRequest` while the entry's `status` is `busy` (the app is mid-turn).
 
+**Turns taken in another app.** When no agent process of the bridge's holds a
+Claude or Codex chat, the agent's own transcript can move on without it: a turn in
+the Claude desktop app, or in a terminal. Every 3 seconds, for each chat a client
+has attached, the bridge reads the transcript's newest conversation line. When
+that line is newer than the bridge's last contact with the chat, it rebuilds the
+chat's log from the agent's history (a new `epoch`). It then sends each attached
+client a `full` replay followed by `complete`, and closes its agent process for
+the chat again. It waits for the other app's turn to end: an answer with a final
+stop reason (Claude Code's `end_turn`, `stop_sequence`, `max_tokens`, `refusal`;
+Codex's `task_complete`, `turn_aborted`), an interrupted request, or two minutes
+without a line. It also waits while a Claude desktop process for the chat is
+`busy`. Loading a transcript that ends in an unanswered message makes Claude Code
+answer it in that transcript, which would write into the other app's turn.
+`session/prompt` on such a chat first takes in those turns the same way. The
+bridge reopens chats without the agent's replay, so a send would otherwise leave
+them out of the log for good. While the other app's turn is still running,
+`session/prompt` fails with `invalidRequest`.
+
+Claude Code repeats a finished subagent's last state after every history load.
+The bridge leaves out a subagent card update that changes nothing. A client
+showing only the newest page would otherwise draw that long-finished card again
+under the latest message.
+
 **Claude subagents.** With `clientCapabilities.subagents`, claude-agent-acp reports
 each subagent as a child session. The bridge files the child's work under its
 card, `subagent:<child>`. Claude Code marks that work with the parent's launch
@@ -847,7 +874,7 @@ keeps it from one agent; `mcp.instructions` (at most 4000 characters) adds text.
 | `_codeaw/terminal/resize` | `{terminalId, cols, rows}` | `{}` |
 | `_codeaw/terminal/detach` | `{terminalId}` | `{}` |
 | `_codeaw/terminal/close` | `{terminalId}` | `{}` |
-| `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (clients get a `full` replay on next load) |
+| `_codeaw/session/reimport` | `{sessionId}` | `{epoch}` (attached clients get a `full` replay, then `complete`) |
 | `_codeaw/session/remove_prompt` | `{sessionId, promptId}` | `{removed, reason?: "processing"}` |
 | `_codeaw/session/fork` | `{sessionId, messageId, prompt, clientPromptId, replace?}` or `{sessionId, messageId, dryRun: true}` | new chat setup + `replaced?`, or `{ok, newSession}` (see editing a sent message) |
 | `_codeaw/history/tool` | `{sessionId, epoch, toolCallId}` | `{epoch, seq, t, update}` (see deferred tool history) |

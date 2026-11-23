@@ -160,6 +160,8 @@ mcp:
 同一個 Claude 對話同時由兩個 Claude Code 寫入時（桌面 app 一個、codeaw 一個），兩邊各自從自己的版本接下去寫，桌面 app 就會把對話當成被別的程式接手。所以 bridge 會讀 Claude Code 的執行中 session 登記（`~/.claude/sessions/<pid>.json`）：
 - 桌面 app 開著這個對話時（登記的 `entrypoint` 為 `claude-desktop*`、程序仍在執行），bridge 在一分鐘內關閉 codeaw 自己替這個對話開的 Claude Code，前提是沒有進行中的回合、權限詢問、排隊訊息或背景 Workflow；只在手機上看、不傳訊息時也不會再開一個。
 - 桌面 app 正在跑回合時，手機傳的訊息會被拒絕並說明原因，等它結束或先在桌面停止。
+- 手機開著這個對話時，在桌面 app（或終端機）跑完的回合會在幾秒內出現在手機上：bridge 每 3 秒看一次 Claude Code 的對話紀錄，等那邊的回合結束後重新讀入整段對話，接著馬上關掉自己的 Claude Code，讓桌面 app 仍是唯一的寫入者。回合還在跑時不會讀，因為讀入會讓 Claude Code 回覆尚未回答的訊息、寫進對方的回合。手機傳訊息前也會先補上這些回合，不會再漏掉桌面上的對話。Codex 對話（非桌面同步模式）同樣適用。
+- 已完成的 subagent 卡片不會再在重新讀入後跑到最新訊息下方。
 
 另外，若 bridge 本身是從 Claude Code session 裡啟動（例如由 Claude 桌面 app 的 agent 重新啟動），它會先移除該 session 帶來的 `CLAUDECODE`、`CLAUDE_CODE_*`、`CLAUDE_AGENT_SDK_*`、`ANTHROPIC_DEFAULT_*_MODEL` 等變數（保留 `CLAUDE_CODE_GIT_BASH_PATH`），否則 agent 會沿用桌面 app 代管的登入，回合以「Authentication required」結束。
 

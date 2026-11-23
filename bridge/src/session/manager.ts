@@ -16,7 +16,7 @@ import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
-import { NativeActivity, type DesktopHolder } from "./native-activity.js";
+import { NativeActivity, type DesktopHolder, type TranscriptTurn } from "./native-activity.js";
 import type { McpServer } from "../mcp/server.js";
 import { DESKTOP_TURN_SERVER } from "../mcp/desktop-compat.js";
 import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
@@ -132,11 +132,19 @@ export interface ManagerOptions {
   hostName: string;
   /** Tests stand in for a running Claude desktop app; see NativeActivity.claudeDesktopHolder. */
   claudeProcessAlive?: (pid: number) => boolean;
+  /** How often open chats are checked for turns taken in another app; 0 turns the check off. */
+  followMs?: number;
 }
 
 /** Updates that only change session-level snapshot state. They do not split a run of chunks. */
 const SNAPSHOT_UPDATES = new Set(["usage_update", "available_commands_update", "config_option_update", "current_mode_update", "session_info_update"]);
 const ORPHAN_TTL_MS = 30_000;
+const FOLLOW_MS = 3000;
+/** Our own reads and closes may stamp the transcript up to this long before we note the contact. */
+const MOVED_SLACK_MS = 1000;
+/** A transcript that stopped mid-turn this long ago is not being written any more. */
+const ABANDONED_TURN_MS = 2 * 60_000;
+const FOLLOW_RETRY_MS = 60_000;
 
 export function extId(agentId: string, backendId: string): string {
   return `${agentId}:${backendId}`;
@@ -233,6 +241,9 @@ export class SessionManager implements AgentHandlers, McpHost {
   private readonly attachedTo = new Map<ClientHandle, Set<BridgeSession>>();
   private readonly history = new Map<ClientHandle, Map<string, HistoryOptions>>();
   private readonly importing = new Map<string, Promise<BridgeSession>>();
+  private readonly rebuilding = new Map<string, Promise<BridgeSession>>();
+  /** The transcript line each chat was last brought up to date with. */
+  private readonly caughtUp = new Map<string, string>();
   private readonly orphans = new Map<string, { at: number; params: acp.SessionNotification }[]>();
   private readonly nativeInfo = new Map<string, acp.SessionInfo>();
   private readonly forking = new Map<string, Promise<Record<string, unknown>>>();
@@ -242,6 +253,10 @@ export class SessionManager implements AgentHandlers, McpHost {
   /** Activity times recovered from logs saved before `activityAt` existed; null = none found. */
   private readonly recovered = new Map<string, string | null>();
   private sweepTimer?: NodeJS.Timeout;
+  private followTimer?: NodeJS.Timeout;
+  private following = false;
+  /** Chats whose catch-up failed, and when to try again. */
+  private readonly followRetry = new Map<string, number>();
   private shuttingDown = false;
   /** Shown file → chats that showed it; built from the saved chats on first use. */
   private shareIndex?: Map<string, Set<string>>;
@@ -262,6 +277,11 @@ export class SessionManager implements AgentHandlers, McpHost {
   start(): void {
     this.sweepTimer = setInterval(() => void this.sweep(), 60_000);
     this.sweepTimer.unref();
+    const followMs = this.opts.followMs ?? FOLLOW_MS;
+    if (followMs > 0) {
+      this.followTimer = setInterval(() => void this.follow(), followMs);
+      this.followTimer.unref();
+    }
   }
 
   /** Called by the bridge-owned CPA watcher whenever a provider recovers. */
@@ -305,6 +325,7 @@ export class SessionManager implements AgentHandlers, McpHost {
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
     if (this.sweepTimer) clearInterval(this.sweepTimer);
+    if (this.followTimer) clearInterval(this.followTimer);
     for (const s of this.sessions.values()) {
       if (s.workTimer) clearTimeout(s.workTimer);
       if (s.turn?.autonomous) {
@@ -420,6 +441,123 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (!this.registry.has(s.meta.agentId) || s.meta.connection === "desktop") return undefined;
     const agent = this.registry.get(s.meta.agentId);
     return this.native.claudeDesktopHolder(agent.id, agent.config, s.meta.backendId, this.opts.claudeProcessAlive);
+  }
+
+  /** No agent process of codeaw's holds this chat: it was closed, or the agent restarted since. */
+  private passive(s: BridgeSession): boolean {
+    if (s.meta.connection === "desktop" || !this.registry.has(s.meta.agentId)) return false;
+    return !s.backendGen || s.backendGen !== this.registry.get(s.meta.agentId).generation;
+  }
+
+  /**
+   * The newest line of the agent's own transcript, when another app (the Claude desktop app,
+   * a terminal) has written it since codeaw last read or wrote this chat.
+   */
+  private movedElsewhere(s: BridgeSession): TranscriptTurn | undefined {
+    if (!this.registry.has(s.meta.agentId)) return undefined;
+    const agent = this.registry.get(s.meta.agentId);
+    const turn = this.native.lastTurn(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
+    if (!turn || turn.at === this.caughtUp.get(s.id)) return undefined;
+    return Date.parse(turn.at) > Date.parse(s.meta.updatedAt) + MOVED_SLACK_MS ? turn : undefined;
+  }
+
+  /**
+   * Whether the other app's turn is over. Loading a chat whose transcript ends in an unanswered
+   * message makes the agent answer it there, which would write into that app's running turn.
+   */
+  private turnOver(s: BridgeSession, turn: TranscriptTurn, now = Date.now()): boolean {
+    if (!turn.settled && now - Date.parse(turn.at) <= ABANDONED_TURN_MS) return false;
+    return !this.desktopHolder(s)?.busy;
+  }
+
+  /**
+   * Brings the chats open on a device up to date with turns taken in another app, once each
+   * such turn is over. Codeaw's process for the chat is closed again at once, so the other
+   * app stays its only writer.
+   */
+  async follow(now = Date.now()): Promise<void> {
+    if (this.following || this.shuttingDown) return;
+    this.following = true;
+    try {
+      for (const s of [...this.sessions.values()]) {
+        if (!s.subscribers.size || s.turn || s.activating || s.pending.size || s.queue.length) continue;
+        if (this.importing.has(s.id) || this.rebuilding.has(s.id) || !this.passive(s) || (this.followRetry.get(s.id) ?? 0) > now) continue;
+        const moved = this.movedElsewhere(s);
+        if (!moved || !this.turnOver(s, moved, now)) continue;
+        if (!(await this.catchUp(s))) continue;
+        if (!s.turn && !s.activating && !s.queue.length && !s.pending.size) await this.releaseBackend(s);
+      }
+    } finally {
+      this.following = false;
+    }
+  }
+
+  /**
+   * Before codeaw reopens a chat to send into it: take in the turns another app added. Reopening
+   * leaves the agent's replay out, so those turns would otherwise never reach codeaw's history.
+   */
+  private async catchUpForSend(s: BridgeSession): Promise<void> {
+    const running = this.rebuilding.get(s.id);
+    if (running) {
+      await running.catch(() => undefined);
+      return;
+    }
+    if (s.turn || s.activating || s.queue.length || s.pending.size || !this.passive(s)) return;
+    const moved = this.movedElsewhere(s);
+    if (!moved) return;
+    if (!moved.settled && Date.now() - Date.parse(moved.at) <= ABANDONED_TURN_MS) {
+      throw acp.RequestError.invalidRequest(undefined, "Another app is in the middle of a turn in this chat. Send this after that turn ends.");
+    }
+    await this.catchUp(s);
+  }
+
+  /** Re-reads a chat another app continued. False when the agent could not open it. */
+  private async catchUp(s: BridgeSession): Promise<boolean> {
+    log.info(`${s.id} was continued in another app; reading it again`);
+    try {
+      await this.rebuild(s);
+    } catch (err) {
+      this.followRetry.set(s.id, Date.now() + FOLLOW_RETRY_MS);
+      log.warn(`could not bring ${s.id} up to date: ${errorMessage(err)}`);
+      return false;
+    }
+    this.followRetry.delete(s.id);
+    return true;
+  }
+
+  /** Rebuilds a chat's log from the agent's own history and sends it whole to open screens. */
+  private rebuild(s: BridgeSession): Promise<BridgeSession> {
+    let p = this.rebuilding.get(s.id);
+    if (!p) {
+      p = this.rebuildNow(s).finally(() => this.rebuilding.delete(s.id));
+      this.rebuilding.set(s.id, p);
+    }
+    return p;
+  }
+
+  private async rebuildNow(s: BridgeSession): Promise<BridgeSession> {
+    // Importing replays the whole chat into a new epoch. Screens get the result whole, not
+    // that replay as if it were new turns (an old card's late update would land at the end).
+    const subscribers = [...s.subscribers];
+    s.subscribers.clear();
+    s.stale = true;
+    let fresh: BridgeSession | undefined;
+    try {
+      fresh = await this.importFresh(s.id, s.meta.cwd, s);
+      if (this.registry.has(s.meta.agentId)) {
+        const agent = this.registry.get(s.meta.agentId);
+        const turn = this.native.lastTurn(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
+        if (turn) this.caughtUp.set(s.id, turn.at);
+      }
+      return fresh;
+    } finally {
+      for (const c of subscribers) {
+        if (!this.attachedTo.has(c)) continue; // disconnected meanwhile
+        // After a failed import they keep what they show; their next open imports again.
+        if (fresh) await this.attach(c, fresh, { mode: "full", complete: true });
+        else s.subscribers.add(c);
+      }
+    }
   }
 
   /** Whether chats on this agent get the bridge's tools. The Antigravity CLI takes no MCP servers. */
@@ -1323,18 +1461,35 @@ export class SessionManager implements AgentHandlers, McpHost {
   private async sessionForAttach(id: string, cwd?: string): Promise<BridgeSession> {
     if (this.store.isDeleted(id) || this.deleting.has(id)) throw acp.RequestError.invalidRequest(undefined, "This chat has been deleted from Codeaw");
     const s = this.sessions.get(id) ?? this.fromDisk(id);
+    // Another app's turn still running: reopening now could write into it (see turnOver).
+    let otherTurn = false;
+    if (s && !s.stale && !s.turn && !s.pending.size && !s.queue.length && !this.rebuilding.has(s.id) && this.passive(s)) {
+      const moved = this.movedElsewhere(s);
+      if (moved && this.turnOver(s, moved)) s.stale = true;
+      else if (moved) otherTurn = true;
+    }
     if (s && (s.meta.connection === "desktop" || !s.stale)) {
       if (s.meta.connection === "desktop") {
         s.stale = false; // The authoritative desktop snapshot rebuilds history when it arrives.
         await this.ensureActive(s, true);
-      } else if (s.meta.origin === "native" && s.backendGen === 0 && !this.desktopHolder(s)) await this.ensureActive(s);
+      } else if (s.meta.origin === "native" && s.backendGen === 0 && !otherTurn && !this.desktopHolder(s)) await this.ensureActive(s);
       return s;
     }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;
+    // Other screens already showing it get the new history whole, not the import's replay.
+    return s ? this.rebuild(s) : this.importFresh(id, cwd, undefined);
+  }
+
+  /** Imports a chat from the agent's own history, replacing a stale log. */
+  private importFresh(id: string, cwd: string | undefined, s: BridgeSession | undefined): Promise<BridgeSession> {
     let p = this.importing.get(id);
     if (!p) {
       p = (async () => {
-        if (s?.stale) await this.resetLog(s);
+        if (s?.stale) {
+          // An agent that cannot start must not cost the chat its saved history.
+          await this.requireAgent(parseExtId(id).agentId).ensureStarted();
+          await this.resetLog(s);
+        }
         return this.importNative(id, cwd ?? s?.meta.cwd);
       })().finally(() => this.importing.delete(id));
       this.importing.set(id, p);
@@ -1360,7 +1515,11 @@ export class SessionManager implements AgentHandlers, McpHost {
     s.notices = undefined;
   }
 
-  private attach(c: ClientHandle, s: BridgeSession, replay?: { mode: "full" } | { mode: "delta"; afterSeq: number }): Promise<void> {
+  /**
+   * `complete` ends a full replay that no load response will end: the client switches to the
+   * new history when it arrives.
+   */
+  private attach(c: ClientHandle, s: BridgeSession, replay?: { mode: "full"; complete?: boolean } | { mode: "delta"; afterSeq: number }): Promise<void> {
     const entries = this.ensureEntries(s);
     s.subscribers.add(c);
     this.attachedTo.get(c)?.add(s);
@@ -1369,6 +1528,9 @@ export class SessionManager implements AgentHandlers, McpHost {
       const page = replay.mode === "delta" ? { entries: entries.filter((e) => e.seq > replay.afterSeq) } : this.replayPage(c, s, compactGroups(entries));
       void c.notify("_codeaw/replay", { sessionId: s.id, mode: replay.mode, epoch: s.meta.epoch, lastSeq: s.meta.lastSeq, ...beforeOf(page) });
       for (const e of page.entries) this.sendEntry(c, s, this.historyEntry(c, s, e));
+      if (replay.mode === "full" && replay.complete) {
+        void c.notify("_codeaw/replay", { sessionId: s.id, mode: "complete", epoch: s.meta.epoch, lastSeq: s.meta.lastSeq, ...beforeOf(page) });
+      }
     }
     // Open requests go out after the response to load/resume (and after the replay).
     setImmediate(() => {
@@ -1586,6 +1748,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (!s.turn && s.queue.length === 0 && this.desktopHolder(s)?.busy) {
       throw acp.RequestError.invalidRequest(undefined, "Claude Desktop is working on this chat right now. Send this after its turn there ends, or stop that turn first.");
     }
+    await this.catchUpForSend(s);
     const agent = await this.activeForSend(s);
     // A removal request can race the asynchronous owner/agent connection.
     if (this.dequeueStates(s).get(promptId)?.cancelled) return { stopReason: "cancelled", _meta: { codeaw: { duplicate: true, promptId } } };
@@ -2038,10 +2201,15 @@ export class SessionManager implements AgentHandlers, McpHost {
   async reimport(sessionId: string): Promise<{ epoch: string }> {
     const s = this.requireLoaded(sessionId);
     if (s.turn || s.pending.size > 0) throw acp.RequestError.invalidRequest(undefined, "Session is busy; try again when it is idle");
-    s.stale = true;
-    const subscribers = [...s.subscribers];
-    const fresh = await this.sessionForAttach(sessionId, s.meta.cwd);
-    for (const c of subscribers) await this.attach(c, fresh, { mode: "full" });
+    if (s.meta.connection === "desktop") {
+      // The desktop app's next snapshot replaces the history (see onHistoryReset).
+      s.stale = true;
+      const subscribers = [...s.subscribers];
+      const fresh = await this.sessionForAttach(sessionId, s.meta.cwd);
+      for (const c of subscribers) await this.attach(c, fresh, { mode: "full" });
+      return { epoch: fresh.meta.epoch };
+    }
+    const fresh = await this.rebuild(s);
     return { epoch: fresh.meta.epoch };
   }
 

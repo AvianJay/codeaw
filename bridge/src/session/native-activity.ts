@@ -114,7 +114,31 @@ function claudeConfigDir(config: Pick<AgentConfig, "env">): string {
   return config.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 }
 
-function isActivity(kind: TranscriptKind, line: string): string | undefined {
+/** The newest conversation line of a transcript. */
+export interface TranscriptTurn {
+  /** ISO time of the line. */
+  at: string;
+  /** Its turn had ended there: the agent's final answer, or a request the person interrupted. */
+  settled: boolean;
+}
+
+/** Claude Code's stop reasons for an answer that ends the turn; "tool_use" continues it. */
+const CLAUDE_FINAL_STOPS = new Set(["end_turn", "stop_sequence", "max_tokens", "refusal"]);
+const CODEX_TURN_ENDS = new Set(["task_complete", "turn_aborted"]);
+
+function claudeText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : "")).join("");
+}
+
+function settledAt(kind: TranscriptKind, entry: any): boolean {
+  if (kind === "codex") return entry.type === "event_msg" && CODEX_TURN_ENDS.has(entry.payload?.type);
+  if (entry.type === "assistant") return CLAUDE_FINAL_STOPS.has(entry.message?.stop_reason);
+  return claudeText(entry.message?.content).trimStart().startsWith("[Request interrupted by user");
+}
+
+function isActivity(kind: TranscriptKind, line: string): TranscriptTurn | undefined {
   if (!line.includes('"timestamp"')) return undefined;
   if (kind === "claude" && !line.includes('"type":"user"') && !line.includes('"type":"assistant"')) return undefined;
   if (kind === "codex" && !line.includes('"type":"response_item"') && !line.includes('"type":"event_msg"')) return undefined;
@@ -130,11 +154,11 @@ function isActivity(kind: TranscriptKind, line: string): string | undefined {
   } else if (entry.type !== "response_item" && !(entry.type === "event_msg" && CODEX_EVENTS.has(entry.payload?.type))) {
     return undefined;
   }
-  return new Date(entry.timestamp).toISOString();
+  return { at: new Date(entry.timestamp).toISOString(), settled: settledAt(kind, entry) };
 }
 
 /** Codex compresses older transcripts whole, so those cannot be read from the end. */
-function lastCompressedActivity(file: string, kind: TranscriptKind): string | undefined {
+function lastCompressedActivity(file: string, kind: TranscriptKind): TranscriptTurn | undefined {
   const inflate = (zlib as { zstdDecompressSync?: (data: Buffer) => Buffer }).zstdDecompressSync;
   if (!inflate) return undefined;
   try {
@@ -152,8 +176,13 @@ function lastCompressedActivity(file: string, kind: TranscriptKind): string | un
   return undefined;
 }
 
-/** Scans a JSONL transcript backwards for its newest conversation line. */
+/** Scans a JSONL transcript backwards for its newest conversation line's time. */
 export function lastTranscriptActivity(file: string, kind: TranscriptKind): string | undefined {
+  return lastTranscriptTurn(file, kind)?.at;
+}
+
+/** Scans a JSONL transcript backwards for its newest conversation line. */
+export function lastTranscriptTurn(file: string, kind: TranscriptKind): TranscriptTurn | undefined {
   if (file.endsWith(".zst")) return lastCompressedActivity(file, kind);
   let fd: number;
   try {
@@ -190,12 +219,17 @@ export function lastTranscriptActivity(file: string, kind: TranscriptKind): stri
 }
 
 export class NativeActivity {
-  private readonly cache = new Map<string, { mtimeMs: number; size: number; at: string | undefined }>();
+  private readonly cache = new Map<string, { mtimeMs: number; size: number; turn: TranscriptTurn | undefined }>();
   private readonly indexes = new Map<string, { builtAt: number; files: Map<string, string> }>();
   private readonly desktop = new Map<string, { size: number; found: boolean }>();
 
   /** ISO time of the last real message, or undefined when this agent's transcript is unknown. */
   lastMessageAt(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): string | undefined {
+    return this.lastTurn(agentId, config, backendId, cwd)?.at;
+  }
+
+  /** The last real message and whether its turn had ended, or undefined when unknown. */
+  lastTurn(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): TranscriptTurn | undefined {
     const kind = transcriptKind(agentId, config);
     if (!kind || !SAFE_ID.test(backendId)) return undefined;
     const file = kind === "claude" ? this.claudeFile(config, backendId, cwd) : this.codexFile(config, backendId);
@@ -207,10 +241,10 @@ export class NativeActivity {
       return undefined;
     }
     const cached = this.cache.get(file);
-    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.at;
-    const at = lastTranscriptActivity(file, kind);
-    this.cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, at });
-    return at;
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.turn;
+    const turn = lastTranscriptTurn(file, kind);
+    this.cache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, turn });
+    return turn;
   }
 
   /**

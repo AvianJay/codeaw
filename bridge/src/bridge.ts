@@ -49,6 +49,8 @@ export interface BridgeOptions {
   updater?: BridgeUpdater;
   /** Tests stand in for a running Claude desktop app. */
   claudeProcessAlive?: (pid: number) => boolean;
+  /** How often open chats are checked for turns taken in another app; 0 turns the check off. */
+  followMs?: number;
 }
 
 export interface Bridge {
@@ -94,6 +96,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     idleAgentStopMs: config.idleAgentStopMinutes * 60_000,
     hostName: os.hostname(),
     claudeProcessAlive: opts.claudeProcessAlive,
+    followMs: opts.followMs,
   });
   const cpa = new CpaUsageService(opts.fetchImpl, Date.now, new FileCpaSettingsStore(dataDir));
   manager.cpa = cpa;

@@ -43,6 +43,10 @@ export interface TestBridgeOptions {
   /** The fake agent's id, default `fake`; an id with "claude" in it reads Claude Code's files. */
   agentId?: string;
   claudeProcessAlive?: (pid: number) => boolean;
+  /** Checks for turns taken in another app; off by default, tests call `manager.follow()`. */
+  followMs?: number;
+  /** The fake agent re-reads its saved state on every load, so a test can add turns "elsewhere". */
+  reloadOnLoad?: boolean;
 }
 
 export interface TestBridge {
@@ -65,7 +69,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
         command: process.execPath,
         args: ["--import", "tsx", FAKE_AGENT],
         cwd: BRIDGE_DIR,
-        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0", FAKE_AGENT_TOUCH_ON_OPEN: opts.touchOnOpen ? "1" : "0", FAKE_AGENT_MCP: opts.mcpHttp ? "http" : "stdio" },
+        env: { FAKE_AGENT_STATE: path.join(home, "fake-state.json"), FAKE_AGENT_STEERING: opts.steering ? "1" : "0", FAKE_AGENT_FORK: opts.fork ? "1" : "0", FAKE_AGENT_TOUCH_ON_OPEN: opts.touchOnOpen ? "1" : "0", FAKE_AGENT_MCP: opts.mcpHttp ? "http" : "stdio", FAKE_AGENT_RELOAD: opts.reloadOnLoad ? "1" : "0" },
         ...(opts.desktopSync !== undefined ? { desktopSync: opts.desktopSync } : {}),
         ...opts.agent,
       },
@@ -75,7 +79,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
   });
   const dataDir = path.join(home, opts.freshData ? `data-${Date.now()}` : "data");
   const loaded: LoadedConfig = { config, file: path.join(home, "config.yaml"), home, dataDir };
-  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot, claudeProcessAlive: opts.claudeProcessAlive });
+  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot, claudeProcessAlive: opts.claudeProcessAlive, followMs: opts.followMs ?? 0 });
   const tokens = new Map<string, string>();
   return {
     bridge,

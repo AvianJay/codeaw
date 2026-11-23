@@ -10,6 +10,8 @@ interface ChildSession {
   state: string;
   /** The child's own tool calls, by the adapter's ids. */
   tools: Set<string>;
+  /** The card as last reported, to leave out reports that change nothing. */
+  reported?: string;
 }
 
 const CHILD_ACTIVITY = new Set(["agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update"]);
@@ -63,7 +65,7 @@ export class AcpSubagents {
       if (update.title !== undefined) child.input.name = update.title;
       if (update.description !== undefined) child.input.prompt = update.description;
       if (update.state !== undefined) child.state = this.stateOf(update.state);
-      return [this.report(child, false)];
+      return this.report(child, false);
     }
     if (update?.sessionUpdate === "subagent_spawned") {
       return this.announce(params.sessionId, update.subagentSessionId, update.name, update.task, "running");
@@ -75,7 +77,7 @@ export class AcpSubagents {
       const state = update.state;
       if (!["running", "pending", "completed", "failed", "cancelled", "disconnected"].includes(state)) return [];
       child.state = state;
-      return [this.report(child, false)];
+      return this.report(child, false);
     }
     const child = this.children.get(params.sessionId);
     if (!child) return [params];
@@ -106,7 +108,7 @@ export class AcpSubagents {
     };
     this.children.set(id, child);
     this.current.set(this.key(child), child);
-    return [this.report(child, true)];
+    return this.report(child, true);
   }
 
   private stateOf(state: any): string {
@@ -116,14 +118,23 @@ export class AcpSubagents {
     return "unknown";
   }
 
-  private report(child: ChildSession, created: boolean): acp.SessionNotification {
-    return { sessionId: child.rootSessionId, update: {
-      sessionUpdate: created ? "tool_call" : "tool_call_update", toolCallId: child.toolCallId,
+  /**
+   * The card's state. Claude Code repeats a finished subagent's last state after a history load;
+   * a repeat that changes nothing is left out, or a client showing only recent history would
+   * draw the long-finished card again below the latest message.
+   */
+  private report(child: ChildSession, created: boolean): acp.SessionNotification[] {
+    const card = {
+      toolCallId: child.toolCallId,
       title: "spawnAgent", kind: "other",
       status: child.state === "running" || child.state === "pending" ? "in_progress" : child.state === "failed" ? "failed" : "completed",
       rawInput: { ...child.input, agentsStates: { [child.threadId]: { status: child.state } } },
       ...(child.parentToolCallId ? { _meta: { parentToolCallId: child.parentToolCallId } } : {}),
-    } };
+    };
+    const reported = JSON.stringify(card);
+    if (!created && reported === child.reported) return [];
+    child.reported = reported;
+    return [{ sessionId: child.rootSessionId, update: { sessionUpdate: created ? "tool_call" : "tool_call_update", ...card } as acp.SessionUpdate }];
   }
 
   private tool(child: ChildSession, update: Record<string, any>): Record<string, any> {

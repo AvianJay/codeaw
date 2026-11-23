@@ -42,6 +42,8 @@ const forking = process.env.FAKE_AGENT_FORK === "1";
 const touchOnOpen = process.env.FAKE_AGENT_TOUCH_ON_OPEN === "1";
 /** Like Claude Code and Codex: MCP servers may be reached over HTTP. Without it, stdio only. */
 const mcpHttp = process.env.FAKE_AGENT_MCP === "http";
+/** Re-read the saved state on every load, so tests can add turns taken in another app. */
+const reloadOnLoad = process.env.FAKE_AGENT_RELOAD === "1";
 const CONFIG_WARNING = { sessionUpdate: "notice", severity: "warning", title: "`old_setting` is deprecated.", description: "Remove it from config." };
 const sessions: Record<string, StoredSession> = stateFile && fs.existsSync(stateFile) ? JSON.parse(fs.readFileSync(stateFile, "utf8")) : {};
 const live = new Map<string, { cancelled: boolean; steer: string[]; running: boolean }>();
@@ -140,6 +142,8 @@ const app = acp
     sessions: Object.entries(sessions).map(([sessionId, s]) => ({ sessionId, cwd: s.cwd, title: s.title ?? null, updatedAt: s.updatedAt })),
   }))
   .onRequest("session/load", async (ctx) => {
+    // Like a transcript another app kept writing: the saved state may have moved on.
+    if (reloadOnLoad && stateFile && fs.existsSync(stateFile)) Object.assign(sessions, JSON.parse(fs.readFileSync(stateFile, "utf8")));
     const s = sessions[ctx.params.sessionId];
     if (!s) throw acp.RequestError.invalidParams(undefined, "unknown session");
     recordMcp(ctx.params.sessionId, "session/load", ctx.params.mcpServers);
