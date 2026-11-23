@@ -8,6 +8,7 @@ import '../../data/bridge_client.dart';
 import '../../data/models.dart';
 import '../../main.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 import '../common/widgets.dart';
 import 'host_sheet.dart';
 import 'new_session_sheet.dart';
@@ -126,22 +127,33 @@ class _SessionsPageState extends State<SessionsPage> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(CodeawRadii.md),
+                    side: BorderSide(
+                      color: scheme.outlineVariant.withValues(alpha: .6),
+                    ),
                   ),
-                  tileColor: scheme.surfaceContainerHighest.withValues(
-                    alpha: .5,
-                  ),
+                  tileColor: scheme.surfaceContainer,
                   leading: Icon(Icons.computer_rounded, color: scheme.primary),
                   title: Text(
                     client.bridgeHost ?? state.host?.name ?? '電腦',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14.5,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
-                  subtitle: Text(
-                    client.isOnline ? '已連線' : '離線',
-                    style: TextStyle(fontSize: 12, color: scheme.outline),
+                  subtitle: Row(
+                    children: [
+                      _StatusDot(status: client.status),
+                      const SizedBox(width: 6),
+                      Text(
+                        client.isOnline ? '已連線' : '離線',
+                        style: TextStyle(fontSize: 12, color: scheme.outline),
+                      ),
+                    ],
                   ),
                   trailing: const Icon(Icons.unfold_more_rounded, size: 18),
                   onTap: () => showHostSheet(context),
@@ -166,14 +178,18 @@ class _SessionsPageState extends State<SessionsPage> {
             ],
             const ConnectionBanner(),
             Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 4),
               child: TextField(
                 controller: _search,
                 onChanged: (value) =>
                     setState(() => _query = value.trim().toLowerCase()),
                 decoration: InputDecoration(
                   hintText: '搜尋對話或資料夾',
-                  prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                  prefixIcon: Icon(
+                    Icons.search_rounded,
+                    size: 20,
+                    color: scheme.outline,
+                  ),
                   suffixIcon: _query.isEmpty
                       ? null
                       : IconButton(
@@ -186,12 +202,25 @@ class _SessionsPageState extends State<SessionsPage> {
                         ),
                   filled: true,
                   isDense: true,
-                  fillColor: scheme.surfaceContainerHighest.withValues(
-                    alpha: .45,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 11,
                   ),
+                  fillColor: scheme.surfaceContainer,
                   border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(CodeawRadii.md),
                     borderSide: BorderSide.none,
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CodeawRadii.md),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(CodeawRadii.md),
+                    borderSide: BorderSide(
+                      color: scheme.primary.withValues(alpha: .7),
+                      width: 1.2,
+                    ),
                   ),
                 ),
               ),
@@ -237,6 +266,7 @@ class _SessionsPageState extends State<SessionsPage> {
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: ChoiceChip(
+                          showCheckmark: false,
                           label: const Text('全部'),
                           selected: _agentFilter == null,
                           onSelected: (_) =>
@@ -250,7 +280,7 @@ class _SessionsPageState extends State<SessionsPage> {
                             avatar: AgentAvatar(
                               agentId: a.id,
                               label: a.name,
-                              size: 20,
+                              size: 22,
                             ),
                             showCheckmark: false,
                             label: Text(
@@ -299,14 +329,30 @@ class _SessionsPageState extends State<SessionsPage> {
                         child: Center(
                           child: model.loading
                               ? const CircularProgressIndicator()
-                              : Text(
-                                  _query.isNotEmpty
-                                      ? '找不到符合的對話'
-                                      : client.isOnline
-                                      ? '還沒有對話，建立新對話開始吧'
-                                      : '連上 bridge 後會顯示對話',
-                                  textAlign: TextAlign.center,
-                                  style: TextStyle(color: scheme.outline),
+                              : Column(
+                                  children: [
+                                    Icon(
+                                      _query.isNotEmpty
+                                          ? Icons.search_off_rounded
+                                          : client.isOnline
+                                          ? Icons.forum_outlined
+                                          : Icons.cloud_off_rounded,
+                                      size: 40,
+                                      color: scheme.outline.withValues(
+                                        alpha: .6,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 12),
+                                    Text(
+                                      _query.isNotEmpty
+                                          ? '找不到符合的對話'
+                                          : client.isOnline
+                                          ? '還沒有對話，建立新對話開始吧'
+                                          : '連上 bridge 後會顯示對話',
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(color: scheme.outline),
+                                    ),
+                                  ],
                                 ),
                         ),
                       ),
@@ -381,15 +427,28 @@ class _SessionsPageState extends State<SessionsPage> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('codeaw'),
-                Text(
-                  '${client.bridgeHost ?? state.host?.name ?? ''} · ${client.status == ConnStatus.online
-                      ? '已連線'
-                      : client.status == ConnStatus.connecting
-                      ? '連線中'
-                      : '離線'}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, color: scheme.outline),
+                const SizedBox(height: 1),
+                Row(
+                  children: [
+                    _StatusDot(status: client.status),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${client.bridgeHost ?? state.host?.name ?? ''} · ${client.status == ConnStatus.online
+                            ? '已連線'
+                            : client.status == ConnStatus.connecting
+                            ? '連線中'
+                            : '離線'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w400,
+                          color: scheme.outline,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -519,14 +578,36 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+    padding: const EdgeInsets.fromLTRB(20, 18, 16, 6),
     child: Text(
       text,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
         color: Theme.of(context).colorScheme.outline,
+        letterSpacing: .4,
       ),
     ),
   );
+}
+
+/// Connection state at a glance, next to the computer's name.
+class _StatusDot extends StatelessWidget {
+  const _StatusDot({required this.status});
+  final ConnStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = switch (status) {
+      ConnStatus.online => scheme.success,
+      ConnStatus.connecting => scheme.warning,
+      _ => scheme.error,
+    };
+    return Container(
+      width: 7,
+      height: 7,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
 }
 
 class _SessionTile extends StatelessWidget {
@@ -553,12 +634,16 @@ class _SessionTile extends StatelessWidget {
       queued: s.queued,
     );
     return Padding(
-      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 4, vertical: 2),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 4, vertical: 1),
       child: ListTile(
         selected: selected,
-        selectedTileColor: scheme.primary.withValues(alpha: .09),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        contentPadding: EdgeInsets.symmetric(horizontal: compact ? 10 : 12),
+        selectedColor: scheme.onSurface,
+        selectedTileColor: scheme.primary.withValues(alpha: .1),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
+        ),
+        contentPadding: EdgeInsets.fromLTRB(compact ? 10 : 12, 0, compact ? 4 : 2, 0),
+        horizontalTitleGap: compact ? 10 : 14,
         leading: AgentAvatar(
           agentId: s.agentId,
           label: agent?.name,
@@ -569,7 +654,8 @@ class _SessionTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            fontSize: compact ? 13 : 15,
+            fontSize: compact ? 13.5 : 15,
+            height: 1.35,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
           ),
         ),
@@ -582,7 +668,8 @@ class _SessionTile extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: scheme.outline,
-                fontSize: compact ? 11 : 12.5,
+                fontSize: compact ? 11.5 : 12.5,
+                height: 1.35,
               ),
             ),
             if (compact && (s.pending > 0 || s.state != 'idle'))
@@ -593,7 +680,13 @@ class _SessionTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (!compact) badge,
-            IconButton(tooltip: '刪除聊天', icon: const Icon(Icons.delete_outline_rounded), onPressed: onDelete),
+            IconButton(
+              tooltip: '刪除聊天',
+              iconSize: 20,
+              color: scheme.outline,
+              icon: const Icon(Icons.delete_outline_rounded),
+              onPressed: onDelete,
+            ),
           ],
         ),
         onTap: onTap,

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/subagent.dart';
 import '../../data/timeline.dart';
+import '../common/app_theme.dart';
 
 bool subagentIsActive(SubagentStatus status) => status == SubagentStatus.running || status == SubagentStatus.pending;
 bool subagentIsUnfinished(SubagentStatus status) => subagentIsActive(status) || status == SubagentStatus.unknown;
@@ -32,12 +33,12 @@ class SubagentStatusBadge extends StatelessWidget {
     final active = subagentIsActive(status) && (timeline.running || timeline.reportsBackground(tool));
     final color = switch (status) {
       SubagentStatus.failed => scheme.error,
-      SubagentStatus.completed => scheme.tertiary,
+      SubagentStatus.completed => scheme.success,
       _ => active ? scheme.primary : scheme.onSurfaceVariant,
     };
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(6)),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(CodeawRadii.xs)),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [

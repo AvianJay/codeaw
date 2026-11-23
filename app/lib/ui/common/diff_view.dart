@@ -34,7 +34,7 @@ class DiffView extends StatelessWidget {
           prefix = '-';
         case DiffKind.hunk:
           style = base.copyWith(color: scheme.primary);
-          bg = scheme.primary.withValues(alpha: 0.06);
+          bg = scheme.primary.withValues(alpha: dark ? 0.08 : 0.06);
         case DiffKind.meta:
           style = base.copyWith(color: scheme.outline);
         case DiffKind.context:
@@ -71,7 +71,7 @@ class DiffView extends StatelessWidget {
       body = ConstrainedBox(constraints: BoxConstraints(maxHeight: maxHeight!), child: SingleChildScrollView(child: body));
     }
     return Container(
-      decoration: BoxDecoration(color: scheme.surfaceContainerHighest.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(8)),
+      decoration: codeSurface(context),
       clipBehavior: Clip.antiAlias,
       child: body,
     );

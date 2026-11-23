@@ -13,6 +13,7 @@ import '../../data/subagent.dart';
 import '../../data/timeline.dart';
 import '../../data/tool_display.dart';
 import '../../util/diff.dart';
+import '../common/app_theme.dart';
 import '../common/code_view.dart';
 import '../common/diff_view.dart';
 import '../common/link_text.dart';
@@ -142,19 +143,19 @@ class UserMessageView extends StatelessWidget {
       if (m.dequeued == 'cancelled') '已取消',
     ];
     return Padding(
-      padding: const EdgeInsets.fromLTRB(48, 10, 12, 4),
+      padding: const EdgeInsets.fromLTRB(48, 12, 16, 4),
       child: Align(
         alignment: Alignment.centerRight,
         child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: BoxDecoration(
-              color: m.dequeued == 'cancelled' ? scheme.surfaceContainerHighest : scheme.primaryContainer,
+              color: m.dequeued == 'cancelled' ? scheme.surfaceContainerHighest : scheme.userBubble,
               borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(18),
-                topRight: Radius.circular(18),
-                bottomLeft: Radius.circular(18),
-                bottomRight: Radius.circular(4),
+                topLeft: Radius.circular(CodeawRadii.xl - 4),
+                topRight: Radius.circular(CodeawRadii.xl - 4),
+                bottomLeft: Radius.circular(CodeawRadii.xl - 4),
+                bottomRight: Radius.circular(CodeawRadii.xs),
               ),
             ),
             child: _UserParts(m.parts),
@@ -254,7 +255,7 @@ class _UserPartsState extends State<_UserParts> {
     _releaseTaps();
     void paragraph() {
       if (spans.isEmpty) return;
-      children.add(Text.rich(TextSpan(children: spans), style: TextStyle(color: scheme.onPrimaryContainer, height: 1.35)));
+      children.add(Text.rich(TextSpan(children: spans), style: TextStyle(color: scheme.onPrimaryContainer, fontSize: 15, height: 1.45)));
       spans = [];
     }
 
@@ -400,14 +401,23 @@ class AgentMessageView extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = m.text;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 6),
       child: GestureDetector(
         onLongPress: () {
           Clipboard.setData(ClipboardData(text: text));
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已複製訊息'), duration: Duration(seconds: 1)));
         },
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (text.isNotEmpty) SelectionArea(child: Markdown(text, streaming: streaming, client: client, basePath: basePath)),
+          if (text.isNotEmpty)
+            SelectionArea(
+              child: Markdown(
+                text,
+                streaming: streaming,
+                client: client,
+                basePath: basePath,
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontSize: 15, height: 1.55),
+              ),
+            ),
           for (final p in m.parts.where((p) => p['type'] == 'image')) Padding(padding: const EdgeInsets.only(top: 6), child: BlockImage(p)),
         ]),
       ),
@@ -501,9 +511,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
     }
     final status = t.status ?? 'pending';
     final Widget statusIcon = switch (status) {
-      'completed' => Icon(Icons.check_circle_rounded, size: 16, color: Colors.green.shade600),
+      'completed' => Icon(Icons.check_circle_rounded, size: 16, color: scheme.success),
       'failed' => Icon(Icons.cancel_rounded, size: 16, color: scheme.error),
-      _ => const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+      _ => const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 1.8)),
     };
     final exit = t.exitCode;
     final mcp = t.mcp;
@@ -520,13 +530,13 @@ class _ToolCallCardState extends State<ToolCallCard> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
       child: Material(
         color: open ? scheme.surfaceContainer : scheme.surfaceContainerLow,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(CodeawRadii.md)),
         clipBehavior: Clip.antiAlias,
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           InkWell(
             onTap: () => setState(() => _open = !open),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              padding: const EdgeInsets.fromLTRB(12, 9, 10, 9),
               child: Row(children: [
                 Icon(mcp != null ? Icons.extension_outlined : toolIcon(t.kind), size: 17, color: scheme.onSurfaceVariant),
                 const SizedBox(width: 10),
@@ -567,7 +577,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
                 ),
                 if (exit != null && exit != 0)
                   Padding(padding: const EdgeInsets.only(right: 6), child: Text('exit $exit', style: TextStyle(fontSize: 11, color: scheme.error))),
+                const SizedBox(width: 6),
                 statusIcon,
+                const SizedBox(width: 4),
                 Icon(open ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: 18, color: scheme.outline),
               ]),
             ),
@@ -658,8 +670,8 @@ class _ToolDetails extends StatelessWidget {
         case 'diff':
           final path = '${c['path'] ?? ''}';
           children.add(Row(children: [
-            Expanded(child: Text(path, style: TextStyle(fontSize: 12, color: scheme.outline), overflow: TextOverflow.ellipsis)),
-            if (c['oldText'] == null) Text('新檔案', style: TextStyle(fontSize: 11, color: Colors.green.shade600)),
+            Expanded(child: Text(path, style: TextStyle(fontSize: 11.5, color: scheme.outline), overflow: TextOverflow.ellipsis)),
+            if (c['oldText'] == null) Text('新檔案', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: scheme.success)),
           ]));
           children.add(DiffView(lines: lineDiff(c['oldText'] as String?, c['newText'] as String? ?? ''), maxHeight: 360));
         case 'content':
@@ -743,7 +755,7 @@ class _TextResult extends StatelessWidget {
     final fence = RegExp(r'^```(\w*)\n([\s\S]*?)\n?```$').firstMatch(text);
     if (fence != null) return CodeBlock(code: fence.group(2)!, language: fence.group(1), maxHeight: 320, highlight: fence.group(1) != 'console');
     if (text.contains('\n') && text.length > 200) return CodeBlock(code: text, maxHeight: 320, highlight: false);
-    return SelectableText(text, style: const TextStyle(fontSize: 13));
+    return SelectableText(text, style: const TextStyle(fontSize: 13, height: 1.45));
   }
 }
 
@@ -758,29 +770,32 @@ class PermissionCard extends StatelessWidget {
     final live = controller.pending[p.requestId];
     final outcome = p.outcome?['outcome'];
     final (IconData icon, Color color, String label) = !p.resolved
-        ? (Icons.pending_actions_rounded, Colors.orange, live != null ? '等待你的批准' : '等待批准')
+        ? (Icons.pending_actions_rounded, scheme.warning, live != null ? '等待你的批准' : '等待批准')
         : outcome == 'cancelled'
             ? (Icons.block_rounded, scheme.outline, p.optionName ?? '已取消')
             : (p.optionName ?? '').toLowerCase().contains('reject') || (p.optionName ?? '').contains('拒') || (p.optionName ?? '').startsWith('No')
                 ? (Icons.do_not_disturb_on_outlined, scheme.error, p.optionName ?? '已拒絕')
-                : (Icons.verified_user_outlined, Colors.green.shade600, p.optionName ?? '已允許');
+                : (Icons.verified_user_outlined, scheme.success, p.optionName ?? '已允許');
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
       child: Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: !p.resolved ? Colors.orange.withValues(alpha: 0.08) : scheme.surfaceContainerLow,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: !p.resolved ? Colors.orange.withValues(alpha: 0.5) : scheme.outlineVariant.withValues(alpha: 0.5)),
+          color: !p.resolved ? color.withValues(alpha: 0.08) : scheme.surfaceContainerLow,
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
+          border: Border.all(color: !p.resolved ? color.withValues(alpha: 0.45) : scheme.outlineVariant.withValues(alpha: 0.6)),
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Icon(icon, size: 18, color: color),
             const SizedBox(width: 8),
-            Expanded(child: Text(p.displayTitle, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w500))),
+            Expanded(child: Text(p.displayTitle, maxLines: 3, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500))),
           ]),
           const SizedBox(height: 4),
-          Text('$label${p.by != null ? '（${p.by}）' : ''}', style: TextStyle(fontSize: 12, color: color)),
+          Padding(
+            padding: const EdgeInsets.only(left: 26),
+            child: Text('$label${p.by != null ? '（${p.by}）' : ''}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: color)),
+          ),
           if (live != null) ...[
             const SizedBox(height: 8),
             PermissionButtons(req: live, controller: controller),
@@ -830,7 +845,7 @@ class ElicitationCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
           color: e.resolved ? scheme.surfaceContainerLow : scheme.tertiaryContainer.withValues(alpha: 0.4),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [

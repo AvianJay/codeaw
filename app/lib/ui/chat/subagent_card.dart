@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../data/subagent.dart';
 import '../../data/timeline.dart';
 import '../../data/workflow.dart';
+import '../common/app_theme.dart';
 import 'subagent_status.dart';
 import 'workflow_view.dart';
 
@@ -65,8 +66,8 @@ class _SubagentCardState extends State<SubagentCard> {
       child: Material(
         color: scheme.surfaceContainerLow,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: scheme.primary.withValues(alpha: 0.25)),
+          borderRadius: BorderRadius.circular(CodeawRadii.lg),
+          side: BorderSide(color: scheme.primary.withValues(alpha: 0.22)),
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
@@ -86,26 +87,26 @@ class _SubagentCardState extends State<SubagentCard> {
                       Container(
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
-                          color: scheme.primaryContainer.withValues(alpha: 0.6),
-                          borderRadius: BorderRadius.circular(10),
+                          color: scheme.primary.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(CodeawRadii.sm + 2),
                         ),
                         child: Icon(workflow == null ? Icons.account_tree_outlined : Icons.hub_outlined, size: 20, color: scheme.primary),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
                               workflow != null ? 'Workflow' : '子代理${info?.role == null ? '' : ' · ${info!.role}'}',
-                              style: TextStyle(fontSize: 11, color: scheme.primary, fontWeight: FontWeight.w600),
+                              style: TextStyle(fontSize: 11, letterSpacing: .2, color: scheme.primary, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 3),
                             Text(
                               info?.name ?? tool.title ?? '子代理',
                               maxLines: _open ? 4 : 2,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                              style: const TextStyle(fontSize: 14.5, height: 1.35, fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 7),
                             Wrap(

@@ -9,6 +9,7 @@ import '../../data/session_controller.dart';
 import '../../data/timeline.dart';
 import '../../data/tool_display.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 import '../common/widgets.dart';
 import 'agent_cards.dart';
 import 'composer.dart';
@@ -319,10 +320,18 @@ class _TimelineList extends StatelessWidget {
     final running = controller.running;
     final older = controller.hasOlder;
     if (items.isEmpty && !running && !older) {
+      final scheme = Theme.of(context).colorScheme;
       return Center(
         child: controller.loading
             ? const CircularProgressIndicator()
-            : Text('開始對話吧', style: TextStyle(color: Theme.of(context).colorScheme.outline)),
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.chat_bubble_outline_rounded, size: 36, color: scheme.outline.withValues(alpha: .6)),
+                  const SizedBox(height: 12),
+                  Text('開始對話吧', style: TextStyle(color: scheme.outline)),
+                ],
+              ),
       );
     }
     final extra = running ? 1 : 0;
@@ -407,71 +416,119 @@ class _PlanPanelState extends State<_PlanPanel> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final total = widget.entries.length;
     final done = widget.entries.where((e) => e['status'] == 'completed').length;
     final current = widget.entries.firstWhere((e) => e['status'] == 'in_progress', orElse: () => const {});
-    return Material(
-      color: scheme.surfaceContainerLow,
-      child: InkWell(
-        onTap: () => setState(() => _open = !_open),
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    // In the page's column above the conversation, so it never covers a message;
+    // kept as short as a single line so the conversation keeps its room.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: .7)),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => setState(() => _open = !_open),
+          child: Stack(
             children: [
-              Row(
-                children: [
-                  Icon(Icons.checklist_rounded, size: 18, color: scheme.primary),
-                  const SizedBox(width: 8),
-                  Text('計畫 $done/${widget.entries.length}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                  const SizedBox(width: 8),
-                  if (!_open && current.isNotEmpty)
-                    Expanded(
-                      child: Text(
-                        '${current['content']}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 12.5, color: scheme.outline),
-                      ),
-                    )
-                  else
-                    const Spacer(),
-                  Icon(_open ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: 18),
-                ],
-              ),
-              if (_open)
-                for (final e in widget.entries)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6, left: 2),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              Padding(
+                padding: EdgeInsets.fromLTRB(12, 7, 8, _open ? 12 : 7),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
                       children: [
-                        Icon(
-                          switch (e['status']) {
-                            'completed' => Icons.check_circle_rounded,
-                            'in_progress' => Icons.radio_button_checked_rounded,
-                            _ => Icons.radio_button_unchecked_rounded,
-                          },
-                          size: 16,
-                          color: e['status'] == 'completed'
-                              ? Colors.green.shade600
-                              : e['status'] == 'in_progress'
-                              ? scheme.primary
-                              : scheme.outline,
-                        ),
+                        Icon(Icons.checklist_rounded, size: 18, color: scheme.primary),
                         const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            '${e['content']}',
-                            style: TextStyle(
-                              fontSize: 13,
-                              decoration: e['status'] == 'completed' ? TextDecoration.lineThrough : null,
-                              color: e['status'] == 'completed' ? scheme.outline : null,
-                            ),
+                        Text(
+                          '計畫 $done/$total',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: scheme.onSurface,
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
+                        const SizedBox(width: 10),
+                        if (!_open && current.isNotEmpty)
+                          Expanded(
+                            child: Text(
+                              '${current['content']}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant),
+                            ),
+                          )
+                        else
+                          const Spacer(),
+                        const SizedBox(width: 4),
+                        Icon(_open ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: 20, color: scheme.outline),
                       ],
                     ),
-                  ),
+                    if (_open)
+                      for (final e in widget.entries)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 10),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsets.only(top: 1),
+                                child: Icon(
+                                  switch (e['status']) {
+                                    'completed' => Icons.check_circle_rounded,
+                                    'in_progress' => Icons.radio_button_checked_rounded,
+                                    _ => Icons.radio_button_unchecked_rounded,
+                                  },
+                                  size: 16,
+                                  color: e['status'] == 'completed'
+                                      ? scheme.success
+                                      : e['status'] == 'in_progress'
+                                      ? scheme.primary
+                                      : scheme.outline,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  '${e['content']}',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    height: 1.4,
+                                    fontWeight: e['status'] == 'in_progress' ? FontWeight.w600 : FontWeight.w400,
+                                    decoration: e['status'] == 'completed' ? TextDecoration.lineThrough : null,
+                                    decorationColor: scheme.outline,
+                                    color: e['status'] == 'completed' ? scheme.outline : scheme.onSurface,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                  ],
+                ),
+              ),
+              // Progress along the bottom edge; drawn, not a progress indicator, since it never animates.
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                height: 2.5,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ColoredBox(color: scheme.surfaceContainerHighest),
+                    FractionallySizedBox(
+                      alignment: Alignment.centerLeft,
+                      widthFactor: total == 0 ? 0 : done / total,
+                      child: ColoredBox(color: done == total ? scheme.success : scheme.primary),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -490,47 +547,63 @@ class _PendingBar extends StatelessWidget {
     final req = controller.pending.values.first;
     final scheme = Theme.of(context).colorScheme;
     final toolKind = req.toolCall['kind'] as String?;
+    final accent = req.isPermission ? scheme.warning : scheme.tertiary;
+    final detail = req.isPermission ? _detail(req) : null;
     return Material(
-      color: req.isPermission ? Colors.orange.withValues(alpha: 0.12) : scheme.tertiaryContainer.withValues(alpha: 0.5),
+      color: Color.alphaBlend(accent.withValues(alpha: .08), scheme.surfaceContainerLow),
+      shape: Border(top: BorderSide(color: accent.withValues(alpha: .4))),
       child: SafeArea(
         top: false,
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    req.isPermission ? toolIcon(toolKind) : Icons.help_outline_rounded,
-                    size: 18,
-                    color: req.isPermission ? Colors.orange.shade800 : scheme.tertiary,
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Icon(
+                      req.isPermission ? toolIcon(toolKind) : Icons.help_outline_rounded,
+                      size: 18,
+                      color: accent,
+                    ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       req.isPermission ? '需要批准：${toolTitle(title: req.title, name: req.toolCall['name'] as String?, rawInput: req.toolCall['rawInput'], metadata: req.toolCall['_meta'])}' : req.title,
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14, height: 1.35, color: scheme.onSurface),
                     ),
                   ),
                   if (controller.pending.length > 1)
-                    Text('還有 ${controller.pending.length - 1} 個', style: TextStyle(fontSize: 12, color: scheme.outline)),
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8, top: 1),
+                      child: Text('還有 ${controller.pending.length - 1} 個', style: TextStyle(fontSize: 12, color: scheme.outline)),
+                    ),
                 ],
               ),
-              if (req.isPermission && _detail(req) != null)
-                Padding(
-                  padding: const EdgeInsets.only(top: 4, left: 26),
+              if (detail != null)
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(top: 8, left: 28),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                  decoration: BoxDecoration(
+                    color: scheme.surfaceContainerHighest.withValues(alpha: .55),
+                    borderRadius: BorderRadius.circular(CodeawRadii.sm),
+                  ),
                   child: Text(
-                    _detail(req)!,
+                    detail,
                     maxLines: 4,
                     overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontFamily: 'monospace', fontSize: 12, color: scheme.onSurfaceVariant),
+                    style: TextStyle(fontFamily: 'monospace', fontSize: 12, height: 1.4, color: scheme.onSurfaceVariant),
                   ),
                 ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
               if (req.isPermission)
                 PermissionButtons(req: req, controller: controller)
               else

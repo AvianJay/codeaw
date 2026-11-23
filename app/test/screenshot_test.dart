@@ -17,11 +17,14 @@ import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/sessions_model.dart';
 import 'package:codeaw/data/timeline.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
+import 'package:codeaw/ui/chat/items.dart';
 import 'package:codeaw/ui/chat/working_indicator.dart';
+import 'package:codeaw/ui/common/app_theme.dart';
 import 'package:codeaw/ui/common/diff_view.dart';
 import 'package:codeaw/ui/common/markdown.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
+import 'package:codeaw/ui/settings/settings_page.dart';
 import 'package:codeaw/util/diff.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -38,16 +41,8 @@ Future<void> _font(String family, List<String> files) async {
 
 final _sdkFonts = '${Platform.environment['FLUTTER_ROOT'] ?? 'C:/flutter'}/bin/cache/artifacts/material_fonts';
 
-ThemeData _theme(Brightness b) {
-  final scheme = ColorScheme.fromSeed(seedColor: const Color(0xFF0F9D8A), brightness: b);
-  return ThemeData(
-    colorScheme: scheme,
-    useMaterial3: true,
-    fontFamily: 'Roboto',
-    fontFamilyFallback: const ['NotoSansTC'],
-    appBarTheme: AppBarTheme(backgroundColor: scheme.surface),
-  );
-}
+/// The app's own theme, with the fonts loaded below (the test binding has no platform fonts).
+ThemeData _theme(Brightness b) => codeawTheme(b, fontFamily: 'Roboto', fontFamilyFallback: const ['NotoSansTC']);
 
 class _Harness {
   _Harness() {
@@ -78,9 +73,9 @@ class _Harness {
       );
 }
 
-Future<void> _shoot(WidgetTester tester, Widget app, String name, {bool decodeImages = false}) async {
-  tester.view.physicalSize = const Size(1080, 2340);
-  tester.view.devicePixelRatio = 2.625;
+Future<void> _shoot(WidgetTester tester, Widget app, String name, {bool decodeImages = false, Size size = const Size(1080, 2340), double ratio = 2.625}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = ratio;
   addTearDown(tester.view.reset);
   await tester.pumpWidget(app);
   if (decodeImages) {
@@ -94,7 +89,24 @@ Future<void> _shoot(WidgetTester tester, Widget app, String name, {bool decodeIm
   for (var i = 0; i < 6; i++) {
     await tester.pump(const Duration(milliseconds: 120));
   }
-  await expectLater(find.byType(MaterialApp), matchesGoldenFile('screenshots/$name.png'));
+  await _capture(tester, name);
+}
+
+/// Paints real elevation shadows rather than flutter_test's outline stand-in.
+Future<void> _capture(WidgetTester tester, String name) async {
+  void repaint(RenderObject object) {
+    object.markNeedsPaint();
+    object.visitChildren(repaint);
+  }
+
+  debugDisableShadows = false;
+  try {
+    tester.binding.renderViews.forEach(repaint);
+    await tester.pump();
+    await expectLater(find.byType(MaterialApp), matchesGoldenFile('screenshots/$name.png'));
+  } finally {
+    debugDisableShadows = true;
+  }
 }
 
 final _enabled = Platform.environment['CODEAW_SCREENSHOTS'] == '1';
@@ -122,6 +134,39 @@ void main() {
       SessionSummary(id: 'claude:5', agentId: 'claude', cwd: r'D:\proj\discord-bot', title: '工單 modal 的管理員設定', updatedAt: now.subtract(const Duration(days: 9))),
     ];
     await _shoot(tester, h.wrap(const SessionsPage()), 'sessions');
+    await _shoot(tester, h.wrap(const SessionsPage(), brightness: Brightness.dark), 'sessions_dark');
+    await tester.tap(find.text('新對話'));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await _capture(tester, 'new_session_dark');
+  });
+
+  testWidgets('tablet sidebar', (tester) async {
+    final h = _Harness();
+    final now = DateTime.now();
+    h.state.sessions!.sessions = [
+      SessionSummary(id: 'claude:1', agentId: 'claude', cwd: r'D:\proj\codeaw', title: '透過 Tailscale 遠端使用 Claude Code', updatedAt: now, state: 'running', known: true),
+      SessionSummary(id: 'codex:2', agentId: 'codex', cwd: r'D:\proj\web-app', title: '新增 nightly 建置流程', updatedAt: now.subtract(const Duration(minutes: 3)), state: 'requires_action', pending: 1, known: true),
+      SessionSummary(id: 'claude:3', agentId: 'claude', cwd: r'D:\proj\cast-tool', title: '投影功能可行性評估', updatedAt: now.subtract(const Duration(hours: 2))),
+      SessionSummary(id: 'kimi:4', agentId: 'kimi', cwd: r'D:\proj\card-game', title: null, updatedAt: now.subtract(const Duration(days: 2)), known: true),
+    ];
+    Widget page(Brightness brightness) => h.wrap(
+      Scaffold(
+        body: Row(children: [
+          const SizedBox(width: 320, child: SessionsPage(sidebar: true, selectedSessionId: 'claude:3')),
+          const VerticalDivider(width: 1),
+          Expanded(child: Scaffold(appBar: AppBar(title: const Text('工作區')))),
+        ]),
+      ),
+      brightness: brightness,
+    );
+    await _shoot(tester, page(Brightness.dark), 'sidebar_dark', size: const Size(2048, 1536), ratio: 2);
+  });
+
+  testWidgets('settings', (tester) async {
+    final h = _Harness();
+    await _shoot(tester, h.wrap(const SettingsPage(), brightness: Brightness.dark), 'settings_dark');
   });
 
   testWidgets('chat with tools, permission and plan', (tester) async {
@@ -182,6 +227,14 @@ void main() {
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'chat');
     token.cancel();
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'chat_dark');
+    // Scrolled back to the oldest message, which starts below the plan card rather than behind it.
+    for (var i = 0; i < 4; i++) {
+      await tester.dragFrom(const Offset(200, 500), const Offset(0, 600));
+      await tester.pumpAndSettle();
+    }
+    final top = find.byType(TimelineItemView).evaluate().map((e) => tester.getRect(find.byWidget(e.widget)).top).reduce((a, b) => a < b ? a : b);
+    expect(top, greaterThan(tester.getRect(find.text('計畫 1/3')).bottom));
+    await _capture(tester, 'chat_dark_top');
     await tester.pumpWidget(const SizedBox());
     h.state.hub!.dispose();
     h.state.sessions!.dispose();

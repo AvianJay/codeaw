@@ -6,6 +6,7 @@ import '../../app_state.dart';
 import '../../data/models.dart';
 import '../../main.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 import '../common/widgets.dart';
 import '../common/create_folder.dart';
 
@@ -199,6 +200,9 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
     final state = AppScope.of(context);
     final agents = state.client?.agents ?? const <AgentInfo>[];
     final scheme = Theme.of(context).colorScheme;
+    final label = Theme.of(
+      context,
+    ).textTheme.labelLarge?.copyWith(color: scheme.onSurfaceVariant);
     return SingleChildScrollView(
       child: Padding(
         padding: EdgeInsets.only(
@@ -211,16 +215,16 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text('新對話', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 16),
-            Text('Agent', style: Theme.of(context).textTheme.labelLarge),
-            const SizedBox(height: 8),
+            const SizedBox(height: 18),
+            Text('Agent', style: label),
+            const SizedBox(height: 10),
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
                 for (final a in agents)
                   ChoiceChip(
-                    avatar: AgentAvatar(agentId: a.id, label: a.name, size: 20),
+                    avatar: AgentAvatar(agentId: a.id, label: a.name, size: 22),
                     showCheckmark: false,
                     label: Text(a.name),
                     selected: _agentId == a.id,
@@ -246,7 +250,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                   style: TextStyle(color: scheme.error, fontSize: 12),
                 ),
               ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 22),
             SegmentedButton<bool>(
               segments: const [
                 ButtonSegment(
@@ -281,52 +285,73 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 ),
               ),
             if (!_projectless) ...[
-              Text('資料夾', style: Theme.of(context).textTheme.labelLarge),
-              const SizedBox(height: 4),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 260),
-                child: RadioGroup<String>(
-                  groupValue: _cwd,
-                  onChanged: (v) => setState(() => _cwd = v),
-                  child: ListView(
-                    shrinkWrap: true,
-                    children: [
-                      for (final r in _roots)
-                        RadioListTile<String>(
-                          enabled: !_busy,
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          value: r.path,
-                          title: Text(folderName(r.path)),
-                          subtitle: Text(
-                            r.path,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 11.5),
+              const SizedBox(height: 6),
+              Text('資料夾', style: label),
+              const SizedBox(height: 8),
+              // Its own Material, so the tiles' ink shows on the card.
+              Material(
+                color: scheme.surfaceContainer,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(CodeawRadii.md),
+                  side: BorderSide(
+                    color: scheme.outlineVariant.withValues(alpha: .6),
+                  ),
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 260),
+                  child: RadioGroup<String>(
+                    groupValue: _cwd,
+                    onChanged: (v) => setState(() => _cwd = v),
+                    child: ListView(
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      children: [
+                        for (final r in _roots)
+                          RadioListTile<String>(
+                            enabled: !_busy,
+                            contentPadding: const EdgeInsets.only(
+                              left: 4,
+                              right: 14,
+                            ),
+                            dense: true,
+                            value: r.path,
+                            title: Text(folderName(r.path)),
+                            subtitle: Text(
+                              r.path,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11.5),
+                            ),
+                            secondary: Icon(
+                              r.source == 'recent'
+                                  ? Icons.history_rounded
+                                  : Icons.folder_special_outlined,
+                              size: 18,
+                              color: scheme.outline,
+                            ),
                           ),
-                          secondary: Icon(
-                            r.source == 'recent'
-                                ? Icons.history_rounded
-                                : Icons.folder_special_outlined,
-                            size: 20,
+                        if (_cwd != null && !_roots.any((r) => r.path == _cwd))
+                          RadioListTile<String>(
+                            enabled: !_busy,
+                            contentPadding: const EdgeInsets.only(
+                              left: 4,
+                              right: 14,
+                            ),
+                            dense: true,
+                            value: _cwd!,
+                            title: Text(folderName(_cwd!)),
+                            subtitle: Text(
+                              _cwd!,
+                              style: const TextStyle(fontSize: 11.5),
+                            ),
                           ),
-                        ),
-                      if (_cwd != null && !_roots.any((r) => r.path == _cwd))
-                        RadioListTile<String>(
-                          enabled: !_busy,
-                          contentPadding: EdgeInsets.zero,
-                          dense: true,
-                          value: _cwd!,
-                          title: Text(folderName(_cwd!)),
-                          subtitle: Text(
-                            _cwd!,
-                            style: const TextStyle(fontSize: 11.5),
-                          ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
+              const SizedBox(height: 4),
               Row(
                 children: [
                   TextButton.icon(
@@ -379,7 +404,7 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                 style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
               ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
             FilledButton(
               onPressed:
                   _busy ||

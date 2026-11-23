@@ -5,6 +5,8 @@ import 'package:re_highlight/re_highlight.dart';
 import 'package:re_highlight/styles/atom-one-dark.dart';
 import 'package:re_highlight/styles/atom-one-light.dart';
 
+import 'app_theme.dart';
+
 final Highlight _highlight = Highlight()..registerLanguages(builtinAllLanguages);
 
 const _extToLang = <String, String>{
@@ -62,6 +64,17 @@ TextStyle monoStyle(BuildContext context, {double size = 12.5, Color? color}) =>
       color: color ?? Theme.of(context).colorScheme.onSurface,
     );
 
+/// The well code and diffs sit in: a shade off the page, with a hairline edge.
+BoxDecoration codeSurface(BuildContext context) {
+  final scheme = Theme.of(context).colorScheme;
+  final dark = Theme.of(context).brightness == Brightness.dark;
+  return BoxDecoration(
+    color: dark ? scheme.surfaceContainerLowest : scheme.surfaceContainerLow,
+    borderRadius: BorderRadius.circular(CodeawRadii.sm + 2),
+    border: Border.all(color: scheme.outlineVariant.withValues(alpha: dark ? .9 : .8)),
+  );
+}
+
 /// A code block: language label, copy button, horizontal scroll, optional line numbers.
 class CodeBlock extends StatelessWidget {
   const CodeBlock({super.key, required this.code, this.language, this.lineNumbers = false, this.maxHeight, this.wrap = false, this.highlight = true});
@@ -91,24 +104,25 @@ class CodeBlock extends StatelessWidget {
       );
     }
     Widget body = wrap
-        ? Padding(padding: const EdgeInsets.fromLTRB(10, 0, 10, 10), child: text)
-        : SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.fromLTRB(10, 0, 10, 10), child: text);
+        ? Padding(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: text)
+        : SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), child: text);
     if (maxHeight != null) {
       body = ConstrainedBox(constraints: BoxConstraints(maxHeight: maxHeight!), child: SingleChildScrollView(child: body));
     }
     return Container(
-      decoration: BoxDecoration(color: scheme.surfaceContainerHighest.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(8)),
+      decoration: codeSurface(context),
+      clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
           // Header row: language label + copy, above the code so it never covers it.
           SizedBox(
-            height: 28,
+            height: 30,
             child: Row(
               children: [
-                const SizedBox(width: 10),
-                Expanded(child: Text(language ?? '', style: TextStyle(fontSize: 11, color: scheme.outline))),
+                const SizedBox(width: 12),
+                Expanded(child: Text(language ?? '', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, letterSpacing: .2, color: scheme.outline))),
                 InkWell(
                   borderRadius: BorderRadius.circular(6),
                   onTap: () {
@@ -116,7 +130,7 @@ class CodeBlock extends StatelessWidget {
                     ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('已複製'), duration: Duration(seconds: 1)));
                   },
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                     child: Icon(Icons.copy_rounded, size: 15, color: scheme.outline),
                   ),
                 ),

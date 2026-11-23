@@ -3,6 +3,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../app_state.dart';
 import '../../data/bridge_client.dart';
+import 'app_theme.dart';
 
 String timeAgo(DateTime? t) {
   if (t == null) return '';
@@ -65,7 +66,7 @@ class ConnectionBanner extends StatelessWidget {
           child: InkWell(
             onTap: client.reconnectNow,
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Row(
                 children: [
                   if (connecting)
@@ -123,7 +124,7 @@ class StateBadge extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final (Color color, String label) = switch (state) {
       'requires_action' => (
-        Colors.orange,
+        scheme.warning,
         '待批准${pending > 1 ? ' ×$pending' : ''}',
       ),
       'running' => (scheme.primary, queued > 0 ? '執行中 · 排隊 $queued' : '執行中'),
@@ -131,17 +132,17 @@ class StateBadge extends StatelessWidget {
     };
     if (label.isEmpty) return const SizedBox.shrink();
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
+        color: color.withValues(alpha: 0.13),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 7,
-            height: 7,
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
           const SizedBox(width: 5),
@@ -149,6 +150,7 @@ class StateBadge extends StatelessWidget {
             label,
             style: TextStyle(
               fontSize: 11.5,
+              height: 1.2,
               color: color,
               fontWeight: FontWeight.w600,
             ),
