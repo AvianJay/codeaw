@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { claudeProjectSlug, forgetClaudeProcess, lastChainWrite, lastTranscriptTurn, type DesktopHolder, type ProcessEnd } from "../src/session/native-activity.js";
+import { claudeProjectSlug, desktopSubagentAtWork, forgetClaudeProcess, lastChainWrite, lastTranscriptTurn, type DesktopHolder, type ProcessEnd } from "../src/session/native-activity.js";
 import { promptText, startTestBridge, TestClient, type TestBridge } from "./helpers.js";
 
 let tb: TestBridge | undefined;
@@ -258,14 +258,58 @@ it("hands a chat back to the Claude desktop app after a turn taken here", async 
   }
   expect(ended).toHaveLength(1);
 
-  // A process that cannot be ended (it runs a shell command) stays, and codeaw leaves the chat to it.
+  // A subagent still at work in the app's process would be lost with it: the process is left
+  // alone until the subagent has finished.
+  desktop("idle");
+  const subagents = path.join(path.dirname(transcript), backendId, "subagents");
+  fs.mkdirSync(subagents, { recursive: true });
+  fs.writeFileSync(path.join(subagents, "agent-a1.jsonl"), chained("claude-desktop-3p", "assistant", Date.now(), [{ type: "text", text: "Searching" }], { isSidechain: true }));
+  fs.writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "general-purpose" }));
+  await send("echo while a subagent works");
+  await manager.sweep();
+  expect(ended).toHaveLength(1);
+  fs.writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "general-purpose", finished: true }));
+  await manager.sweep();
+  expect(ended).toHaveLength(2);
+  expect(fs.existsSync(entry)).toBe(false);
+
+  // A process that runs a shell command stays as well. Codeaw leaves the chat to it, and
+  // tries again each sweep until the command is over.
   outcome = "working";
   desktop("idle");
   await send("echo four");
-  await c.waitFor(() => ended.length === 2);
+  await c.waitFor(() => ended.length === 3);
   expect(fs.existsSync(entry)).toBe(true);
   await manager.sweep();
+  expect(ended).toHaveLength(4);
   expect(held()).toBe(false);
+  outcome = "ended";
+  await manager.sweep();
+  expect(ended).toHaveLength(5);
+  expect(fs.existsSync(entry)).toBe(false);
+  await manager.sweep();
+  expect(ended).toHaveLength(5);
+});
+
+it("tells whether a subagent is still at work in the Claude desktop app's process", () => {
+  const dir = tempDir("codeaw-subagent-");
+  const transcript = path.join(dir, "chat.jsonl");
+  const subagents = path.join(dir, "chat", "subagents");
+  const now = Date.now();
+  expect(desktopSubagentAtWork(transcript, now)).toBe(false);
+  fs.mkdirSync(subagents, { recursive: true });
+  const agent = (name: string, entrypoint: string, meta: Record<string, unknown>) => {
+    fs.writeFileSync(path.join(subagents, `agent-${name}.jsonl`), chained(entrypoint, "assistant", now, [{ type: "text", text: "Working" }], { isSidechain: true }));
+    fs.writeFileSync(path.join(subagents, `agent-${name}.meta.json`), JSON.stringify({ agentType: "general-purpose", ...meta }));
+  };
+  agent("done", "claude-desktop-3p", { finished: true });
+  // One that codeaw's own process runs ends with that process, not with the app's.
+  agent("phone", "sdk-ts", {});
+  expect(desktopSubagentAtWork(transcript, now)).toBe(false);
+  agent("busy", "claude-desktop-3p", {});
+  expect(desktopSubagentAtWork(transcript, now)).toBe(true);
+  // Never finished and silent for a long time: its process went away without saying so.
+  expect(desktopSubagentAtWork(transcript, now + 11 * 60_000)).toBe(false);
 });
 
 it("takes in a turn the Claude desktop app took while codeaw still had the chat open", async () => {

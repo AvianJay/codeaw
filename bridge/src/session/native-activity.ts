@@ -100,8 +100,9 @@ const PROC_START_SLACK = 100_000;
  * message there.
  *
  * Left alone when it has a shell running: a dev server or a watcher started from that chat
- * would end with it. Windows only: elsewhere no signal is known to leave the app quiet, and
- * the registry carries nothing to tell the process from a later one with the same id.
+ * would end with it. The caller checks for a subagent at work (desktopSubagentAtWork).
+ * Windows only: elsewhere no signal is known to leave the app quiet, and the registry carries
+ * nothing to tell the process from a later one with the same id.
  * A process ended this way leaves its registry entry behind; see forgetClaudeProcess.
  */
 export function endClaudeProcess(holder: Pick<DesktopHolder, "pid" | "procStart">): Promise<ProcessEnd> {
@@ -293,6 +294,43 @@ export function lastChainWrite(file: string): ChainWrite | undefined {
   return lastLine(file, chainWrite);
 }
 
+/** A subagent that wrote this long ago and never finished is taken to have ended with its process. */
+const SUBAGENT_QUIET_MS = 10 * 60 * 1000;
+const SUBAGENT_META = /^agent-[A-Za-z0-9_-]+\.meta\.json$/;
+
+/** Which kind of program wrote a transcript line, for lines that say. */
+function writer(line: string): { desktop: boolean } | undefined {
+  if (!line.includes('"entrypoint"')) return undefined;
+  try {
+    const entrypoint = JSON.parse(line)?.entrypoint;
+    return typeof entrypoint === "string" ? { desktop: entrypoint.startsWith("claude-desktop") } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether a subagent of this chat is at work in the Claude desktop app's process: one that
+ * runs in the background keeps going while the chat itself is idle, and ends with the process.
+ * Claude Code keeps each subagent's transcript, and a note of whether it finished, in the
+ * chat's own folder next to its transcript.
+ */
+export function desktopSubagentAtWork(transcript: string, now = Date.now()): boolean {
+  const dir = path.join(transcript.replace(/\.jsonl$/, ""), "subagents");
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return false; }
+  for (const name of names) {
+    if (!SUBAGENT_META.test(name)) continue;
+    const log = path.join(dir, name.replace(/\.meta\.json$/, ".jsonl"));
+    try {
+      if (now - fs.statSync(log).mtimeMs > SUBAGENT_QUIET_MS) continue;
+      if (JSON.parse(fs.readFileSync(path.join(dir, name), "utf8"))?.finished === true) continue;
+    } catch { continue; }
+    if (lastLine(log, writer)?.desktop) return true;
+  }
+  return false;
+}
+
 /** The newest line of a JSONL file that `pick` accepts, reading backwards from its end. */
 function lastLine<T>(file: string, pick: (line: string) => T | undefined): T | undefined {
   let fd: number;
@@ -390,6 +428,13 @@ export class NativeActivity {
   forgetClaudeProcess(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, holder: Pick<DesktopHolder, "pid" | "procStart">): void {
     if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return;
     forgetClaudeProcess(claudeConfigDir(config), backendId, holder);
+  }
+
+  /** See desktopSubagentAtWork. */
+  desktopSubagentAtWork(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): boolean {
+    if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return false;
+    const file = this.claudeFile(config, backendId, cwd);
+    return !!file && desktopSubagentAtWork(file);
   }
 
   /** See lastChainWrite. Read anew each time: it is asked once a turn, right after the file changed. */

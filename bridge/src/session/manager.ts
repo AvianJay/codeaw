@@ -265,6 +265,8 @@ export class SessionManager implements AgentHandlers, McpHost {
   private readonly followRetry = new Map<string, number>();
   /** Chats whose turn here just ended, while the desktop app's own process for them is being closed. */
   private readonly handingBack = new Set<string>();
+  /** Chats whose hand-back waits for work in the desktop app's process to end; tried again every sweep. */
+  private readonly handBackOwed = new Set<string>();
   private shuttingDown = false;
   /** Shown file → chats that showed it; built from the saved chats on first use. */
   private shareIndex?: Map<string, Set<string>>;
@@ -460,6 +462,7 @@ export class SessionManager implements AgentHandlers, McpHost {
   private async handBack(s: BridgeSession): Promise<void> {
     if (this.handingBack.has(s.id)) return;
     this.handingBack.add(s.id);
+    const owed = this.handBackOwed.delete(s.id);
     try {
       const holder = this.desktopHolder(s);
       // Mid-turn there, both have written already; nothing is gained by cutting that turn short.
@@ -467,11 +470,16 @@ export class SessionManager implements AgentHandlers, McpHost {
       const agent = this.registry.get(s.meta.agentId);
       const last = this.native.lastChainWrite(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
       if (!last || last.desktop || last.at <= holder.startedAt) return;
-      const outcome = await (this.opts.endClaudeProcess ?? endClaudeProcess)(holder);
+      // A subagent running in the background there would be lost with the process.
+      const outcome = this.native.desktopSubagentAtWork(agent.id, agent.config, s.meta.backendId, s.meta.cwd)
+        ? "working" : await (this.opts.endClaudeProcess ?? endClaudeProcess)(holder);
       if (outcome === "ended") {
         // Ended from outside, it could not take its own entry out of the registry of running sessions.
         this.native.forgetClaudeProcess(agent.id, agent.config, s.meta.backendId, holder);
         log.info(`${s.id} was continued here; closed Claude Desktop's own process for it (${holder.pid}), so the app reads the chat again on its next message`);
+      } else if (outcome === "working") {
+        this.handBackOwed.add(s.id);
+        if (!owed) log.info(`${s.id} was continued here; Claude Desktop's own process for it (${holder.pid}) has a command or a subagent running, so it is closed once that is over. A message sent from the app before then may leave this turn out`);
       } else if (outcome !== "gone" && outcome !== "unsupported") {
         log.warn(`${s.id} was continued here, but Claude Desktop's own process for it (${holder.pid}) stays as it was (${outcome}); a message sent from the app may leave this turn out`);
       }
@@ -2368,6 +2376,11 @@ export class SessionManager implements AgentHandlers, McpHost {
       const kept = list.filter((o) => now - o.at < ORPHAN_TTL_MS);
       if (kept.length) this.orphans.set(id, kept);
       else this.orphans.delete(id);
+    }
+    for (const id of [...this.handBackOwed]) {
+      const s = this.sessions.get(id);
+      if (!s) this.handBackOwed.delete(id);
+      else if (!s.turn) await this.handBack(s);
     }
     // Chats no device has open are not followed; the desktop app may have opened one of them.
     for (const s of [...this.sessions.values()]) await this.yieldToDesktop(s);

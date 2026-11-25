@@ -827,7 +827,27 @@ answer it in that transcript, which would write into the other app's turn.
 `session/prompt` on such a chat first takes in those turns the same way. The
 bridge reopens chats without the agent's replay, so a send would otherwise leave
 them out of the log for good. While the other app's turn is still running,
-`session/prompt` fails with `invalidRequest`.
+`session/prompt` fails with `invalidRequest`. So does `_codeaw/session/reimport`,
+and so do `session/load` and `session/resume` for a chat the bridge has not opened
+before. For a chat it already has, they return what it has, and the rest follows
+once that turn ends. A re-read keeps the model, mode and other options chosen for
+the chat in codeaw.
+
+**Handing a chat back.** The Claude desktop app keeps one Claude Code process for
+each chat it has open, and that process reads the transcript only when it starts.
+A message typed in the app after a turn the bridge ran would continue from before
+that turn and leave it out of the conversation. So when a bridge turn ends in a
+chat the desktop app holds, and the transcript's newest conversation line was not
+written by the app and is newer than the app's process (`startedAt` in its registry
+entry), the bridge ends that process while its `status` is `idle`, with exit code
+0, and removes its registry entry. The app takes a clean exit quietly and starts a
+new process from the transcript on the next message there. The process is left
+alone while it has a shell child (a dev server, a watcher) or a subagent of its own
+that has not finished (`<session id>/subagents/agent-*.meta.json` without
+`finished: true`, its transcript written in the last ten minutes); the sweep tries
+again every minute. Windows only: the process is told from a later one with the
+same id by its creation time (`procStart`), and elsewhere no signal is known to
+leave the app quiet.
 
 Claude Code repeats a finished subagent's last state after every history load.
 The bridge leaves out a subagent card update that changes nothing. A client

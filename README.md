@@ -161,6 +161,9 @@ mcp:
 - 桌面 app 開著這個對話時（登記的 `entrypoint` 為 `claude-desktop*`、程序仍在執行），bridge 在一分鐘內關閉 codeaw 自己替這個對話開的 Claude Code，前提是沒有進行中的回合、權限詢問、排隊訊息或背景 Workflow；只在手機上看、不傳訊息時也不會再開一個。
 - 桌面 app 正在跑回合時，手機傳的訊息會被拒絕並說明原因，等它結束或先在桌面停止。
 - 手機開著這個對話時，在桌面 app（或終端機）跑完的回合會在幾秒內出現在手機上：bridge 每 3 秒看一次 Claude Code 的對話紀錄，等那邊的回合結束後重新讀入整段對話，接著馬上關掉自己的 Claude Code，讓桌面 app 仍是唯一的寫入者。回合還在跑時不會讀，因為讀入會讓 Claude Code 回覆尚未回答的訊息、寫進對方的回合。手機傳訊息前也會先補上這些回合，不會再漏掉桌面上的對話。Codex 對話（非桌面同步模式）同樣適用。
+- 手機在這個對話跑完回合後，bridge 會把對話交還給桌面 app。桌面 app 替開著的對話留著一個 Claude Code，它只在啟動時讀一次對話紀錄；不處理的話，之後在桌面傳的訊息會從手機那一回合之前接下去，那一回合就從對話裡消失。所以回合結束時，bridge 讓桌面 app 那個閒置的 Claude Code 正常結束（結束碼 0，桌面 app 不會顯示當機），並移除它在執行中 session 登記裡的項目；下一次在桌面傳訊息時，桌面 app 會從紀錄重新開始，手機的回合就在裡面。它正在跑回合時不會動它；它還有終端機指令（dev server、watcher）或背景 subagent 在跑時先等著，每分鐘再試一次。只在 Windows 上這樣做。桌面 app 的畫面要到下一次傳訊息才會出現手機的回合。
+- 其他程式的回合還在跑時，第一次開啟或重新載入這個對話會被拒絕並說明原因；已經開過的對話照常顯示手上的內容，回合結束後補上。
+- 重新讀入後，在 codeaw 為這個對話選的模型、模式等設定會保留。
 - 已完成的 subagent 卡片不會再在重新讀入後跑到最新訊息下方。
 
 另外，若 bridge 本身是從 Claude Code session 裡啟動（例如由 Claude 桌面 app 的 agent 重新啟動），它會先移除該 session 帶來的 `CLAUDECODE`、`CLAUDE_CODE_*`、`CLAUDE_AGENT_SDK_*`、`ANTHROPIC_DEFAULT_*_MODEL` 等變數（保留 `CLAUDE_CODE_GIT_BASH_PATH`），否則 agent 會沿用桌面 app 代管的登入，回合以「Authentication required」結束。
