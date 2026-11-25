@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/semantics.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app_state.dart';
@@ -40,6 +41,8 @@ class _SessionsPageState extends State<SessionsPage> {
   BridgeClient? _client;
   final _search = TextEditingController();
   Timer? _clock;
+  final _mouse = WidgetsBinding.instance.mouseTracker;
+  late bool _pointer = _mouse.mouseIsConnected;
 
   @override
   void initState() {
@@ -48,10 +51,17 @@ class _SessionsPageState extends State<SessionsPage> {
     _clock = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
+    _mouse.addListener(_mouseChanged);
+  }
+
+  void _mouseChanged() {
+    final connected = _mouse.mouseIsConnected;
+    if (connected != _pointer && mounted) setState(() => _pointer = connected);
   }
 
   @override
   void dispose() {
+    _mouse.removeListener(_mouseChanged);
     _clock?.cancel();
     _search.dispose();
     super.dispose();
@@ -347,8 +357,8 @@ class _SessionsPageState extends State<SessionsPage> {
                                       _query.isNotEmpty
                                           ? '找不到符合的對話'
                                           : client.isOnline
-                                          ? '還沒有對話，建立新對話開始吧'
-                                          : '連上 bridge 後會顯示對話',
+                                          ? '還沒有對話'
+                                          : '連線後會顯示對話',
                                       textAlign: TextAlign.center,
                                       style: TextStyle(color: scheme.outline),
                                     ),
@@ -496,8 +506,10 @@ class _SessionsPageState extends State<SessionsPage> {
 
   Widget _tile(SessionSummary s) => _SessionTile(
     s,
+    key: ValueKey(s.id),
     compact: widget.sidebar,
     selected: s.id == widget.selectedSessionId,
+    pointer: _pointer,
     onDelete: _client?.isOnline == true && s.state == 'idle' && s.pending == 0 && s.queued == 0 && AppScope.read(context).sessions?.isDeleting(s.id) != true
         ? () async {
             final deleted = await confirmDeleteChat(context, sessionId: s.id, title: s.displayTitle, desktopSync: s.desktopSync);
@@ -543,7 +555,7 @@ class _AgentFilterButton extends StatelessWidget {
       isSelected: selected,
       onPressed: onPressed,
       style: IconButton.styleFrom(
-        minimumSize: const Size.square(40),
+        minimumSize: const Size.square(44),
         padding: const EdgeInsets.all(6),
         visualDensity: VisualDensity.standard,
         tapTargetSize: MaterialTapTargetSize.padded,
@@ -558,7 +570,9 @@ class _AgentFilterButton extends StatelessWidget {
               ? scheme.primary
               : scheme.outlineVariant,
         ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(CodeawRadii.md),
+        ),
       ),
       icon: a == null
           ? const Icon(Icons.apps_rounded, size: 20)
@@ -583,7 +597,6 @@ class _Header extends StatelessWidget {
       text,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
         color: Theme.of(context).colorScheme.outline,
-        letterSpacing: .4,
       ),
     ),
   );
@@ -610,86 +623,199 @@ class _StatusDot extends StatelessWidget {
   }
 }
 
-class _SessionTile extends StatelessWidget {
+class _SessionTile extends StatefulWidget {
   const _SessionTile(
     this.s, {
+    super.key,
     required this.compact,
     required this.selected,
+    required this.pointer,
     required this.onTap,
     this.onDelete,
   });
   final SessionSummary s;
   final bool compact;
   final bool selected;
+
+  /// A mouse is attached: the row keeps room for its menu button, shown on hover.
+  final bool pointer;
   final VoidCallback onTap;
+
+  /// Null while the chat cannot be deleted (offline, or it is at work).
   final VoidCallback? onDelete;
 
   @override
+  State<_SessionTile> createState() => _SessionTileState();
+}
+
+/// A chat's actions are a long press away on touch, a right click with a mouse,
+/// and one Tab stop after the row on a keyboard, so no row carries a button
+/// that a stray tap can hit.
+class _SessionTileState extends State<_SessionTile> {
+  bool _hovered = false;
+  bool _focused = false;
+  Offset _pressedAt = Offset.zero;
+
+  List<PopupMenuEntry<String>> _actions(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final enabled = widget.onDelete != null;
+    final color = enabled ? scheme.error : scheme.onSurface.withValues(alpha: .38);
+    return [
+      PopupMenuItem(
+        value: 'delete',
+        enabled: enabled,
+        child: Row(
+          children: [
+            Icon(Icons.delete_outline_rounded, size: 20, color: color),
+            const SizedBox(width: 12),
+            Text('刪除聊天', style: TextStyle(color: color)),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  void _run(String? action) {
+    if (action == 'delete') widget.onDelete?.call();
+  }
+
+  Future<void> _showActions(Offset globalPosition) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    _run(
+      await showMenu<String>(
+        context: context,
+        position: RelativeRect.fromRect(
+          overlay.globalToLocal(globalPosition) & Size.zero,
+          Offset.zero & overlay.size,
+        ),
+        items: _actions(context),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final s = widget.s;
+    final compact = widget.compact;
+    final selected = widget.selected;
     final scheme = Theme.of(context).colorScheme;
     final agent = AppScope.of(context).client?.agent(s.agentId);
+    final busy = s.state == 'running' || s.state == 'requires_action';
     final badge = StateBadge(
       state: s.state,
       pending: s.pending,
       queued: s.queued,
     );
+    // Focus reached with a key shows the button too; a tap leaves none behind.
+    final keyboard =
+        _focused &&
+        FocusManager.instance.highlightMode == FocusHighlightMode.traditional;
+    final menu = widget.pointer || keyboard;
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 4, vertical: 1),
-      child: ListTile(
-        selected: selected,
-        selectedColor: scheme.onSurface,
-        selectedTileColor: scheme.primary.withValues(alpha: .1),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(CodeawRadii.md),
-        ),
-        contentPadding: EdgeInsets.fromLTRB(compact ? 10 : 12, 0, compact ? 4 : 2, 0),
-        horizontalTitleGap: compact ? 10 : 14,
-        leading: AgentAvatar(
-          agentId: s.agentId,
-          label: agent?.name,
-          size: compact ? 28 : 32,
-        ),
-        title: Text(
-          s.displayTitle,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: TextStyle(
-            fontSize: compact ? 13.5 : 15,
-            height: 1.35,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-          ),
-        ),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${s.displayLocation} · ${timeAgo(s.updatedAt)}${s.known ? '' : ' · 電腦上的對話'}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                color: scheme.outline,
-                fontSize: compact ? 11.5 : 12.5,
-                height: 1.35,
+      child: Semantics(
+        customSemanticsActions: {
+          const CustomSemanticsAction(label: '刪除聊天'): ?widget.onDelete,
+        },
+        child: MouseRegion(
+          onEnter: (_) => setState(() => _hovered = true),
+          onExit: (_) => setState(() => _hovered = false),
+          child: Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onFocusChange: (focused) => setState(() => _focused = focused),
+            child: Listener(
+              onPointerDown: (event) => _pressedAt = event.position,
+              child: GestureDetector(
+                onSecondaryTapUp: (details) =>
+                    _showActions(details.globalPosition),
+                child: ListTile(
+                  selected: selected,
+                  selectedColor: scheme.onSurface,
+                  selectedTileColor: scheme.primary.withValues(alpha: .1),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(CodeawRadii.md),
+                  ),
+                  contentPadding: EdgeInsets.fromLTRB(
+                    compact ? 10 : 12,
+                    0,
+                    menu ? 2 : (compact ? 10 : 12),
+                    0,
+                  ),
+                  horizontalTitleGap: compact ? 10 : 14,
+                  leading: AgentAvatar(
+                    agentId: s.agentId,
+                    label: agent?.name,
+                    size: compact ? 28 : 32,
+                  ),
+                  title: Text(
+                    s.displayTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: compact ? 13.5 : 15,
+                      height: 1.35,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${s.displayLocation} · ${timeAgo(s.updatedAt)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: scheme.outline,
+                          fontSize: compact ? 11.5 : 12.5,
+                          height: 1.35,
+                        ),
+                      ),
+                      if (compact && busy)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: badge,
+                        ),
+                    ],
+                  ),
+                  trailing: (!compact && busy) || menu
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!compact && busy) badge,
+                            if (menu)
+                              AnimatedOpacity(
+                                opacity: _hovered || keyboard ? 1 : 0,
+                                duration: const Duration(milliseconds: 120),
+                                child: PopupMenuButton<String>(
+                                  tooltip: '更多',
+                                  iconSize: 20,
+                                  iconColor: scheme.outline,
+                                  icon: const Icon(Icons.more_horiz_rounded),
+                                  itemBuilder: _actions,
+                                  onSelected: _run,
+                                ),
+                              ),
+                          ],
+                        )
+                      : null,
+                  onTap: widget.onTap,
+                  // Under the row, so the menu does not cover the chat it acts on.
+                  onLongPress: () {
+                    final row = context.findRenderObject()! as RenderBox;
+                    _showActions(
+                      Offset(
+                        _pressedAt.dx,
+                        row.localToGlobal(Offset(0, row.size.height)).dy,
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
-            if (compact && (s.pending > 0 || s.state != 'idle'))
-              Padding(padding: const EdgeInsets.only(top: 4), child: badge),
-          ],
+          ),
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (!compact) badge,
-            IconButton(
-              tooltip: '刪除聊天',
-              iconSize: 20,
-              color: scheme.outline,
-              icon: const Icon(Icons.delete_outline_rounded),
-              onPressed: onDelete,
-            ),
-          ],
-        ),
-        onTap: onTap,
       ),
     );
   }

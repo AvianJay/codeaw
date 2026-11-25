@@ -176,6 +176,7 @@ class _TerminalPageState extends State<TerminalPage> {
               onPressed: _selection.selection == null ? null : _copy,
             ),
             PopupMenuButton<String>(
+              tooltip: '更多',
               onSelected: (v) {
                 if (v == 'restart') unawaited(c.restart());
                 if (v == 'close') unawaited(_hub.close(c));
@@ -396,10 +397,6 @@ class _TerminalPageState extends State<TerminalPage> {
       builder: (context, padding) => ListView(
         padding: padding,
         children: [
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Text('在電腦上的資料夾開啟 shell'),
-          ),
           for (final root in _roots)
             ListTile(
               leading: const Icon(Icons.terminal_rounded),

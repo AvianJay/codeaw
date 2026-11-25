@@ -11,8 +11,10 @@ import 'dart:ui' show instantiateImageCodec;
 import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/app_state.dart';
 import 'package:codeaw/data/bridge_client.dart';
+import 'package:codeaw/data/cpa_usage.dart';
 import 'package:codeaw/data/host.dart';
 import 'package:codeaw/data/models.dart';
+import 'package:codeaw/data/remote_desktop_controller.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/sessions_model.dart';
 import 'package:codeaw/data/timeline.dart';
@@ -20,16 +22,24 @@ import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/composer.dart';
 import 'package:codeaw/ui/chat/items.dart';
 import 'package:codeaw/ui/chat/working_indicator.dart';
+import 'package:codeaw/ui/common/adaptive.dart';
 import 'package:codeaw/ui/common/app_theme.dart';
 import 'package:codeaw/ui/common/diff_view.dart';
 import 'package:codeaw/ui/common/markdown.dart';
 import 'package:codeaw/ui/pair/pair_page.dart';
+import 'package:codeaw/ui/remote_desktop/desktop_stream_settings.dart';
+import 'package:codeaw/ui/remote_desktop/remote_desktop_gesture_guide.dart';
+import 'package:codeaw/ui/sessions/new_session_sheet.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
 import 'package:codeaw/ui/settings/settings_page.dart';
+import 'package:codeaw/ui/usage/cpa_usage_page.dart';
+import 'package:codeaw/ui/workspace/workspace_shell.dart';
 import 'package:codeaw/util/diff.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Future<void> _font(String family, List<String> files) async {
@@ -45,10 +55,46 @@ final _sdkFonts = '${Platform.environment['FLUTTER_ROOT'] ?? 'C:/flutter'}/bin/c
 /// The app's own theme, with the fonts loaded below (the test binding has no platform fonts).
 ThemeData _theme(Brightness b) => codeawTheme(b, fontFamily: 'Roboto', fontFamilyFallback: const ['NotoSansTC']);
 
+/// Answers the bridge's requests from a table, for pages that ask on open.
+class _QuietClient extends BridgeClient {
+  _QuietClient(super.host, {this.replies = const {}}) {
+    status = ConnStatus.online;
+  }
+  final Map<String, Map<String, dynamic>> replies;
+
+  @override
+  void start() {}
+
+  @override
+  Future<dynamic> request(String method, [Map<String, dynamic>? params]) async => replies[method] ?? <String, dynamic>{};
+}
+
+class _DesktopStore extends HostStore {
+  @override
+  Future<Map<String, dynamic>?> loadDesktopPreferences(HostConfig host) async => null;
+
+  @override
+  Future<void> saveDesktopPreferences(HostConfig host, Map<String, dynamic> value) async {}
+}
+
+List<SessionSummary> _chats(DateTime now) => [
+  SessionSummary(id: 'claude:1', agentId: 'claude', cwd: r'D:\proj\codeaw', title: '透過 Tailscale 遠端使用 Claude Code', updatedAt: now, state: 'requires_action', pending: 1, known: true),
+  SessionSummary(id: 'codex:2', agentId: 'codex', cwd: r'D:\proj\web-app', title: '新增 nightly 建置流程', updatedAt: now.subtract(const Duration(minutes: 3)), state: 'running', queued: 1, known: true),
+  SessionSummary(id: 'claude:3', agentId: 'claude', cwd: r'D:\proj\cast-tool', title: '投影功能可行性評估', updatedAt: now.subtract(const Duration(hours: 2))),
+  SessionSummary(id: 'kimi:4', agentId: 'kimi', cwd: r'D:\proj\card-game', title: null, updatedAt: now.subtract(const Duration(days: 2)), known: true),
+  SessionSummary(id: 'claude:5', agentId: 'claude', cwd: r'D:\proj\discord-bot', title: '工單 modal 的管理員設定', updatedAt: now.subtract(const Duration(days: 9))),
+];
+
+Future<void> _settle(WidgetTester tester, [int frames = 8]) async {
+  for (var i = 0; i < frames; i++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
 class _Harness {
-  _Harness() {
+  _Harness({Map<String, Map<String, dynamic>>? replies}) {
     host = HostConfig(name: 'my-pc', urls: ['ws://100.64.0.10:7860/acp'], token: 't', deviceId: 'd_1', deviceName: 'Pixel');
-    client = BridgeClient(host)
+    client = (replies == null ? BridgeClient(host) : _QuietClient(host, replies: replies))
       ..status = ConnStatus.online
       ..bridgeHost = 'my-pc'
       ..agents = [
@@ -141,6 +187,149 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     await _capture(tester, 'new_session_dark');
+    await tester.tap(find.text('無專案聊天'));
+    await _settle(tester);
+    await _capture(tester, 'new_session_projectless_dark');
+  });
+
+  testWidgets('session row actions, offline and empty list', (tester) async {
+    final h = _Harness();
+    h.state.sessions!.sessions = _chats(DateTime.now());
+    // Touch: a long press opens the row's actions.
+    await _shoot(tester, h.wrap(const SessionsPage()), 'sessions_row_menu');
+    await tester.longPress(find.text('投影功能可行性評估'));
+    await _settle(tester);
+    expect(find.text('刪除聊天'), findsOneWidget);
+    await _capture(tester, 'sessions_row_menu');
+    await tester.tapAt(const Offset(5, 5));
+    await _settle(tester);
+    await tester.pumpWidget(const SizedBox());
+    // Mouse: the hovered row shows its menu button, the other rows keep the room for theirs.
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    await mouse.addPointer(location: Offset.zero);
+    for (final (brightness, name) in [(Brightness.light, 'sessions_hover'), (Brightness.dark, 'sessions_hover_dark')]) {
+      await tester.pumpWidget(h.wrap(const SessionsPage(), brightness: brightness));
+      await _settle(tester, 4);
+      await mouse.moveTo(tester.getCenter(find.text('新增 nightly 建置流程')));
+      await _settle(tester, 4);
+      await _capture(tester, name);
+      await mouse.moveTo(Offset.zero);
+      await tester.pumpWidget(const SizedBox());
+    }
+    await mouse.removePointer();
+    await tester.pump();
+
+    h.client
+      ..status = ConnStatus.offline
+      ..lastError = '連不上 ws://100.64.0.10:7860/acp';
+    await _shoot(tester, h.wrap(const SessionsPage()), 'sessions_offline');
+    await tester.pumpWidget(const SizedBox());
+    h.client
+      ..status = ConnStatus.online
+      ..lastError = null;
+    h.state.sessions!.sessions = [];
+    await _shoot(tester, h.wrap(const SessionsPage(), brightness: Brightness.dark), 'sessions_empty_dark');
+  });
+
+  testWidgets('host sheet', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final state = AppState(HostStore(), openSession: (_) {}, createClient: _QuietClient.new);
+    addTearDown(state.dispose);
+    await state.setHost(HostConfig(name: 'office-mac', urls: ['wss://office-mac.tail1234.ts.net/acp'], token: 't', deviceId: 'd_2', deviceName: 'Pixel'));
+    await state.setHost(HostConfig(name: 'my-pc', urls: ['ws://100.64.0.10:7860/acp'], token: 't', deviceId: 'd_1', deviceName: 'Pixel'));
+    for (final (brightness, name) in [(Brightness.light, 'host_sheet'), (Brightness.dark, 'host_sheet_dark')]) {
+      await _shoot(
+        tester,
+        AppScope(state: state, child: MaterialApp(debugShowCheckedModeBanner: false, theme: _theme(brightness), home: const SessionsPage())),
+        name,
+      );
+      await tester.tap(find.byTooltip('切換電腦'));
+      await _settle(tester);
+      await _capture(tester, name);
+      await tester.pumpWidget(const SizedBox());
+    }
+  });
+
+  testWidgets('workspace home on a tablet', (tester) async {
+    final h = _Harness();
+    await _shoot(tester, h.wrap(const WorkspaceHome(), brightness: Brightness.dark), 'workspace_home_dark', size: const Size(2048, 1536), ratio: 2);
+  });
+
+  testWidgets('usage: not connected, and with accounts', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final empty = CpaController(request: (_, _) async => {})..initialized = true;
+    await _shoot(tester, MaterialApp(debugShowCheckedModeBanner: false, theme: _theme(Brightness.light), home: CpaUsagePage(controller: empty)), 'usage_empty');
+    await tester.pumpWidget(const SizedBox());
+    Map<String, dynamic> account(String id, String provider) => {'id': id, 'provider': provider, 'label': '$id@example.com', 'plan': 'Plus', 'status': 'active', 'requests': 42};
+    CpaQuota quota(double weekly, double fiveHour) => CpaQuota.fromJson({
+      'status': 'ok',
+      'windows': [
+        {'id': 'five-hour', 'label': '5 小時', 'remainingPercent': fiveHour, 'resetAt': DateTime.now().add(const Duration(hours: 2)).toUtc().toIso8601String()},
+        {'id': 'weekly', 'label': '每週', 'remainingPercent': weekly, 'resetAt': DateTime.now().add(const Duration(days: 5)).toUtc().toIso8601String()},
+      ],
+    });
+    final c = CpaController(request: (_, _) async => {})
+      ..initialized = true
+      ..settings = const CpaSettings(endpoint: 'https://cpa.example.com', managementKey: 'k')
+      ..updatedAt = DateTime.now()
+      ..accounts = [CpaAccount.fromJson(account('work', 'codex')), CpaAccount.fromJson(account('home', 'codex')), CpaAccount.fromJson(account('me', 'claude'))];
+    c.quotas.addAll({'work': quota(97, 100), 'home': quota(23, 50), 'me': quota(81, 12)});
+    for (final (brightness, name) in [(Brightness.light, 'usage'), (Brightness.dark, 'usage_dark')]) {
+      await _shoot(tester, MaterialApp(debugShowCheckedModeBanner: false, theme: _theme(brightness), home: CpaUsagePage(controller: c)), name);
+      await tester.pumpWidget(const SizedBox());
+    }
+    empty.dispose();
+    c.dispose();
+  });
+
+  testWidgets('remote desktop sheets: quality and the gesture guide', (tester) async {
+    final h = _Harness();
+    final desktop = RemoteDesktopController(h.host, _DesktopStore(), dataSaver: () => false)
+      ..hardware = true
+      ..smoothAvailable = true;
+    addTearDown(desktop.dispose);
+    await _shoot(
+      tester,
+      h.wrap(
+        Scaffold(
+          appBar: AppBar(title: const Text('遠端桌面')),
+          body: Builder(
+            builder: (context) => Row(children: [
+              TextButton(
+                onPressed: () => showAdaptiveSheet<DesktopStreamPreferences>(context: context, builder: (_) => DesktopStreamSettings(controller: desktop)),
+                child: const Text('開啟設定'),
+              ),
+              TextButton(
+                onPressed: () => showAdaptiveSheet<void>(context: context, builder: (_) => const RemoteDesktopGestureGuide()),
+                child: const Text('開啟教學'),
+              ),
+            ]),
+          ),
+        ),
+        brightness: Brightness.dark,
+      ),
+      'desktop_quality_dark',
+    );
+    await tester.tap(find.text('開啟設定'));
+    await _settle(tester);
+    await _capture(tester, 'desktop_quality_dark');
+    await tester.tap(find.text('取消'));
+    await _settle(tester);
+    await tester.tap(find.text('開啟教學'));
+    await _settle(tester);
+    await _capture(tester, 'desktop_gestures_dark');
+  });
+
+  testWidgets('folder picker roots', (tester) async {
+    final h = _Harness(replies: {
+      '_codeaw/workspaces/list': {
+        'roots': [
+          {'path': r'D:\proj\codeaw', 'name': 'codeaw', 'source': 'config'},
+          {'path': r'D:\proj\web-app', 'name': 'web-app', 'source': 'recent'},
+        ],
+      },
+    });
+    await _shoot(tester, h.wrap(const FolderPickerPage(), brightness: Brightness.dark), 'folder_picker_dark');
   });
 
   testWidgets('tablet sidebar', (tester) async {
@@ -166,8 +355,16 @@ void main() {
   });
 
   testWidgets('settings', (tester) async {
-    final h = _Harness();
-    await _shoot(tester, h.wrap(const SettingsPage(), brightness: Brightness.dark), 'settings_dark');
+    final h = _Harness(replies: {
+      '_codeaw/notify/info': {'enabled': true, 'server': 'https://ntfy.sh', 'topic': 'codeaw-7f3a9c'},
+    });
+    for (final (brightness, name) in [(Brightness.light, 'settings'), (Brightness.dark, 'settings_dark')]) {
+      await _shoot(tester, h.wrap(const SettingsPage(), brightness: brightness), name);
+      await tester.dragFrom(const Offset(200, 700), const Offset(0, -640));
+      await _settle(tester);
+      await _capture(tester, '${name}_bottom');
+      await tester.pumpWidget(const SizedBox());
+    }
   });
 
   testWidgets('chat with tools, permission and plan', (tester) async {
@@ -236,6 +433,19 @@ void main() {
     final top = find.byType(TimelineItemView).evaluate().map((e) => tester.getRect(find.byWidget(e.widget)).top).reduce((a, b) => a < b ? a : b);
     expect(top, greaterThan(tester.getRect(find.text('計畫 1/3')).bottom));
     await _capture(tester, 'chat_dark_top');
+    await tester.pumpWidget(const SizedBox());
+    // A refused send, as the bridge words it, and a message being edited.
+    c.onMessage(SessionMessage('_codeaw/event', {'sessionId': 'claude:abc', 'event': {'type': 'state', 'state': 'idle', 'queued': 0}}));
+    c.error = 'Invalid request: Claude Desktop is working on this chat right now. Wait for that turn to finish, then send again.';
+    c.timeline.flush();
+    await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'chat_error');
+    await tester.pumpWidget(const SizedBox());
+    c
+      ..error = null
+      ..editing = c.timeline.items.whereType<MessageItem>().firstWhere((m) => m.role == MessageRole.user)
+      ..draft = 'slow 300，再跑一次';
+    await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'chat_edit_dark');
+    c.editing = null;
     await tester.pumpWidget(const SizedBox());
     h.state.hub!.dispose();
     h.state.sessions!.dispose();
@@ -360,6 +570,12 @@ void main() {
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'turn_summary');
     expect(find.byTooltip('複製回覆'), findsNWidgets(2));
     await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd), brightness: Brightness.dark), 'turn_summary_dark');
+    await tester.pumpWidget(const SizedBox());
+    // A bridge that can branch a chat: every sent message gets its edit button.
+    h.client.supportsPromptEditing = true;
+    c.attached = true;
+    await _shoot(tester, h.wrap(ChatPage(sessionId: c.sessionId, cwd: c.cwd)), 'turn_summary_editable');
+    expect(find.byTooltip('編輯並從這裡重新開始'), findsNWidgets(2));
     await tester.pumpWidget(const SizedBox());
     h.state.hub!.dispose();
     h.state.sessions!.dispose();

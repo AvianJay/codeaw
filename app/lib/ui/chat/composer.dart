@@ -1023,13 +1023,14 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                                     )
                                   : null,
                               decoration: InputDecoration(
+                                // What sending does now; `@` and `/` are in the + menu.
                                 hintText: editing
-                                    ? '修改訊息，送出後從這裡重新開始'
+                                    ? '修改訊息'
                                     : running
                                     ? (agent?.steering ?? false
-                                          ? '補充指示，插入目前回合'
-                                          : '下一則，排在目前回合後')
-                                    : '輸入訊息，@ 檔案、/ 指令',
+                                          ? '補充指示'
+                                          : '排入下一則')
+                                    : '輸入訊息',
                                 hintMaxLines: 1,
                                 filled: true,
                                 fillColor:
@@ -1098,6 +1099,9 @@ class _ComposerState extends State<Composer> with WidgetsBindingObserver {
                             child: IconButton.filled(
                               style: IconButton.styleFrom(
                                 shape: const CircleBorder(),
+                                // The theme's icon colour would otherwise
+                                // replace the filled button's own.
+                                foregroundColor: scheme.onPrimary,
                                 disabledBackgroundColor:
                                     scheme.surfaceContainerHighest,
                                 disabledForegroundColor: scheme.outline,
@@ -1198,8 +1202,8 @@ class _EditBanner extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               replace
-                  ? '從這則訊息重新開始，之後的內容捨棄；原聊天會從 Codeaw 移除（agent 的歷史檔仍留在電腦上）。電腦上的檔案變更不會還原。'
-                  : '在新的聊天從這則訊息重新開始，原聊天保留。電腦上的檔案變更不會還原。',
+                  ? '原聊天會從 Codeaw 移除。電腦上的檔案變更不會還原。'
+                  : '原聊天保留。電腦上的檔案變更不會還原。',
               style: style,
             ),
           ],
@@ -1802,7 +1806,6 @@ class _OptionSheet extends StatelessWidget {
               ),
               _OptionRow(
                 name: '自訂模型名稱',
-                summary: '輸入代理支援的模型 ID',
                 leading: Icons.edit_outlined,
                 selected: false,
                 onTap: () => _custom(context),
@@ -1990,11 +1993,7 @@ class _CustomModelDialogState extends State<_CustomModelDialog> {
         autocorrect: false,
         enableSuggestions: false,
         textInputAction: TextInputAction.done,
-        decoration: const InputDecoration(
-          labelText: '模型名稱',
-          helperText: '請輸入目前代理支援的模型 ID。',
-          helperMaxLines: 2,
-        ),
+        decoration: const InputDecoration(labelText: '模型 ID'),
         onSubmitted: (_) => _submit(),
       ),
     ),

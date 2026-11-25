@@ -299,8 +299,17 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('切換電腦'));
       await tester.pumpAndSettle();
-      expect(find.text('目前電腦 · second:7860'), findsOneWidget);
+      // The computer in use is the selected row with the check mark.
+      expect(find.text('second:7860'), findsOneWidget);
       expect(find.byIcon(Icons.check_rounded), findsOneWidget);
+      expect(
+        tester.widget<ListTile>(find.widgetWithText(ListTile, 'second:7860')).selected,
+        isTrue,
+      );
+      expect(
+        tester.widget<ListTile>(find.widgetWithText(ListTile, 'first:7860')).selected,
+        isFalse,
+      );
 
       await tester.tap(find.text('first'));
       await tester.pumpAndSettle();

@@ -10,7 +10,9 @@ import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/sessions_model.dart';
 import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/sessions/sessions_page.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
@@ -159,6 +161,12 @@ _show(
   return (app: app, client: client, cache: cache, router: router);
 }
 
+/// A chat's actions open with a long press on its row.
+Future<void> _openActions(WidgetTester tester, String title) async {
+  await tester.longPress(find.text(title));
+  await tester.pumpAndSettle();
+}
+
 void main() {
   for (final size in [
     const Size(320, 640),
@@ -169,7 +177,10 @@ void main() {
       'list deletion requires confirmation and stays deleted at $size',
       (tester) async {
         final fixture = await _show(tester, size: size);
-        await tester.tap(find.byTooltip('刪除聊天').first);
+        // No row carries a delete button that a stray tap could hit.
+        expect(find.byIcon(Icons.delete_outline_rounded), findsNothing);
+        await _openActions(tester, '要刪除的聊天');
+        await tester.tap(find.text('刪除聊天'));
         await tester.pumpAndSettle();
         expect(find.text('刪除聊天？'), findsOneWidget);
         expect(find.textContaining('Codex 桌面上的對話會保留'), findsOneWidget);
@@ -180,7 +191,8 @@ void main() {
         await tester.tap(find.text('取消'));
         await tester.pumpAndSettle();
         expect(fixture.app.sessions!.byId('codex:one'), isNotNull);
-        await tester.tap(find.byTooltip('刪除聊天').first);
+        await _openActions(tester, '要刪除的聊天');
+        await tester.tap(find.text('刪除聊天'));
         await tester.pumpAndSettle();
         await tester.tap(find.text('刪除'));
         await tester.pumpAndSettle();
@@ -210,7 +222,8 @@ void main() {
   ) async {
     final fixture = await _show(tester);
     fixture.client.failDelete = true;
-    await tester.tap(find.byTooltip('刪除聊天').first);
+    await _openActions(tester, '要刪除的聊天');
+    await tester.tap(find.text('刪除聊天'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('刪除'));
     await tester.pumpAndSettle();
@@ -237,10 +250,77 @@ void main() {
   });
   testWidgets('running chat cannot be deleted from the list', (tester) async {
     final fixture = await _show(tester, state: 'running');
-    final button = tester.widget<IconButton>(
-      find.widgetWithIcon(IconButton, Icons.delete_outline_rounded).first,
+    await _openActions(tester, '要刪除的聊天');
+    final item = tester.widget<PopupMenuItem<String>>(
+      find.widgetWithText(PopupMenuItem<String>, '刪除聊天'),
     );
-    expect(button.onPressed, isNull);
+    expect(item.enabled, isFalse);
+    await tester.tap(find.text('刪除聊天'));
+    await tester.pumpAndSettle();
+    expect(find.text('刪除聊天？'), findsNothing);
     expect(fixture.client.calls.where((s) => s == 'session/delete'), isEmpty);
+  });
+  testWidgets('a mouse deletes from the right-click menu or the row button', (
+    tester,
+  ) async {
+    final fixture = await _show(tester, size: const Size(1280, 800));
+    expect(find.byTooltip('更多'), findsNothing);
+    final row = tester.getCenter(find.text('要刪除的聊天'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    addTearDown(mouse.removePointer);
+    await mouse.addPointer(location: row);
+    await mouse.moveTo(row);
+    await tester.pumpAndSettle();
+    // With a mouse every row keeps room for its button; only the hovered one shows it.
+    expect(find.byTooltip('更多'), findsNWidgets(2));
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.ancestor(of: find.byTooltip('更多').first, matching: find.byType(AnimatedOpacity)),
+          )
+          .opacity,
+      1,
+    );
+    expect(
+      tester
+          .widget<AnimatedOpacity>(
+            find.ancestor(of: find.byTooltip('更多').last, matching: find.byType(AnimatedOpacity)),
+          )
+          .opacity,
+      0,
+    );
+    await tester.tap(find.byTooltip('更多').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('刪除聊天'));
+    await tester.pumpAndSettle();
+    expect(find.text('刪除聊天？'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pumpAndSettle();
+
+    await tester.tapAt(row, buttons: kSecondaryMouseButton, kind: PointerDeviceKind.mouse);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('刪除聊天'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('刪除'));
+    await tester.pumpAndSettle();
+    expect(fixture.client.calls.where((s) => s == 'session/delete'), hasLength(1));
+    expect(fixture.app.sessions!.byId('codex:one'), isNull);
+    expect(tester.takeException(), isNull);
+  });
+  testWidgets('a keyboard reaches the row button with Tab', (tester) async {
+    await _show(tester);
+    expect(find.byTooltip('更多'), findsNothing);
+    // Search field, the two filter chips, then the first chat.
+    for (var i = 0; i < 40 && find.byTooltip('更多').evaluate().isEmpty; i++) {
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pumpAndSettle();
+    }
+    expect(find.byTooltip('更多'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+    await tester.pumpAndSettle();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(find.text('刪除聊天'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

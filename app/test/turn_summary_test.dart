@@ -155,7 +155,8 @@ void main() {
       await tester.pumpWidget(
         _wrap(WorkingIndicator(timeline: t, now: () => now)),
       );
-      expect(find.text('— TPS'), findsOneWidget);
+      // Nothing written yet, so there is no speed to show.
+      expect(find.textContaining('TPS'), findsNothing);
       _message(t, 'm1', 'abcdefgh');
       now = _start.add(const Duration(seconds: 2));
       await tester.pump(const Duration(seconds: 1));
@@ -266,7 +267,7 @@ void main() {
         ),
       );
       expect(find.text('耗時 2 小時 3 分 4 秒'), findsOneWidget);
-      expect(find.text('— TPS'), findsOneWidget);
+      expect(find.textContaining('TPS'), findsNothing);
       expect(
       tester.widget<IconButton>(find.widgetWithIcon(IconButton, Icons.copy_rounded)).onPressed,
         isNull,

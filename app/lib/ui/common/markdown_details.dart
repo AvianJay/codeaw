@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../data/bridge_client.dart';
+import 'app_theme.dart';
 import 'markdown.dart';
 
 /// A Markdown container, so tags in code fences stay literal and unfinished
@@ -147,7 +148,7 @@ class _MarkdownDetailsState extends State<MarkdownDetails> {
       margin: const EdgeInsets.symmetric(vertical: 4),
       decoration: BoxDecoration(
         border: Border.all(color: scheme.outlineVariant),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(CodeawRadii.md),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -156,7 +157,7 @@ class _MarkdownDetailsState extends State<MarkdownDetails> {
             button: true,
             expanded: expanded,
             child: InkWell(
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(CodeawRadii.md),
               onTap: () => setState(() => _expanded = !expanded),
               child: Padding(
                 padding: const EdgeInsets.all(10),

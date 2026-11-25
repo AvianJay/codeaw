@@ -16,6 +16,7 @@ import '../../util/diff.dart';
 import '../common/app_theme.dart';
 import '../common/code_view.dart';
 import '../common/diff_view.dart';
+import '../common/error_text.dart';
 import '../common/link_text.dart';
 import '../common/markdown.dart';
 import '../common/image_preview.dart';
@@ -82,7 +83,7 @@ class TimelineItemView extends StatelessWidget {
         ElicitationItem e => ElicitationCard(e, controller: controller),
         NoticeItem n => _Note(icon: Icons.info_outline_rounded, text: n.description == null ? n.title : '${n.title}\n${n.description}'),
         ErrorItem e => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            _Note(icon: Icons.error_outline_rounded, text: e.message, error: true),
+            _Note(icon: Icons.error_outline_rounded, text: errorText(e.message), error: true),
             if (reportsPolicyBlock(e.message)) CodexPolicyHint(controller),
           ]),
         StopItem s => _Note(icon: Icons.stop_circle_outlined, text: stopReasonLabel(s.stopReason)),
@@ -175,7 +176,8 @@ class UserMessageView extends StatelessWidget {
                       final checking = c.checkingEdit == m.mid;
                       return IconButton(
                         tooltip: '編輯並從這裡重新開始',
-                        visualDensity: VisualDensity.compact,
+                        // A small mark with a 44 px target.
+                        visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
                         constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                         iconSize: 16,
                         onPressed: c.checkingEdit == null && !c.submittingEdit ? () => c.startEdit(m) : null,
@@ -191,7 +193,7 @@ class UserMessageView extends StatelessWidget {
                     builder: (context, _) => TextButton.icon(
                       onPressed: controller!.client.isOnline && !controller!.removingPrompt(m.promptId!)
                           ? () => controller!.removePrompt(m) : null,
-                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(0, 40)),
+                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: const Size(0, 44)),
                       icon: const Icon(Icons.close_rounded, size: 16),
                       label: const Text('取消待送訊息', style: TextStyle(fontSize: 12)),
                     ),
@@ -376,7 +378,7 @@ class BlockImage extends StatelessWidget {
     return DeferredImage(
       provider: provider,
       builder: (context) => ClipRRect(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(CodeawRadii.md),
         child: InkWell(
           onTap: () => showImagePreview(context, provider),
           child: ConstrainedBox(

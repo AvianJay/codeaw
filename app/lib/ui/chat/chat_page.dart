@@ -10,6 +10,7 @@ import '../../data/timeline.dart';
 import '../../data/tool_display.dart';
 import '../common/adaptive.dart';
 import '../common/app_theme.dart';
+import '../common/error_text.dart';
 import '../common/widgets.dart';
 import 'agent_cards.dart';
 import 'composer.dart';
@@ -77,7 +78,7 @@ class _ChatPageState extends State<ChatPage> {
     _c = hub.open(widget.sessionId, cwd: cwd, projectless: summary?.projectless);
     _toasts = _c!.toasts.listen((msg) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(errorText(msg))));
       }
     });
     state.client?.setForeground(true, activeSessionId: widget.sessionId);
@@ -186,6 +187,7 @@ class _ChatPageState extends State<ChatPage> {
                       onPressed: c.cwd.isEmpty ? null : () => context.push('/git?cwd=${Uri.encodeQueryComponent(c.cwd)}'),
                     ),
                   PopupMenuButton<String>(
+                    tooltip: '更多',
                     onSelected: (v) async {
                       switch (v) {
                         case 'usage':
@@ -246,13 +248,13 @@ class _ChatPageState extends State<ChatPage> {
                                     child: Row(children: [
                                       const Icon(Icons.sync_rounded, size: 16),
                                       const SizedBox(width: 8),
-                                      Expanded(child: Text('等待桌面恢復連線，歷史與草稿已保留。若持續未連線，請在 Codex 桌面開啟此聊天。', style: TextStyle(color: scheme.onSecondaryContainer, fontSize: 12))),
+                                      Expanded(child: Text('等待桌面恢復連線。一直連不上時，請在 Codex 桌面開啟這個聊天。', style: TextStyle(color: scheme.onSecondaryContainer, fontSize: 12))),
                                     ]),
                                   ),
                                 ),
                               if (c.error != null)
                                 MaterialBanner(
-                                  content: Text(c.error!),
+                                  content: Text(errorText(c.error!)),
                                   actions: [TextButton(onPressed: c.attach, child: const Text('重試'))],
                                 ),
                               if (c.timeline.plan != null && c.timeline.plan!.isNotEmpty) _PlanPanel(c.timeline.plan!),
@@ -334,7 +336,14 @@ class _TimelineList extends StatelessWidget {
               ),
       );
     }
-    final extra = running ? 1 : 0;
+    // The request bar under the list already says what the turn waits for; the
+    // indicator stays only when it also has a queue or thoughts to show.
+    final asked =
+        controller.timeline.state == 'requires_action' &&
+        controller.pending.isNotEmpty &&
+        controller.timeline.queued == 0 &&
+        !controller.thoughtSummary;
+    final extra = running && !asked ? 1 : 0;
     // Newest at the bottom: a reversed list keeps the view pinned to the end while streaming.
     return ScrollToLatest(
       key: ValueKey(controller.sessionId),
@@ -348,7 +357,7 @@ class _TimelineList extends StatelessWidget {
         padding: padding,
         itemCount: items.length + extra + (older ? 1 : 0),
         itemBuilder: (context, index) {
-          if (running && index == 0) {
+          if (extra == 1 && index == 0) {
             return WorkingIndicator(
               key: ValueKey('working:${controller.sessionId}'),
               timeline: controller.timeline,

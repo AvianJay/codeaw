@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/remote_desktop_controller.dart';
+import '../common/app_theme.dart';
 
 @immutable
 class DesktopStreamPreferences {
@@ -97,15 +98,8 @@ class _DesktopStreamSettingsState extends State<DesktopStreamSettings> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                '畫質與 FPS',
-                style: theme.textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('調整這台電腦的遠端桌面畫面。', style: supporting),
-              const SizedBox(height: 24),
+              Text('畫質與 FPS', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 20),
               DropdownButtonFormField<String>(
                 initialValue: _quality,
                 isExpanded: true,
@@ -163,8 +157,9 @@ class _DesktopStreamSettingsState extends State<DesktopStreamSettings> {
               const SizedBox(height: 20),
               DecoratedBox(
                 decoration: BoxDecoration(
-                  color: colors.surfaceContainerLow,
-                  borderRadius: BorderRadius.circular(16),
+                  // A step above the sheet's own surface, so the box shows.
+                  color: colors.surfaceContainerHigh,
+                  borderRadius: BorderRadius.circular(CodeawRadii.lg),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(16),
@@ -175,15 +170,16 @@ class _DesktopStreamSettingsState extends State<DesktopStreamSettings> {
                         '套用後：${mode.label} · 最高 $_effectiveFps FPS',
                         style: theme.textTheme.titleSmall,
                       ),
-                      const SizedBox(height: 6),
-                      Text(
-                        _preferredMode == null
-                            ? c.dataSaver()
-                                  ? '已開啟省流量，畫質會自動選擇低流量。'
-                                  : '自動設定會跟隨全域省流量選項。'
-                            : '手動選擇畫質會優先於全域省流量設定。',
-                        style: supporting,
-                      ),
+                      // Plain automatic is already described under the menu.
+                      if (_preferredMode != null || c.dataSaver()) ...[
+                        const SizedBox(height: 6),
+                        Text(
+                          _preferredMode == null
+                              ? '已開啟省流量，畫質會自動選擇低流量。'
+                              : '手動選擇畫質會優先於全域省流量設定。',
+                          style: supporting,
+                        ),
+                      ],
                       if (_preferredMode == DesktopMode.smooth &&
                           !c.smoothAvailable) ...[
                         const SizedBox(height: 6),

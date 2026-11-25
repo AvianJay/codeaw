@@ -387,9 +387,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('連線資訊', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              const Text('畫質與 FPS 預設自動調整，也可在選單手動設定。控制權限會自動選擇。'),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               for (final entry in {
                 '畫質設定': c.preferredMode?.label ?? '自動',
                 '目前畫質': c.actualMode.label,

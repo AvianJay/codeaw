@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../app_state.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 import '../sessions/host_sheet.dart';
 import '../sessions/new_session_sheet.dart';
 import '../sessions/sessions_page.dart';
@@ -158,6 +159,11 @@ class _WorkspaceShellState extends State<WorkspaceShell> {
                           ListenableBuilder(
                             listenable: state.client!,
                             builder: (context, _) => IconButton.filled(
+                              // The theme's icon colour would otherwise
+                              // replace the filled button's own.
+                              style: IconButton.styleFrom(
+                                foregroundColor: scheme.onPrimary,
+                              ),
                               tooltip: '新對話',
                               icon: const Icon(Icons.add_rounded),
                               onPressed: state.client!.isOnline
@@ -251,7 +257,7 @@ class WorkspaceHome extends StatelessWidget {
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
                     color: scheme.primaryContainer.withValues(alpha: .5),
-                    borderRadius: BorderRadius.circular(28),
+                    borderRadius: BorderRadius.circular(CodeawRadii.xl),
                   ),
                   child: Icon(
                     Icons.forum_outlined,
@@ -261,18 +267,11 @@ class WorkspaceHome extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  '準備好開始了嗎？',
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                          '從左側選擇對話，或建立專案／無專案聊天。',
+                  '尚未開啟對話',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: scheme.onSurfaceVariant, height: 1.6),
+                  style: Theme.of(context).textTheme.titleLarge,
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 20),
                 ListenableBuilder(
                   listenable: client,
                   builder: (context, _) => FilledButton.icon(

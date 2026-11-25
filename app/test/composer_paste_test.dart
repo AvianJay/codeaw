@@ -7,6 +7,7 @@ import 'package:codeaw/data/models.dart';
 import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/acp/jsonrpc.dart';
 import 'package:codeaw/ui/chat/composer.dart';
+import 'package:codeaw/ui/common/app_theme.dart';
 import 'package:codeaw/util/image_clipboard.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
@@ -128,7 +129,9 @@ Widget _app(
   SessionController controller,
   _Clipboard clipboard, {
   Future<List<XFile>> Function()? pickFiles,
+  ThemeData? theme,
 }) => MaterialApp(
+  theme: theme,
   home: Scaffold(
     body: Column(
       children: [
@@ -154,6 +157,7 @@ Future<({SessionController controller, _Client client})> _show(
   _Clipboard clipboard, {
   bool images = true,
   Future<List<XFile>> Function()? pickFiles,
+  ThemeData? theme,
 }) async {
   tester.view.physicalSize = const Size(834, 1112);
   tester.view.devicePixelRatio = 1;
@@ -164,7 +168,9 @@ Future<({SessionController controller, _Client client})> _show(
     controller.dispose();
     client.dispose();
   });
-  await tester.pumpWidget(_app(controller, clipboard, pickFiles: pickFiles));
+  await tester.pumpWidget(
+    _app(controller, clipboard, pickFiles: pickFiles, theme: theme),
+  );
   await tester.pumpAndSettle();
   return (controller: controller, client: client);
 }
@@ -728,4 +734,32 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     next.dispose();
   });
+
+  for (final brightness in Brightness.values) {
+    testWidgets(
+      'a ready send button draws its arrow in the fill\'s own colour, ${brightness.name}',
+      (tester) async {
+        final theme = codeawTheme(brightness);
+        await _show(tester, _Clipboard(), theme: theme);
+        await tester.enterText(_input, 'hello');
+        // The button fades from its disabled colours.
+        await tester.pumpAndSettle();
+        final arrow = find.byIcon(Icons.arrow_upward_rounded);
+        expect(
+          tester
+              .widget<IconButton>(
+                find.ancestor(of: arrow, matching: find.byType(IconButton)),
+              )
+              .onPressed,
+          isNotNull,
+        );
+        // Not the theme's general icon colour, which is close to the fill.
+        expect(
+          IconTheme.of(tester.element(arrow)).color,
+          theme.colorScheme.onPrimary,
+        );
+        await tester.pumpWidget(const SizedBox());
+      },
+    );
+  }
 }

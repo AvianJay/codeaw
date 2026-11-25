@@ -65,7 +65,9 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                 },
               };
         final startedAt = timeline.turnStartedAt;
-        final elapsed = startedAt == null ? Duration.zero : widget.now().difference(startedAt);
+        final now = widget.now();
+        final elapsed = formatTurnElapsed(startedAt == null ? Duration.zero : now.difference(startedAt));
+        final turn = timeline.currentTurn;
         final detail = !waiting && tool?.title?.trim().isNotEmpty == true ? tool!.displayTitle : null;
         return Padding(
           padding: const EdgeInsets.fromLTRB(12, 6, 12, 10),
@@ -90,21 +92,37 @@ class _WorkingIndicatorState extends State<WorkingIndicator> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Wrap(
-                        spacing: 12,
-                        runSpacing: 4,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          Text(
-                            label,
-                            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: color),
-                          ),
-                          TurnSpeed(turn: timeline.currentTurn, now: widget.now()),
-                          Text(
-                            '已處理 ${formatTurnElapsed(elapsed)}',
-                            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant, fontFeatures: const [FontFeature.tabularFigures()]),
-                          ),
-                        ],
+                      // The status leads; the speed and the timer sit at the far end, or on
+                      // the next line when large text leaves no room. Nothing is being
+                      // timed while the turn waits for an answer.
+                      SizedBox(
+                        width: double.infinity,
+                        child: Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          spacing: 12,
+                          runSpacing: 4,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            Text(
+                              label,
+                              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: color),
+                            ),
+                            if (!waiting)
+                              Wrap(
+                                spacing: 10,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  if (turn?.tokensPerSecondAt(now) != null) TurnSpeed(turn: turn, now: now),
+                                  Text(
+                                    elapsed,
+                                    semanticsLabel: '已處理 $elapsed',
+                                    style: TextStyle(fontSize: 12, color: scheme.outline, fontFeatures: const [FontFeature.tabularFigures()]),
+                                  ),
+                                ],
+                              ),
+                          ],
+                        ),
                       ),
                       if (detail != null)
                         Padding(

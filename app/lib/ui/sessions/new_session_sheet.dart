@@ -276,9 +276,11 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
             if (_projectless)
               Text(
                 state.client?.supportsProjectless == true
-                    ? '直接聊天，不用選資料夾。附件和產生的檔案會保存在電腦上這個聊天的獨立資料夾。'
+                    ? '附件和產生的檔案會存到電腦上這個聊天專用的資料夾。'
                     : '請先更新電腦上的 bridge，才能使用無專案聊天。',
                 style: TextStyle(
+                  fontSize: 13,
+                  height: 1.4,
                   color: state.client?.supportsProjectless == true
                       ? scheme.onSurfaceVariant
                       : scheme.error,
@@ -323,13 +325,6 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontSize: 11.5),
                             ),
-                            secondary: Icon(
-                              r.source == 'recent'
-                                  ? Icons.history_rounded
-                                  : Icons.folder_special_outlined,
-                              size: 18,
-                              color: scheme.outline,
-                            ),
                           ),
                         if (_cwd != null && !_roots.any((r) => r.path == _cwd))
                           RadioListTile<String>(
@@ -343,6 +338,8 @@ class _NewSessionSheetState extends State<_NewSessionSheet> {
                             title: Text(folderName(_cwd!)),
                             subtitle: Text(
                               _cwd!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(fontSize: 11.5),
                             ),
                           ),
@@ -533,10 +530,15 @@ class _FolderPickerPageState extends State<FolderPickerPage> {
                   ),
                 if (_path == null) ...[
                   if (!_allowAllPaths)
-                    const Padding(
-                      padding: EdgeInsets.all(16),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
                       child: Text(
-                        '要瀏覽其他磁碟，請在電腦 bridge 設定啟用「允許已配對裝置瀏覽所有磁碟與資料夾」。這會讓所有已配對裝置存取此帳號可讀取的檔案；僅在信任配對裝置時啟用。',
+                        '要瀏覽其他磁碟，請在電腦的 bridge 設定允許瀏覽所有磁碟與資料夾。開啟後，每台已配對的裝置都能讀取。',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.4,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
                     ),
                   if (_roots.isEmpty)

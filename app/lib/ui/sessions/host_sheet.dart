@@ -72,8 +72,9 @@ class _HostSheetState extends State<_HostSheet> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    // The check mark already says which one is in use.
                     subtitle: Text(
-                      '${identical(state.host, host) ? '目前電腦 · ' : ''}${HostConfig.httpBase(host.urls.first).authority}',
+                      HostConfig.httpBase(host.urls.first).authority,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -96,7 +97,6 @@ class _HostSheetState extends State<_HostSheet> {
           ListTile(
             leading: const Icon(Icons.add_rounded),
             title: const Text('新增電腦'),
-            subtitle: const Text('掃描 QR code 或輸入配對碼'),
             onTap: _switching == null
                 ? () {
                     final router = GoRouter.of(context);

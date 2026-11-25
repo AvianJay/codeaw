@@ -86,7 +86,7 @@ class ConnectionBanner extends StatelessWidget {
                     child: Text(
                       connecting
                           ? '連線中…'
-                          : '離線${client.lastError != null ? '：${client.lastError}' : ''}（點一下重試）',
+                          : '離線${client.lastError != null ? '：${client.lastError}' : ''}',
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
@@ -97,6 +97,18 @@ class ConnectionBanner extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // The whole strip retries; the word says so where a button would be.
+                  if (!connecting) ...[
+                    const SizedBox(width: 12),
+                    Text(
+                      '重試',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: scheme.onErrorContainer,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),

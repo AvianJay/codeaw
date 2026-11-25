@@ -63,7 +63,7 @@ class _UpdatePageState extends State<UpdatePage> {
                     : (value) => updater.setChannel(value.single),
               ),
               const SizedBox(height: 8),
-              const Text('release：正式版本。nightly：最新開發版本，可能較不穩定。'),
+              const Text('nightly 是最新的開發版本，可能較不穩定。'),
               const SizedBox(height: 24),
               if (!updater.supported) ...[
                 const Text('網頁版隨 bridge 更新。手機安裝包可以從發佈頁下載。'),

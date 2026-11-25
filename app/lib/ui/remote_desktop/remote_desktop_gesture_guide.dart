@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../common/app_theme.dart';
+
 class RemoteDesktopGestureGuide extends StatelessWidget {
   const RemoteDesktopGestureGuide({super.key});
 
@@ -20,7 +22,7 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: colors.primaryContainer,
-                  borderRadius: BorderRadius.circular(18),
+                  borderRadius: BorderRadius.circular(CodeawRadii.lg),
                 ),
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -39,18 +41,12 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-            const SizedBox(height: 6),
-            Text(
-              '在畫面上滑動手指來移動游標，再用手勢點擊、捲動與拖曳。',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: colors.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             DecoratedBox(
               decoration: BoxDecoration(
-                color: colors.surfaceContainerLow,
-                borderRadius: BorderRadius.circular(20),
+                // A step above the sheet's own surface, so the box shows.
+                color: colors.surfaceContainer,
+                borderRadius: BorderRadius.circular(CodeawRadii.lg),
               ),
               child: const Padding(
                 padding: EdgeInsets.symmetric(vertical: 4),
@@ -98,7 +94,7 @@ class RemoteDesktopGestureGuide extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             Text(
-              '畫質與 FPS 預設自動，也能在右上角三點選單調整。鍵盤、螢幕選擇與這份教學也都在選單裡。',
+              '畫質、鍵盤、螢幕選擇與這份教學都在右上角的選單裡。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colors.onSurfaceVariant,
                 height: 1.5,
@@ -143,7 +139,7 @@ class _GestureRow extends StatelessWidget {
             height: 40,
             decoration: BoxDecoration(
               color: colors.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(12),
+              borderRadius: BorderRadius.circular(CodeawRadii.md),
             ),
             child: Icon(icon, size: 21, color: colors.primary),
           ),

@@ -6,6 +6,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../app_state.dart';
 import '../../data/host.dart';
 import '../common/adaptive.dart';
+import '../common/app_theme.dart';
 
 class PairPage extends StatefulWidget {
   const PairPage({super.key, this.autoPair = false});
@@ -160,7 +161,7 @@ class _PairPageState extends State<PairPage> {
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(10)),
+            decoration: BoxDecoration(color: scheme.surfaceContainerHighest, borderRadius: BorderRadius.circular(CodeawRadii.md)),
             child: const SelectableText('codeaw-bridge pair', style: TextStyle(fontFamily: 'monospace')),
           ),
           const SizedBox(height: 8),
@@ -188,19 +189,19 @@ class _PairPageState extends State<PairPage> {
             controller: _url,
             keyboardType: TextInputType.url,
             autocorrect: false,
-            decoration: const InputDecoration(labelText: 'Bridge 網址', hintText: 'ws://100.x.y.z:7860/acp', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: 'Bridge 網址', hintText: 'ws://100.x.y.z:7860/acp'),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _code,
             textCapitalization: TextCapitalization.characters,
             autocorrect: false,
-            decoration: const InputDecoration(labelText: '配對碼', hintText: 'XXXX-XXXX', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: '配對碼', hintText: 'XXXX-XXXX'),
           ),
           const SizedBox(height: 12),
           TextField(
             controller: _name,
-            decoration: const InputDecoration(labelText: '這台裝置的名稱', border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: '這台裝置的名稱'),
           ),
           const SizedBox(height: 16),
           if (_error != null)

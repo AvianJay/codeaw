@@ -151,15 +151,13 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                   ),
                   const SizedBox(height: 20),
                   Text(
-                    '你的帳號額度，一眼看清',
+                    '尚未連接 CPA',
                     textAlign: TextAlign.center,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 8),
                   Text(
-                    '連接 CLI Proxy API，查看 Codex、Claude、Grok 等帳號的用量、重置時間與可用重置次數。',
+                    '連接 CLI Proxy API，查看各帳號的剩餘額度與重置時間。',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: scheme.onSurfaceVariant),
                   ),
@@ -171,13 +169,15 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                       label: const Text('連接 CPA'),
                     ),
                   ),
-                  const SizedBox(height: 18),
-                  const Text(
-                    '使用 CPA 的 Management Key。設定儲存在此裝置；由已配對的電腦代為查詢。',
-                    textAlign: TextAlign.center,
-                  ),
                   if (c.error != null)
-                    Text(c.error!, textAlign: TextAlign.center),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 18),
+                      child: Text(
+                        c.error!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: scheme.error),
+                      ),
+                    ),
                 ],
               );
             }
@@ -231,7 +231,7 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                         : c.loadingQuotas.isNotEmpty
                         ? '更新額度中 · 剩 ${c.loadingQuotas.length} 個'
                         : c.updatedAt != null
-                        ? '更新於 ${cpaResetDate(c.updatedAt)} · 額度不會自動兌換或重置'
+                        ? '更新於 ${cpaResetDate(c.updatedAt)}'
                         : '尚未更新',
                     style: TextStyle(fontSize: 11, color: scheme.outline),
                   ),
@@ -332,14 +332,6 @@ class _CpaUsagePageState extends State<CpaUsagePage> {
                     ),
                     const Divider(),
                   ],
-                  if (accounts.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 16),
-                      child: Text(
-                        '百分比代表剩餘額度。重置時間依裝置時區顯示；服務商未提供的值會標示未知。',
-                        style: TextStyle(fontSize: 11, color: scheme.outline),
-                      ),
-                    ),
                 ],
               ),
             );

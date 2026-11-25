@@ -73,7 +73,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 builder: (context, padding) => ListView(
                   padding: padding,
                   children: [
-                    const _Section('外觀'),
+                    const _Section('一般'),
                     _Group([
                       ListTile(
                         leading: const Icon(Icons.contrast_rounded),
@@ -81,6 +81,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         trailing: DropdownButtonHideUnderline(
                           child: DropdownButton<ThemeMode>(
                             value: state.themeMode,
+                            borderRadius: BorderRadius.circular(CodeawRadii.md),
                             items: const [
                               DropdownMenuItem(
                                 value: ThemeMode.system,
@@ -109,15 +110,10 @@ class _SettingsPageState extends State<SettingsPage> {
                           ),
                         ),
                       ),
-                    ]),
-                    const _Section('數據用量'),
-                    _Group([
                       SwitchListTile(
                         secondary: const Icon(Icons.data_saver_on_rounded),
                         title: const Text('節省數據'),
-                        subtitle: const Text(
-                          '對話分更小段載入，歷史中超過 2 KiB 的工具輸出展開時才讀取，圖片點擊後才下載。適合行動網路。',
-                        ),
+                        subtitle: const Text('圖片與大型輸出點開才載入'),
                         value: state.dataSaver,
                         onChanged: (enabled) async {
                           final messenger = ScaffoldMessenger.of(context);
@@ -130,22 +126,12 @@ class _SettingsPageState extends State<SettingsPage> {
                           }
                         },
                       ),
-                    ]),
-                    const _Section('用量與帳號'),
-                    _Group([
                       ListTile(
-                        leading: Icon(
-                          Icons.donut_large_rounded,
-                          color: scheme.primary,
-                        ),
-                        title: const Text('CPA 用量與額度'),
-                        subtitle: const Text('Codex、Claude、Grok · 重置時間與剩餘額度'),
+                        leading: const Icon(Icons.donut_large_rounded),
+                        title: const Text('用量與額度'),
                         trailing: const Icon(Icons.chevron_right_rounded),
                         onTap: () => context.push('/usage'),
                       ),
-                    ]),
-                    const _Section('App 更新'),
-                    _Group([
                       ListenableBuilder(
                         listenable: state.updater,
                         builder: (context, _) => ListTile(
@@ -154,14 +140,26 @@ class _SettingsPageState extends State<SettingsPage> {
                             child: const Icon(Icons.system_update_rounded),
                           ),
                           title: Text(
-                            state.updater.updateAvailable
-                                ? '有可用的 App 更新'
-                                : '檢查 App 更新',
+                            state.updater.updateAvailable ? '有可用的更新' : 'App 更新',
                           ),
-                          subtitle: Text(
-                            '${state.updater.installedVersion} · ${state.updater.channel.name}',
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (state.updater.installed != null)
+                                Text(
+                                  state.updater.installedVersion,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: scheme.outline,
+                                    fontFeatures: const [
+                                      FontFeature.tabularFigures(),
+                                    ],
+                                  ),
+                                ),
+                              const SizedBox(width: 4),
+                              const Icon(Icons.chevron_right_rounded),
+                            ],
                           ),
-                          trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: () => context.push('/updates'),
                         ),
                       ),
@@ -175,6 +173,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           '${client.status == ConnStatus.online ? '已連線' : '未連線'} · ${client.activeUrl ?? host.urls.first}',
                         ),
                         trailing: IconButton(
+                          tooltip: '重新連線',
                           icon: const Icon(Icons.refresh_rounded),
                           onPressed: client.reconnectNow,
                         ),
@@ -182,27 +181,27 @@ class _SettingsPageState extends State<SettingsPage> {
                       ListTile(
                         leading: const Icon(Icons.badge_outlined),
                         title: Text('這台裝置：${host.deviceName}'),
-                        subtitle: Text(
-                          '裝置 ID ${host.deviceId}（在電腦上用 codeaw-bridge revoke 撤銷）',
-                        ),
+                        subtitle: Text('裝置 ID ${host.deviceId}'),
                       ),
                     ]),
-                    const _Section('Agents'),
-                    if (client.agents.isNotEmpty)
+                    if (client.agents.isNotEmpty) ...[
+                      const _Section('Agents'),
                       _Group([
                         for (final a in client.agents)
                           ListTile(
+                            // The avatar is wider than an icon; the names still
+                            // line up with the rows of the other groups.
+                            horizontalTitleGap: 8,
                             leading: AgentAvatar(agentId: a.id, label: a.name),
                             title: Text(
                               '${a.name}${a.version != null ? ' ${a.version}' : ''}',
                             ),
                             subtitle: Text(
                               switch (a.status) {
-                                'ready' =>
-                                  '執行中${a.steering ? ' · 支援回合中插話' : ''}',
+                                'ready' => '執行中',
                                 'error' => '錯誤：${a.error ?? ''}',
                                 'starting' => '啟動中',
-                                _ => '未啟動（用到時自動啟動）',
+                                _ => '用到時啟動',
                               },
                               maxLines: 3,
                               overflow: TextOverflow.ellipsis,
@@ -219,106 +218,145 @@ class _SettingsPageState extends State<SettingsPage> {
                             ),
                           ),
                       ]),
+                    ],
                     if (state.liveActivity.supported) ...[
                       const _Section('即時動態'),
                       _Group([
                         LiveActivitySettings(controller: state.liveActivity),
                       ]),
                     ],
-                    const _Section('推播通知（App 沒開時）'),
-                    if (_ntfy == null)
-                      const _Group([ListTile(title: Text('讀取中…'))])
-                    else if (_ntfy!['enabled'] != true)
-                      const _Group([
-                        ListTile(
-                          leading: Icon(Icons.notifications_off_outlined),
-                          title: Text('bridge 沒有設定 ntfy'),
-                          subtitle: Text(
-                            '在電腦的 ~/.codeaw/config.yaml 加入 notifications.ntfy 後重啟 bridge',
-                          ),
-                        ),
-                      ])
-                    else
+                    // Nothing to show on the web until the bridge has answered.
+                    if (!kIsWeb || _ntfy != null) ...[
+                      const _Section('通知'),
                       _Group([
-                        ListTile(
-                          leading: const Icon(
-                            Icons.notifications_active_outlined,
+                        if (!kIsWeb)
+                          ListTile(
+                            leading: const Icon(Icons.notifications_outlined),
+                            title: const Text('允許 App 通知'),
+                            subtitle: const Text('App 在背景時提醒'),
+                            onTap: () => state.notifier.requestPermission(),
                           ),
-                          title: Text('ntfy topic：${_ntfy!['topic']}'),
-                          subtitle: Text(
-                            '${_ntfy!['server']}\n安裝 ntfy App 並訂閱這個 topic，App 沒開時也能收到「需要批准 / 已完成」',
+                        if (_ntfy case final ntfy? when ntfy['enabled'] != true)
+                          const ListTile(
+                            leading: Icon(Icons.notifications_off_outlined),
+                            title: Text('App 關閉時的推播未設定'),
+                            subtitle: Text(
+                              '在電腦的 ~/.codeaw/config.yaml 加入 notifications.ntfy，再重啟 bridge',
+                            ),
                           ),
-                          isThreeLine: true,
-                          onTap: () => Clipboard.setData(
-                            ClipboardData(text: '${_ntfy!['topic']}'),
-                          ),
-                        ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 14),
-                          child: Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
+                        // One entry, so no hairline parts the topic from its buttons.
+                        if (_ntfy case final ntfy? when ntfy['enabled'] == true)
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              OutlinedButton.icon(
-                                icon: const Icon(
-                                  Icons.open_in_new_rounded,
+                              ListTile(
+                                leading: const Icon(
+                                  Icons.notifications_active_outlined,
+                                ),
+                                title: Text('ntfy topic：${ntfy['topic']}'),
+                                subtitle: Text(
+                                  'App 關閉時的推播 · ${ntfy['server']}',
+                                ),
+                                trailing: const Icon(
+                                  Icons.copy_rounded,
                                   size: 18,
                                 ),
-                                label: const Text('在 ntfy App 訂閱'),
-                                onPressed: () {
-                                  final server = Uri.parse(
-                                    '${_ntfy!['server']}',
-                                  );
-                                  launchUrl(
-                                    Uri.parse(
-                                      'ntfy://${server.host}/${_ntfy!['topic']}',
-                                    ),
-                                    mode: LaunchMode.externalApplication,
-                                  );
-                                },
-                              ),
-                              OutlinedButton.icon(
-                                icon: const Icon(Icons.send_rounded, size: 18),
-                                label: const Text('傳送測試'),
-                                onPressed: () async {
+                                onTap: () async {
                                   final messenger = ScaffoldMessenger.of(
                                     context,
                                   );
-                                  final r =
-                                      await client.request(
-                                            '_codeaw/notify/test',
-                                          )
-                                          as Map<String, dynamic>;
+                                  await Clipboard.setData(
+                                    ClipboardData(text: '${ntfy['topic']}'),
+                                  );
                                   messenger.showSnackBar(
-                                    SnackBar(
-                                      content: Text(
-                                        r['sent'] == true
-                                            ? '已送出'
-                                            : '送出失敗，請看 bridge 的紀錄',
-                                      ),
+                                    const SnackBar(
+                                      content: Text('已複製 topic'),
+                                      duration: Duration(seconds: 1),
                                     ),
                                   );
                                 },
                               ),
+                              Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  4,
+                                  16,
+                                  14,
+                                ),
+                                child: Wrap(
+                                  spacing: 8,
+                                  runSpacing: 8,
+                                  children: [
+                                    OutlinedButton.icon(
+                                      icon: const Icon(
+                                        Icons.open_in_new_rounded,
+                                        size: 18,
+                                      ),
+                                      label: const Text('在 ntfy App 訂閱'),
+                                      onPressed: () {
+                                        final server = Uri.parse(
+                                          '${ntfy['server']}',
+                                        );
+                                        launchUrl(
+                                          Uri.parse(
+                                            'ntfy://${server.host}/${ntfy['topic']}',
+                                          ),
+                                          mode: LaunchMode.externalApplication,
+                                        );
+                                      },
+                                    ),
+                                    OutlinedButton.icon(
+                                      icon: const Icon(
+                                        Icons.send_rounded,
+                                        size: 18,
+                                      ),
+                                      label: const Text('傳送測試'),
+                                      onPressed: () async {
+                                        final messenger = ScaffoldMessenger.of(
+                                          context,
+                                        );
+                                        final r = await client.request(
+                                          '_codeaw/notify/test',
+                                        ) as Map<String, dynamic>;
+                                        messenger.showSnackBar(
+                                          SnackBar(
+                                            content: Text(
+                                              r['sent'] == true
+                                                  ? '已送出'
+                                                  : '送出失敗，請看 bridge 的紀錄',
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ],
                           ),
-                        ),
-                      ], divided: false),
-                    if (state
-                        .androidLiveActivity
-                        .channel
-                        .platformSupported) ...[
-                      const _Section('背景進度'),
-                      _Group([_LiveActivityTiles(state: state)]),
+                      ]),
                     ],
+                    if (state.androidLiveActivity.channel.platformSupported)
+                      ListenableBuilder(
+                        listenable: state.androidLiveActivity,
+                        // A phone that cannot show it has nothing to switch on.
+                        builder: (context, _) =>
+                            state.androidLiveActivity.support.available
+                            ? Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  const _Section('背景進度'),
+                                  _Group([_LiveActivityTiles(state: state)]),
+                                ],
+                              )
+                            : const SizedBox.shrink(),
+                      ),
                     const _Section('其他'),
                     _Group([
                       ListTile(
                         leading: const Icon(Icons.history_rounded),
-                        title: const Text('清除這台電腦的本機聊天快取'),
-                        subtitle: const Text(
-                          '重開 App 先顯示已保存的歷史，再同步新訊息。只清除本機資料。',
-                        ),
+                        title: const Text('清除本機聊天快取'),
+                        subtitle: const Text('電腦上的對話不受影響'),
                         onTap: () async {
                           state.sessions?.discardPendingCache();
                           await state.hub?.clearCache();
@@ -329,13 +367,6 @@ class _SettingsPageState extends State<SettingsPage> {
                           }
                         },
                       ),
-                      if (!kIsWeb)
-                        ListTile(
-                          leading: const Icon(Icons.notifications_outlined),
-                          title: const Text('允許 App 通知'),
-                          subtitle: const Text('App 在背景但仍連線時，用手機通知提醒'),
-                          onTap: () => state.notifier.requestPermission(),
-                        ),
                       ListTile(
                         leading: Icon(
                           Icons.link_off_rounded,
@@ -408,12 +439,7 @@ class _LiveActivityTiles extends StatelessWidget {
             SwitchListTile(
               secondary: const Icon(Icons.timelapse_rounded),
               title: const Text('背景即時進度'),
-              subtitle: Text(
-                !support.available
-                    ? '這台裝置不支援'
-                    : '切到背景時，用常駐通知顯示對話進度並保持連線（Android 16 起為即時更新）。只追蹤當時開著的、或唯一正在執行的對話。',
-              ),
-              isThreeLine: true,
+              subtitle: const Text('切到背景時用常駐通知顯示進度，並保持連線'),
               value: on,
               onChanged: support.available
                   ? (value) async {
@@ -444,7 +470,6 @@ class _Section extends StatelessWidget {
       text,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
         color: Theme.of(context).colorScheme.primary,
-        letterSpacing: .4,
       ),
     ),
   );
@@ -452,9 +477,8 @@ class _Section extends StatelessWidget {
 
 /// One section's settings on a shared card, separated by hairlines.
 class _Group extends StatelessWidget {
-  const _Group(this.children, {this.divided = true});
+  const _Group(this.children);
   final List<Widget> children;
-  final bool divided;
 
   @override
   Widget build(BuildContext context) {
@@ -474,7 +498,7 @@ class _Group extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               for (final (i, child) in children.indexed) ...[
-                if (divided && i > 0)
+                if (i > 0)
                   Divider(
                     height: 1,
                     indent: 56,

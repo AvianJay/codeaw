@@ -18,11 +18,13 @@ class TurnSpeed extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Nothing to estimate from until the turn has written something.
     final speed = turn?.tokensPerSecondAt(now);
+    if (speed == null) return const SizedBox.shrink();
     return Tooltip(
       message: '估算平均輸出速度：含思考文字，耗時包含工具執行與等待。',
       child: Text(
-        speed == null ? '— TPS' : '≈${speed.toStringAsFixed(1)} TPS',
+        '≈${speed.toStringAsFixed(1)} TPS',
         style: TextStyle(
           fontSize: 12,
           color: Theme.of(context).colorScheme.outline,
@@ -55,8 +57,8 @@ class TurnSummaryView extends StatelessWidget {
     final now = turn.endedAt ?? turn.startedAt;
     final actionStyle = IconButton.styleFrom(
       foregroundColor: scheme.outline,
-      minimumSize: const Size.square(40),
-      fixedSize: const Size.square(40),
+      minimumSize: const Size.square(44),
+      fixedSize: const Size.square(44),
       padding: EdgeInsets.zero,
       tapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
@@ -72,7 +74,8 @@ class TurnSummaryView extends StatelessWidget {
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  TurnSpeed(turn: turn, now: now),
+                  if (turn.tokensPerSecondAt(now) != null)
+                    TurnSpeed(turn: turn, now: now),
                   Text(
                     '耗時 ${formatTurnElapsed(turn.elapsedAt(now))}',
                     style: TextStyle(

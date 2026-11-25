@@ -265,6 +265,7 @@ class _FileTile extends StatelessWidget {
       trailing: code == 'D'
           ? null
           : IconButton(
+              tooltip: '開啟檔案',
               icon: const Icon(Icons.description_outlined),
               onPressed: () =>
                   context.push('/file?path=${Uri.encodeQueryComponent(path)}'),

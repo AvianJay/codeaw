@@ -1,4 +1,10 @@
+import 'package:codeaw/acp/jsonrpc.dart';
+import 'package:codeaw/app_state.dart';
+import 'package:codeaw/data/bridge_client.dart';
+import 'package:codeaw/data/host.dart';
+import 'package:codeaw/data/session_controller.dart';
 import 'package:codeaw/data/timeline.dart';
+import 'package:codeaw/ui/chat/chat_page.dart';
 import 'package:codeaw/ui/chat/working_indicator.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -42,18 +48,21 @@ void main() {
     _state(timeline, 'running', start: _start);
     await tester.pumpWidget(_wrap(WorkingIndicator(timeline: timeline, now: () => now)));
     expect(find.text('思考中…'), findsOneWidget);
-    expect(find.text('已處理 0 秒'), findsOneWidget);
+    expect(find.text('0 秒'), findsOneWidget);
+    expect(find.bySemanticsLabel('已處理 0 秒'), findsOneWidget);
+    // No speed placeholder before the turn has written anything.
+    expect(find.textContaining('TPS'), findsNothing);
 
     now = _start.add(const Duration(seconds: 2));
     await tester.pump(const Duration(seconds: 2));
-    expect(find.text('已處理 2 秒'), findsOneWidget);
+    expect(find.text('2 秒'), findsOneWidget);
     _update(timeline, {
       'sessionUpdate': 'agent_message_chunk',
       'content': {'type': 'text', 'text': '回答'},
     });
     await tester.pump();
     expect(find.text('回覆中…'), findsOneWidget);
-    expect(find.text('已處理 2 秒'), findsOneWidget);
+    expect(find.text('2 秒'), findsOneWidget);
 
     _update(timeline, {
       'sessionUpdate': 'user_message_chunk',
@@ -63,21 +72,23 @@ void main() {
     await tester.pump();
     expect(find.text('回覆中…'), findsOneWidget);
     expect(find.text('還有 2 則排隊'), findsOneWidget);
-    expect(find.text('已處理 2 秒'), findsOneWidget);
+    expect(find.text('2 秒'), findsOneWidget);
 
     _state(timeline, 'requires_action', start: _start, queued: 2);
     now = _start.add(const Duration(seconds: 65));
     await tester.pump(const Duration(seconds: 1));
+    // Waiting for an answer is not timed: only the status and the queue remain.
     expect(find.text('等待批准…'), findsOneWidget);
-    expect(find.text('已處理 1 分 5 秒'), findsOneWidget);
+    expect(find.textContaining('秒'), findsNothing);
+    expect(find.text('還有 2 則排隊'), findsOneWidget);
 
     _state(timeline, 'idle');
     await tester.pump();
-    expect(find.textContaining('已處理'), findsNothing);
+    expect(find.textContaining('秒'), findsNothing);
     _state(timeline, 'running', start: now);
     await tester.pump();
     expect(find.text('思考中…'), findsOneWidget);
-    expect(find.text('已處理 0 秒'), findsOneWidget);
+    expect(find.text('0 秒'), findsOneWidget);
     await tester.pumpWidget(const SizedBox());
     timeline.dispose();
   });
@@ -146,15 +157,97 @@ void main() {
       ),
     );
     expect(find.text('修改檔案中…'), findsOneWidget);
-    expect(find.text('已處理 2 小時 3 分 4 秒'), findsOneWidget);
+    expect(find.text('2 小時 3 分 4 秒'), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     _state(timeline, 'requires_action', start: _start, queued: 12);
     await tester.pumpWidget(_wrap(WorkingIndicator(timeline: timeline, waitingForInput: true, now: () => _start.subtract(const Duration(seconds: 10))), textScale: 1.8));
     expect(find.text('等待你的回覆…'), findsOneWidget);
-    expect(find.text('已處理 0 秒'), findsOneWidget);
+    expect(find.textContaining('秒'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     timeline.dispose();
+  });
+
+  testWidgets('a chat leaves the waiting line to its own request bar', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final host = HostConfig(name: 'PC', urls: ['ws://fixture/acp'], token: 'fixture', deviceId: 'fixture', deviceName: 'phone');
+    final client = BridgeClient(host)..status = ConnStatus.online;
+    final state = AppState(HostStore(), openSession: (_) {})
+      ..host = host
+      ..client = client
+      ..loaded = true;
+    state.hub = SessionHub(client);
+    const id = 'claude:wait';
+    final c = state.hub!.adopt(id, '/work', {
+      '_meta': {
+        'codeaw': {'lastSeq': 0},
+      },
+    });
+    void turn(int queued) => c.onMessage(
+      SessionMessage('_codeaw/event', {
+        'sessionId': id,
+        'event': {'type': 'state', 'state': 'requires_action', 'queued': queued, 'turnStartedAt': _start.millisecondsSinceEpoch},
+      }),
+    );
+    c.onMessage(
+      SessionMessage('session/update', {
+        'sessionId': id,
+        'update': {
+          'sessionUpdate': 'user_message_chunk',
+          'content': {'type': 'text', 'text': 'run the tests'},
+          '_meta': {
+            'codeaw': {'mid': 'u1'},
+          },
+        },
+      }),
+    );
+    turn(0);
+    c.timeline.flush();
+    await tester.pumpWidget(
+      AppScope(
+        state: state,
+        child: MaterialApp(home: ChatPage(sessionId: id, cwd: '/work')),
+      ),
+    );
+    await tester.pump();
+    // Asked on another device: nothing else on this screen says so.
+    expect(find.text('等待批准…'), findsOneWidget);
+
+    final token = CancelToken();
+    c.onServerRequest('session/request_permission', {
+      'sessionId': id,
+      'toolCall': {
+        'toolCallId': 'b1',
+        'title': 'npm test',
+        'kind': 'execute',
+        'rawInput': {'command': 'npm test'},
+      },
+      'options': [
+        {'optionId': 'allow', 'name': 'Allow', 'kind': 'allow_once'},
+        {'optionId': 'reject', 'name': 'Reject', 'kind': 'reject_once'},
+      ],
+      '_meta': {
+        'codeaw': {'requestId': 'r1'},
+      },
+    }, token);
+    await tester.pump();
+    expect(find.textContaining('需要批准'), findsOneWidget);
+    expect(find.text('等待批准…'), findsNothing);
+
+    // A queue is only shown on the line, so it comes back with one.
+    turn(2);
+    c.timeline.flush();
+    await tester.pump();
+    expect(find.text('等待批准…'), findsOneWidget);
+    expect(find.text('還有 2 則排隊'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    token.cancel();
+    await tester.pumpWidget(const SizedBox());
+    state.hub!.dispose();
+    client.dispose();
   });
 }
