@@ -37,6 +37,11 @@ class LiveActivityController extends ChangeNotifier {
   bool locationServicesEnabled = true;
   String locationAuthorization = 'notDetermined';
   String? locationError;
+
+  /// Keeping the app awake in the background while AI work runs (see the native plugin).
+  bool keepAliveSupported = false;
+  bool keepAliveEnabled = true;
+  bool keepAliveActive = false;
   bool get pushRegistered => _registered.isNotEmpty;
   String? error;
   BridgeClient? _client;
@@ -66,6 +71,7 @@ class LiveActivityController extends ChangeNotifier {
   Future<void>? _refreshing;
   int _generation = 0;
   ({bool enabled, bool running})? _locationTarget;
+  ({bool enabled, bool running})? _keepAliveTarget;
 
   Future<void> initialize() async {
     if (!supported) return;
@@ -74,6 +80,7 @@ class LiveActivityController extends ChangeNotifier {
     enabled = prefs.getBool('codeaw.liveActivity.enabled') ?? true;
     showDetails = prefs.getBool('codeaw.liveActivity.details') ?? true;
     locationEnabled = prefs.getBool('codeaw.liveActivity.location') ?? false;
+    keepAliveEnabled = prefs.getBool('codeaw.liveActivity.keepAlive') ?? true;
     _handlerInstalled = true;
     _channel.setMethodCallHandler((call) async {
       if (_disposed) return;
@@ -84,6 +91,8 @@ class LiveActivityController extends ChangeNotifier {
         for (final snapshot in _snapshots.values.toList()) {
           accept(snapshot, fresh: false);
         }
+      } else if (call.method == 'keepAliveStatus' && call.arguments is Map) {
+        _readKeepAlive(call.arguments as Map);
       } else if (call.method == 'locationWake') {
         if (locationActive && (_client?.isOnline ?? false)) {
           unawaited(refresh());
@@ -106,6 +115,7 @@ class LiveActivityController extends ChangeNotifier {
       supported = info['supported'] == true;
       authorized = info['authorized'] == true;
       _readLocation(info['location'] as Map?);
+      _readKeepAlive(info['keepAlive'] as Map?);
       nativeReady = true;
     } catch (_) {
       error = '無法啟用即時動態，請確認 iOS 版本與簽名保留 Widget extension';
@@ -173,6 +183,7 @@ class LiveActivityController extends ChangeNotifier {
       if (generation != _generation || _disposed) return;
       authorized = native['authorized'] == true;
       _readLocation(native['location'] as Map?);
+      _readKeepAlive(native['keepAlive'] as Map?);
       for (final raw
           in (native['activities'] as List? ?? const []).whereType<Map>()) {
         if (raw['hostKey'] == _hostKey) _followed.add('${raw['sessionId']}');
@@ -309,18 +320,73 @@ class LiveActivityController extends ChangeNotifier {
             entry.value['deleted'] != true,
       );
 
+  /// A chat that is working right now, not one waiting for the person's answer: nothing
+  /// changes there until they come back to the app.
+  bool get _hasWorkingChat =>
+      supported &&
+      enabled &&
+      authorized &&
+      _client != null &&
+      _snapshots.entries.any(
+        (entry) =>
+            _followed.contains(entry.key) &&
+            entry.value['work'] is Map &&
+            entry.value['state'] == 'running' &&
+            entry.value['deleted'] != true,
+      );
+
   void _scheduleHeartbeat() {
     _syncLocation();
+    _syncKeepAlive();
     if (!_hasRunningWork) {
       _heartbeat?.cancel();
       _heartbeat = null;
     } else {
       _heartbeat ??= Timer.periodic(const Duration(seconds: 60), (_) {
-        if ((foreground || locationActive) && (_client?.isOnline ?? false)) {
+        if ((foreground || locationActive || keepAliveActive) &&
+            (_client?.isOnline ?? false)) {
           unawaited(refresh());
         }
       });
     }
+  }
+
+  void _readKeepAlive(Map? info) {
+    if (info == null) return;
+    final supported = info['supported'] == true;
+    final active = info['active'] == true;
+    if (supported == keepAliveSupported && active == keepAliveActive) return;
+    keepAliveSupported = supported;
+    keepAliveActive = active;
+    _changed();
+  }
+
+  void _syncKeepAlive() {
+    if (!_initialized || !supported || !keepAliveSupported) return;
+    final target = (
+      enabled: enabled && keepAliveEnabled && _client != null,
+      running: _hasWorkingChat,
+    );
+    if (target == _keepAliveTarget) return;
+    _keepAliveTarget = target;
+    final generation = _generation;
+    _serial = _serial.then((_) async {
+      if (_disposed ||
+          generation != _generation ||
+          target != _keepAliveTarget) {
+        return;
+      }
+      try {
+        final result = await _native('backgroundKeepAlive', {
+          'enabled': target.enabled,
+          'running': target.running,
+        });
+        if (generation == _generation && result is Map) _readKeepAlive(result);
+      } catch (_) {
+        // An older app build has no such call; the activity then follows only while the app is open.
+        keepAliveActive = false;
+      }
+    });
   }
 
   void _readLocation(Map? info) {
@@ -400,16 +466,19 @@ class LiveActivityController extends ChangeNotifier {
     bool? enabled,
     bool? showDetails,
     bool? locationEnabled,
+    bool? keepAliveEnabled,
   }) async {
     this.enabled = enabled ?? this.enabled;
     this.showDetails = showDetails ?? this.showDetails;
     this.locationEnabled = locationEnabled ?? this.locationEnabled;
+    this.keepAliveEnabled = keepAliveEnabled ?? this.keepAliveEnabled;
     _syncLocation(requestPermission: locationEnabled == true);
     _scheduleHeartbeat();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('codeaw.liveActivity.enabled', this.enabled);
     await prefs.setBool('codeaw.liveActivity.details', this.showDetails);
     await prefs.setBool('codeaw.liveActivity.location', this.locationEnabled);
+    await prefs.setBool('codeaw.liveActivity.keepAlive', this.keepAliveEnabled);
     await _serial;
     if (!this.enabled) {
       for (final id in _tokens.keys.toList()) {
@@ -459,6 +528,12 @@ class LiveActivityController extends ChangeNotifier {
               'requestPermission': false,
             });
           }
+          if (keepAliveSupported) {
+            await _native('backgroundKeepAlive', {
+              'enabled': false,
+              'running': false,
+            });
+          }
           await _native('endAll', {'hostKey': key});
         } catch (_) {}
       });
@@ -478,7 +553,9 @@ class LiveActivityController extends ChangeNotifier {
     _tokens.clear();
     _registered.clear();
     _locationTarget = null;
+    _keepAliveTarget = null;
     locationActive = false;
+    keepAliveActive = false;
     locationError = null;
     remoteEnabled = remoteReady = remoteDetails = false;
     error = null;

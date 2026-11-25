@@ -11,6 +11,8 @@ with (widget / "Info.plist").open("rb") as file:
     info = plistlib.load(file)
 assert main.get("NSSupportsLiveActivities") is True
 assert "location" in main.get("UIBackgroundModes", [])
+# What keeps the app, and with it the activity, updating in the background by default.
+assert "audio" in main.get("UIBackgroundModes", [])
 assert main.get("NSLocationWhenInUseUsageDescription")
 assert info["NSExtension"]["NSExtensionPointIdentifier"] == "com.apple.widgetkit-extension"
 assert info["CFBundleIdentifier"].startswith(main["CFBundleIdentifier"] + ".")

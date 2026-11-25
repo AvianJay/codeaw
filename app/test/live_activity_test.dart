@@ -477,6 +477,80 @@ void main() {
   );
 
   testWidgets(
+    'keeps the app awake in the background only while a chat is working',
+    (tester) async {
+      final asked = <Map<String, dynamic>>[];
+      var playing = false;
+      final controller = LiveActivityController(
+        platformSupported: true,
+        nativeCall: (method, params) async {
+          if (method == 'backgroundKeepAlive') {
+            asked.add(params!);
+            // In the background, the phone holds the app awake as soon as it is asked to.
+            playing = params['enabled'] == true && params['running'] == true;
+          }
+          final status = {'supported': true, 'active': playing};
+          return switch (method) {
+            'status' => {
+              'supported': true,
+              'authorized': true,
+              'keepAlive': status,
+            },
+            'backgroundKeepAlive' => status,
+            _ => {},
+          };
+        },
+      );
+      final client = _Client('A');
+      await controller.initialize();
+      controller.bind(client);
+      await controller.refresh();
+      await controller.settled;
+      expect(controller.keepAliveEnabled, isTrue);
+      expect(asked.last, {'enabled': true, 'running': false});
+
+      controller.accept(work());
+      await controller.settled;
+      expect(asked.last, {'enabled': true, 'running': true});
+      expect(controller.keepAliveActive, isTrue);
+      // Held awake, the app keeps the activity fresh without being on screen.
+      controller.foreground = false;
+      final requests = client.calls.length;
+      await tester.pump(const Duration(seconds: 60));
+      await controller.settled;
+      expect(client.calls.length, greaterThan(requests));
+
+      // Waiting for the person's answer: nothing changes until they are back in the app.
+      controller.accept(work(state: 'requires_action'));
+      await controller.settled;
+      expect(asked.last, {'enabled': true, 'running': false});
+      expect(controller.keepAliveActive, isFalse);
+      controller.accept(work());
+      await controller.settled;
+      expect(asked.last, {'enabled': true, 'running': true});
+      controller.accept(work(state: 'idle'));
+      await controller.settled;
+      expect(asked.last, {'enabled': true, 'running': false});
+
+      client.snapshots = [work(turn: 'next')];
+      controller.accept(work(turn: 'next'));
+      await controller.configure(keepAliveEnabled: false);
+      expect(asked.last, {'enabled': false, 'running': true});
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getBool('codeaw.liveActivity.keepAlive'), isFalse);
+      final calls = asked.length;
+      controller.accept(work(turn: 'next', summary: 'npm run build'));
+      await controller.settled;
+      expect(asked, hasLength(calls));
+
+      controller.dispose();
+      await controller.settled;
+      expect(asked.last, {'enabled': false, 'running': false});
+      client.dispose();
+    },
+  );
+
+  testWidgets(
     'native initialization times out without losing activity support',
     (tester) async {
       final response = Completer<dynamic>();

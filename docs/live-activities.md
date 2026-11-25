@@ -9,8 +9,10 @@ Each running chat starts an activity while the app is foregrounded, including
 chats not currently open. The view shows the chat title, working-directory project name, agent, elapsed time, current
 command or a short excerpt of an agent-provided thought/progress summary.
 It never calls another model to invent a summary or requests hidden reasoning.
-Waiting for approval is orange, completion green, error red, active work cyan,
-and stale content gray. Tapping opens that session. Completion freezes the
+Waiting for an answer is amber, completion green, error red, active work the
+app's own blue-violet, and a stopped, offline or paused chat gray. The narrow
+side of the Dynamic Island shows the running time while a chat works, and the
+outcome in a word (“待回覆”, “完成”, “失敗”) once it does not. Tapping opens that session. Completion freezes the
 timer and retains the final Lock Screen card for 60 seconds.
 
 The app tracks all running chats, including when leaving the chat for settings,
@@ -23,22 +25,37 @@ Hiding details redacts chat titles and project names as well as commands and sum
 ## Background updates
 
 The timer is rendered by iOS and keeps ticking without app execution. Command,
-summary, approval and completion updates use the connected app, or optional
-ActivityKit APNs pushes from the PC. An ordinary WebSocket does not keep an iOS
-app running after suspension. After two minutes without a fresh bridge snapshot,
-the status becomes gray and says “更新已暫停”; the system timer and last-sync
-time remain visible. The stale date does not end the activity. Cached detail or
-location status changes do not reset the last-sync time.
-While foregrounded or while the opted-in location session is active,
-the app refreshes every 60 seconds so a long, quiet command does not falsely
-become stale. APNs update coalescing is 15 seconds, with approval/end updates
-sent sooner; a 60-second bridge heartbeat maintains freshness. Apple's own
-delivery budget and network conditions can delay updates.
+summary, approval and completion updates come from the app itself over its
+connection to the PC, or from optional ActivityKit APNs pushes sent by the PC.
+
+iOS suspends an app seconds after it leaves the screen, and its WebSocket goes
+with it. Without APNs the activity can therefore only follow the work while the
+app is kept running. “設定 → 即時動態 → 背景持續更新” (on by default) does that:
+when the app goes to the background while a chat is working, it holds an audio
+session open on a silent stream that mixes with whatever else is playing
+(`UIBackgroundModes: audio`), and lets go as soon as no chat is working any
+more. A chat that waits for the person's answer does not count as working:
+nothing changes there until they are back in the app. Nothing is played and no
+other app's audio is interrupted, but an active audio route can keep Bluetooth
+headphones connected to the phone and uses some battery; the switch turns it off.
+A phone call interrupts the session, and it resumes afterwards. Force-quitting
+the app stops updates.
+
+After two minutes without a fresh bridge snapshot the status becomes gray and
+says “更新已暫停”; the system timer keeps running and the stale date does not end
+the activity. A chat that waits for an answer keeps saying so however old the
+snapshot is. While foregrounded, kept awake, or while the opted-in location
+session is active, the app refreshes every 60 seconds so a long, quiet command
+does not falsely become stale. APNs update coalescing is 15 seconds, with
+approval/end updates sent sooner; a 60-second bridge heartbeat maintains
+freshness. Apple's own delivery budget and network conditions can delay updates.
 
 ### Optional background location
 
-“設定 → 即時動態 → 背景定位維持同步” is off by default. Enabling it explicitly
-requests When In Use location permission while the app is foregrounded. The app
+“設定 → 即時動態 → 用定位服務保持連線” is a second way to keep the app running,
+for phones where the audio session does not hold. It is off by default. Enabling
+it explicitly requests When In Use location permission while the app is
+foregrounded. The app
 starts a coarse-accuracy, continuous Core Location session only while at least
 one AI chat is working, with the background location indicator enabled. It stops
 when all work finishes, Live Activities or this option is disabled, the computer
@@ -173,10 +190,13 @@ On iPhone verify:
    frozen final time and removal after completion or disabling the setting.
 3. Hide details and confirm project/command/summary are redacted. Dismiss an
    activity and confirm it stays dismissed for that turn.
-4. Without APNs or background location, lock for over two minutes and confirm the
-   continuing timer, last-sync label and “更新已暫停”; reopen
-   and confirm recovery. With valid APNs signing/config, confirm a **different
-   command and completion arrive while locked**, then test a phone reconnect.
+4. With “背景持續更新” on (the default) and neither APNs nor background location,
+   start a long turn, leave the app and lock the phone: confirm that a
+   **different command and the completion arrive while locked**, and that the
+   app stops being kept awake once the turn is over. Turn the switch off, lock
+   for over two minutes and confirm the continuing timer and “更新已暫停”; reopen
+   and confirm recovery. With valid APNs signing/config, confirm the same
+   updates arrive with the switch off, then test a phone reconnect.
 5. Scroll up during streaming, tap “捲到最底”, and check portrait/landscape plus
    the keyboard. The button sits inside the chat area above the composer.
 6. Enable background location and grant When In Use permission. Start commands

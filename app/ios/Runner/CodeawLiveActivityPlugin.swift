@@ -1,4 +1,5 @@
 import ActivityKit
+import AVFoundation
 import CoreLocation
 import Flutter
 import UIKit
@@ -28,6 +29,7 @@ final class CodeawLiveActivityPlugin: NSObject, FlutterPlugin {
       case "status": result(controller.status())
       case "sync": result(await controller.sync(params))
       case "backgroundLocation": result(controller.configureLocation(params))
+      case "backgroundKeepAlive": result(controller.configureKeepAlive(params))
       case "endAll":
         await controller.endAll(hostKey: params["hostKey"] as? String)
         result(nil)
@@ -46,10 +48,12 @@ final class CodeawActivityManager {
   private var dismissed = Set<String>()
   private var endedByApp = Set<String>()
   private let location: CodeawBackgroundLocation
+  private let keepAlive: CodeawBackgroundKeepAlive
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
     self.location = CodeawBackgroundLocation(channel: channel)
+    self.keepAlive = CodeawBackgroundKeepAlive(channel: channel)
     for activity in Activity<CodeawActivityAttributes>.activities { observe(activity) }
   }
 
@@ -69,7 +73,7 @@ final class CodeawActivityManager {
   func status() -> [String: Any] {
     let active = Activity<CodeawActivityAttributes>.activities.filter { $0.activityState == .active || $0.activityState == .stale }
     return ["supported": true, "authorized": ActivityAuthorizationInfo().areActivitiesEnabled,
-      "location": location.status(), "activities": active.map { tokenInfo($0) },
+      "location": location.status(), "keepAlive": keepAlive.status(), "activities": active.map { tokenInfo($0) },
       "tokens": active.filter { $0.pushToken != nil }.map { tokenInfo($0) }]
   }
 
@@ -78,6 +82,10 @@ final class CodeawActivityManager {
       running: params["running"] as? Bool == true,
       requestPermission: params["requestPermission"] as? Bool == true)
     return location.status()
+  }
+
+  func configureKeepAlive(_ params: [String: Any]) -> [String: Any] {
+    keepAlive.configure(enabled: params["enabled"] as? Bool == true, running: params["running"] as? Bool == true)
   }
 
   private func observe(_ activity: Activity<CodeawActivityAttributes>) {
@@ -164,6 +172,115 @@ final class CodeawActivityManager {
       await activity.end(nil, dismissalPolicy: .immediate)
     }
   }
+}
+
+/// Keeps the app running in the background while AI work is going on, so that the Live
+/// Activity keeps following it. iOS suspends an app seconds after it leaves the screen, and
+/// without APNs nothing can update the activity after that. What holds the app awake is an
+/// audio session on a silent stream that mixes with whatever else is playing. It starts when
+/// the app goes to the background during work and stops as soon as the work is over.
+@available(iOS 16.2, *)
+@MainActor
+final class CodeawBackgroundKeepAlive {
+  private let channel: FlutterMethodChannel
+  private var enabled = false
+  private var running = false
+  private var active = false
+  private var player: AVAudioPlayer?
+  private var observers: [NSObjectProtocol] = []
+
+  init(channel: FlutterMethodChannel) {
+    self.channel = channel
+    let center = NotificationCenter.default
+    for name in [UIApplication.didEnterBackgroundNotification, UIApplication.didBecomeActiveNotification] {
+      observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+        Task { @MainActor in
+          guard let self else { return }
+          self.reconcile()
+        }
+      })
+    }
+    observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+      let type = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+      guard type == AVAudioSession.InterruptionType.ended.rawValue else { return }
+      Task { @MainActor in
+        guard let self else { return }
+        self.resume()
+      }
+    })
+  }
+
+  func status() -> [String: Any] { ["supported": true, "active": active] }
+
+  func configure(enabled: Bool, running: Bool) -> [String: Any] {
+    self.enabled = enabled
+    self.running = running
+    reconcile()
+    return status()
+  }
+
+  private func reconcile() {
+    let wanted = enabled && running && UIApplication.shared.applicationState == .background
+    guard wanted != active else { return }
+    let was = active
+    if wanted { start() } else { stop() }
+    if was != active { channel.invokeMethod("keepAliveStatus", arguments: status()) }
+  }
+
+  private func start() {
+    do {
+      let session = AVAudioSession.sharedInstance()
+      try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+      try session.setActive(true)
+      if player == nil {
+        let silent = try AVAudioPlayer(data: CodeawBackgroundKeepAlive.silence, fileTypeHint: AVFileType.wav.rawValue)
+        silent.numberOfLoops = -1
+        silent.volume = 0
+        player = silent
+      }
+      active = player?.play() == true
+    } catch {
+      active = false
+    }
+  }
+
+  private func stop() {
+    player?.pause()
+    // Refused, harmlessly, while something else in the app is using the audio session.
+    try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    active = false
+  }
+
+  /// A phone call or an alarm took the audio away and has given it back.
+  private func resume() {
+    guard active else { return }
+    active = false
+    reconcile()
+  }
+
+  /// Two seconds of silence as a WAV file, played in a loop.
+  private static let silence: Data = {
+    let rate: UInt32 = 8000
+    let bytes: UInt32 = rate * 2 * 2
+    var wav = Data()
+    func put<T: FixedWidthInteger>(_ value: T) {
+      withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) }
+    }
+    wav.append(contentsOf: Array("RIFF".utf8))
+    put(UInt32(36) + bytes)
+    wav.append(contentsOf: Array("WAVEfmt ".utf8))
+    put(UInt32(16))
+    put(UInt16(1))
+    put(UInt16(1))
+    put(rate)
+    put(rate * 2)
+    put(UInt16(2))
+    put(UInt16(16))
+    wav.append(contentsOf: Array("data".utf8))
+    put(bytes)
+    wav.append(Data(count: Int(bytes)))
+    return wav
+  }()
 }
 
 /// Explicitly opted-in Core Location session. Coordinates never leave this delegate.
