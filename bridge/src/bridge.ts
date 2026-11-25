@@ -11,7 +11,7 @@ import { DeviceStore } from "./server/auth.js";
 import { PathGuard } from "./server/ext.js";
 import { createHttpHandlers } from "./server/http.js";
 import { UploadStore } from "./server/uploads.js";
-import { SessionManager } from "./session/manager.js";
+import { SessionManager, type ManagerOptions } from "./session/manager.js";
 import { SessionStore } from "./session/store.js";
 import { logger } from "./util/log.js";
 import { tailscaleIPv4 } from "./util/tailscale.js";
@@ -49,6 +49,8 @@ export interface BridgeOptions {
   updater?: BridgeUpdater;
   /** Tests stand in for a running Claude desktop app. */
   claudeProcessAlive?: (pid: number) => boolean;
+  /** Tests stand in for ending the desktop app's process for a chat. */
+  endClaudeProcess?: ManagerOptions["endClaudeProcess"];
   /** How often open chats are checked for turns taken in another app; 0 turns the check off. */
   followMs?: number;
 }
@@ -96,6 +98,7 @@ export async function startBridge(loaded: LoadedConfig, opts: BridgeOptions = {}
     idleAgentStopMs: config.idleAgentStopMinutes * 60_000,
     hostName: os.hostname(),
     claudeProcessAlive: opts.claudeProcessAlive,
+    endClaudeProcess: opts.endClaudeProcess,
     followMs: opts.followMs,
   });
   const cpa = new CpaUsageService(opts.fetchImpl, Date.now, new FileCpaSettingsStore(dataDir));

@@ -95,6 +95,12 @@ it("wraps up with buttons as quick replies and closes the step still in progress
   await call(sessionId, "wrap_up", { recap: "Nothing pending." });
   expect(c.events(sessionId, "card")).toHaveLength(1);
   expect((await call(sessionId, "wrap_up", { recap: "x", buttons: ["a", "b", "c", "d", "e"] })).result.isError).toBe(true);
+  // The names the desktop app's own tool uses: a question, replies with a label, and actions of the app without one.
+  const native = await call(sessionId, "wrap_up", { recap: "Tests pass.", ask: "Commit it?", actions: [{ action: "commit" }, { label: "Not now" }] });
+  expect(native.result.isError).toBeFalsy();
+  expect(native.result.content[0].text).toContain("put the question itself in your closing message");
+  await c.waitFor(() => c.events(sessionId, "card").length === 2);
+  expect(c.events(sessionId, "card").at(-1)!.event.card).toEqual({ kind: "replies", replies: ["Not now"] });
 });
 
 it("answers permission requests for the stand-in tools only", () => {
@@ -155,12 +161,19 @@ it("finds the Claude desktop app's own running process for a chat, and nobody el
   register(root, 105, { sessionId: id, entrypoint: "claude-desktop-3p", status: "busy" }); // exited; its id may be reused
   fs.writeFileSync(path.join(root, "sessions", "106.json"), "{not json");
   expect(claudeDesktopHolder(root, id, alive)).toBeUndefined();
-  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "idle" });
-  expect(claudeDesktopHolder(root, id, alive)).toEqual({ pid: 104, busy: false });
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "idle", startedAt: 1_700_000_000_000, procStart: "134400813473843167" });
+  expect(claudeDesktopHolder(root, id, alive)).toEqual({ pid: 104, busy: false, startedAt: 1_700_000_000_000, procStart: "134400813473843167" });
   register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "busy" });
-  expect(claudeDesktopHolder(root, id, alive)).toEqual({ pid: 104, busy: true });
+  expect(claudeDesktopHolder(root, id, alive)).toMatchObject({ pid: 104, busy: true });
+  // Waiting on a permission prompt or a question is still inside a turn.
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "waiting", waitingFor: "permission prompt" });
+  expect(claudeDesktopHolder(root, id, alive)?.busy).toBe(true);
+  // An older Claude Code that reports no status is not taken for busy.
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x" });
+  expect(claudeDesktopHolder(root, id, alive)?.busy).toBe(false);
+  register(root, 104, { sessionId: id, entrypoint: "claude-desktop-3p", hostSessionId: "local_x", status: "busy" });
   const native = new NativeActivity();
-  expect(native.claudeDesktopHolder("claude", { command: "claude-agent-acp", env: { CLAUDE_CONFIG_DIR: root } }, id, alive)).toEqual({ pid: 104, busy: true });
+  expect(native.claudeDesktopHolder("claude", { command: "claude-agent-acp", env: { CLAUDE_CONFIG_DIR: root } }, id, alive)).toMatchObject({ pid: 104, busy: true });
   expect(native.claudeDesktopHolder("codex", { command: "codex-acp", env: { CLAUDE_CONFIG_DIR: root } }, id, alive)).toBeUndefined();
   expect(native.claudeDesktopHolder("claude", { command: "claude-agent-acp", env: { CLAUDE_CONFIG_DIR: root } }, "../x", alive)).toBeUndefined();
 });

@@ -7,7 +7,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { createWebSocketStream } from "@agentclientprotocol/sdk/experimental/ws-client";
 import { ConfigSchema, type LoadedConfig } from "../src/config.js";
 import type { AgentConfig } from "../src/config.js";
-import { startBridge, type Bridge } from "../src/bridge.js";
+import { startBridge, type Bridge, type BridgeOptions } from "../src/bridge.js";
 import { setLogSilent } from "../src/util/log.js";
 import { SessionStore } from "../src/session/store.js";
 
@@ -43,6 +43,8 @@ export interface TestBridgeOptions {
   /** The fake agent's id, default `fake`; an id with "claude" in it reads Claude Code's files. */
   agentId?: string;
   claudeProcessAlive?: (pid: number) => boolean;
+  /** Stands in for ending the desktop app's process for a chat. */
+  endClaudeProcess?: BridgeOptions["endClaudeProcess"];
   /** Checks for turns taken in another app; off by default, tests call `manager.follow()`. */
   followMs?: number;
   /** The fake agent re-reads its saved state on every load, so a test can add turns "elsewhere". */
@@ -79,7 +81,7 @@ export async function startTestBridge(opts: TestBridgeOptions = {}): Promise<Tes
   });
   const dataDir = path.join(home, opts.freshData ? `data-${Date.now()}` : "data");
   const loaded: LoadedConfig = { config, file: path.join(home, "config.yaml"), home, dataDir };
-  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot, claudeProcessAlive: opts.claudeProcessAlive, followMs: opts.followMs ?? 0 });
+  const bridge = await startBridge(loaded, { hosts: opts.hosts ?? ["127.0.0.1"], port: opts.port ?? 0, fetchImpl: opts.fetchImpl, webRoot: opts.webRoot, claudeProcessAlive: opts.claudeProcessAlive, endClaudeProcess: opts.endClaudeProcess, followMs: opts.followMs ?? 0 });
   const tokens = new Map<string, string>();
   return {
     bridge,

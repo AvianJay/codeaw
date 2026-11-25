@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import type { AgentConfig } from "../config.js";
 
 /**
@@ -61,8 +61,12 @@ function transcriptMentions(file: string, needle: Buffer): boolean {
 /** A Claude Code process the Claude desktop app runs for a chat. */
 export interface DesktopHolder {
   pid: number;
-  /** In the middle of a turn. */
+  /** In a turn, or waiting inside one for the person to answer a question there. */
   busy: boolean;
+  /** When the process started, in epoch milliseconds. */
+  startedAt?: number;
+  /** The system's own start time of the process, which tells it from a later one given the same id. */
+  procStart?: string;
 }
 
 const REGISTRY_ENTRY = /^\d+\.json$/;
@@ -76,6 +80,53 @@ export function isClaudeProcess(pid: number): boolean {
   if (process.platform !== "win32") return true;
   const listed = spawnSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
   return /^"claude[^"]*\.exe"/im.test(listed.stdout ?? "");
+}
+
+/**
+ * What became of a request to end a Claude Code process: `ended`; `gone` (it had exited);
+ * `working` (it runs a shell command, left alone); `other` (the id now belongs to another
+ * program); `unsupported` (not done on this system); `failed`.
+ */
+export type ProcessEnd = "ended" | "gone" | "working" | "other" | "unsupported" | "failed";
+
+const PROCESS_END = new Set<ProcessEnd>(["ended", "gone", "working", "other", "failed"]);
+/** Windows process start times are 100 ns ticks; the registry and the system round them differently. */
+const PROC_START_SLACK = 100_000;
+
+/**
+ * Ends an idle Claude Code process so that it looks like a clean exit to the program that
+ * started it. The Claude desktop app reads any other exit code as a crash and says so on the
+ * chat; after a clean one it quietly starts a new process, from the transcript, on the next
+ * message there.
+ *
+ * Left alone when it has a shell running: a dev server or a watcher started from that chat
+ * would end with it. Windows only: elsewhere no signal is known to leave the app quiet, and
+ * the registry carries nothing to tell the process from a later one with the same id.
+ * A process ended this way leaves its registry entry behind; see forgetClaudeProcess.
+ */
+export function endClaudeProcess(holder: Pick<DesktopHolder, "pid" | "procStart">): Promise<ProcessEnd> {
+  const pid = holder.pid;
+  const started = holder.procStart && /^\d{1,18}$/.test(holder.procStart) ? holder.procStart : undefined;
+  // Without its start time the process cannot be told from another program given the same id since.
+  if (process.platform !== "win32" || !Number.isInteger(pid) || pid <= 1 || !started) return Promise.resolve("unsupported");
+  // Single quotes only: the script travels as one command-line argument.
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'`,
+    "if(-not $p){'gone';exit}",
+    "if($p.Name -notlike 'claude*'){'other';exit}",
+    `if([math]::Abs($p.CreationDate.ToFileTimeUtc()-${started}) -gt ${PROC_START_SLACK}){'other';exit}`,
+    `$k=@(Get-CimInstance Win32_Process -Filter 'ParentProcessId=${pid}'|Where-Object{$_.Name -match '^(bash|sh|zsh|fish|pwsh|powershell)\\.exe$'})`,
+    "if($k.Count){'working';exit}",
+    "$r=Invoke-CimMethod -InputObject $p -MethodName Terminate -Arguments @{Reason=[uint32]0}",
+    "if($r.ReturnValue -eq 0){'ended'}else{'failed'}",
+  ].join(";");
+  return new Promise((resolve) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 20_000 }, (error, stdout) => {
+      const said = String(stdout ?? "").trim().split(/\s+/).pop() as ProcessEnd | undefined;
+      resolve(!error && said && PROCESS_END.has(said) ? said : "failed");
+    });
+  });
 }
 
 /**
@@ -100,9 +151,33 @@ export function claudeDesktopHolder(configDir: string, backendId: string, alive:
     const desktop = typeof entry.entrypoint === "string" ? entry.entrypoint.startsWith("claude-desktop") : typeof entry.hostSessionId === "string";
     const seen = typeof entry.updatedAt === "number" ? entry.updatedAt : entry.startedAt;
     if (!desktop || typeof seen !== "number" || now - seen > REGISTRY_MAX_AGE_MS || !alive(entry.pid)) continue;
-    return { pid: entry.pid, busy: entry.status === "busy" };
+    return {
+      pid: entry.pid,
+      // "busy" in a turn, "waiting" on a permission prompt or a question inside one.
+      busy: typeof entry.status === "string" && entry.status !== "idle",
+      ...(typeof entry.startedAt === "number" ? { startedAt: entry.startedAt } : {}),
+      ...(typeof entry.procStart === "string" ? { procStart: entry.procStart } : {}),
+    };
   }
   return undefined;
+}
+
+/**
+ * Removes the registry entry of a process that was ended from outside and so could not remove
+ * it itself. Left in place, the entry would name whichever program is given that process id next.
+ */
+export function forgetClaudeProcess(configDir: string, backendId: string, holder: Pick<DesktopHolder, "pid" | "procStart">): void {
+  if (!Number.isInteger(holder.pid) || holder.pid <= 1) return;
+  const file = path.join(configDir, "sessions", `${holder.pid}.json`);
+  try {
+    if (fs.statSync(file).size > REGISTRY_MAX_BYTES) return;
+    const entry = JSON.parse(fs.readFileSync(file, "utf8"));
+    // A new process with the same id has written its own entry over it.
+    if (entry?.pid !== holder.pid || entry.sessionId !== backendId || entry.procStart !== holder.procStart) return;
+    fs.rmSync(file);
+  } catch {
+    // already gone, or not ours to read
+  }
 }
 
 /** Claude Code names a project directory after its cwd, with every other character as a dash. */
@@ -184,6 +259,42 @@ export function lastTranscriptActivity(file: string, kind: TranscriptKind): stri
 /** Scans a JSONL transcript backwards for its newest conversation line. */
 export function lastTranscriptTurn(file: string, kind: TranscriptKind): TranscriptTurn | undefined {
   if (file.endsWith(".zst")) return lastCompressedActivity(file, kind);
+  return lastLine(file, (line) => isActivity(kind, line));
+}
+
+/** The newest line of a Claude chat's own message chain. */
+export interface ChainWrite {
+  /** Epoch milliseconds of the line. */
+  at: number;
+  /** Written by the Claude desktop app's process, not by another program's. */
+  desktop: boolean;
+}
+
+function chainWrite(line: string): ChainWrite | undefined {
+  if (!line.includes('"uuid"') || !line.includes('"timestamp"')) return undefined;
+  let entry: any;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  // Subagents keep their own chains; lines without an id (titles, settings) are not messages.
+  if (typeof entry?.uuid !== "string" || entry.isSidechain === true || typeof entry.timestamp !== "string") return undefined;
+  const at = Date.parse(entry.timestamp);
+  if (Number.isNaN(at)) return undefined;
+  return { at, desktop: typeof entry.entrypoint === "string" && entry.entrypoint.startsWith("claude-desktop") };
+}
+
+/**
+ * Who wrote last in a Claude chat. Every process appends to the chain it holds in memory, so
+ * one that started before this line and did not write it no longer has the whole conversation.
+ */
+export function lastChainWrite(file: string): ChainWrite | undefined {
+  return lastLine(file, chainWrite);
+}
+
+/** The newest line of a JSONL file that `pick` accepts, reading backwards from its end. */
+function lastLine<T>(file: string, pick: (line: string) => T | undefined): T | undefined {
   let fd: number;
   try {
     fd = fs.openSync(file, "r");
@@ -205,8 +316,8 @@ export function lastTranscriptTurn(file: string, kind: TranscriptKind): Transcri
       if (end !== 0 && first < 0) continue;
       const lines = tail.subarray(first + 1).toString("utf8").split("\n");
       for (let i = lines.length - 1; i >= 0; i--) {
-        const at = lines[i] ? isActivity(kind, lines[i]) : undefined;
-        if (at) return at;
+        const found = lines[i] ? pick(lines[i]) : undefined;
+        if (found) return found;
       }
       tail = tail.subarray(0, first + 1);
     }
@@ -273,6 +384,19 @@ export class NativeActivity {
   claudeDesktopHolder(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, alive?: (pid: number) => boolean): DesktopHolder | undefined {
     if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return undefined;
     return claudeDesktopHolder(claudeConfigDir(config), backendId, alive);
+  }
+
+  /** See forgetClaudeProcess. */
+  forgetClaudeProcess(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, holder: Pick<DesktopHolder, "pid" | "procStart">): void {
+    if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return;
+    forgetClaudeProcess(claudeConfigDir(config), backendId, holder);
+  }
+
+  /** See lastChainWrite. Read anew each time: it is asked once a turn, right after the file changed. */
+  lastChainWrite(agentId: string, config: Pick<AgentConfig, "command" | "env">, backendId: string, cwd?: string): ChainWrite | undefined {
+    if (transcriptKind(agentId, config) !== "claude" || !SAFE_ID.test(backendId)) return undefined;
+    const file = this.claudeFile(config, backendId, cwd);
+    return file ? lastChainWrite(file) : undefined;
   }
 
   private claudeFile(config: Pick<AgentConfig, "env">, backendId: string, cwd?: string): string | undefined {

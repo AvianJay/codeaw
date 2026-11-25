@@ -16,7 +16,7 @@ import { parentToolCallId } from "./subagent.js";
 import { WorkTracker } from "./work-status.js";
 import type { LiveActivityPush, ActivitySnapshot } from "../notify/live-activity.js";
 import type { CpaUsageService } from "../server/cpa.js";
-import { NativeActivity, type DesktopHolder, type TranscriptTurn } from "./native-activity.js";
+import { endClaudeProcess, NativeActivity, type DesktopHolder, type ProcessEnd, type TranscriptTurn } from "./native-activity.js";
 import type { McpServer } from "../mcp/server.js";
 import { DESKTOP_TURN_SERVER } from "../mcp/desktop-compat.js";
 import { isOwnToolCall, type McpHost, type NotifyDelivery } from "../mcp/tools.js";
@@ -101,6 +101,10 @@ class BridgeSession {
   receipts?: Map<string, "received" | "read" | "failed">;
   /** Agent process generation in which this session is live; 0 = not live. */
   backendGen = 0;
+  /** When the agent was last asked to open this chat, which it then read from its own transcript. */
+  loadedAt = 0;
+  /** Another app continued the chat while codeaw's own process held it; that is not in the log yet. */
+  unread = false;
   suppressUpdates = false;
   /** Above zero while saved history is being rebuilt; those entries are not new activity. */
   replaying = 0;
@@ -132,6 +136,8 @@ export interface ManagerOptions {
   hostName: string;
   /** Tests stand in for a running Claude desktop app; see NativeActivity.claudeDesktopHolder. */
   claudeProcessAlive?: (pid: number) => boolean;
+  /** Tests stand in for ending the desktop app's process; see endClaudeProcess. */
+  endClaudeProcess?: (holder: DesktopHolder) => Promise<ProcessEnd>;
   /** How often open chats are checked for turns taken in another app; 0 turns the check off. */
   followMs?: number;
 }
@@ -257,6 +263,8 @@ export class SessionManager implements AgentHandlers, McpHost {
   private following = false;
   /** Chats whose catch-up failed, and when to try again. */
   private readonly followRetry = new Map<string, number>();
+  /** Chats whose turn here just ended, while the desktop app's own process for them is being closed. */
+  private readonly handingBack = new Set<string>();
   private shuttingDown = false;
   /** Shown file → chats that showed it; built from the saved chats on first use. */
   private shareIndex?: Map<string, Set<string>>;
@@ -443,6 +451,84 @@ export class SessionManager implements AgentHandlers, McpHost {
     return this.native.claudeDesktopHolder(agent.id, agent.config, s.meta.backendId, this.opts.claudeProcessAlive);
   }
 
+  /**
+   * After a turn codeaw ran in a chat the desktop app also holds: the app's process started
+   * before that turn and never saw it, so the next message typed there would continue from
+   * before the turn and drop it from the conversation. Ended while idle, the app starts a new
+   * process from the transcript, with the turn in it, when the person next writes there.
+   */
+  private async handBack(s: BridgeSession): Promise<void> {
+    if (this.handingBack.has(s.id)) return;
+    this.handingBack.add(s.id);
+    try {
+      const holder = this.desktopHolder(s);
+      // Mid-turn there, both have written already; nothing is gained by cutting that turn short.
+      if (!holder || holder.busy || holder.startedAt === undefined) return;
+      const agent = this.registry.get(s.meta.agentId);
+      const last = this.native.lastChainWrite(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
+      if (!last || last.desktop || last.at <= holder.startedAt) return;
+      const outcome = await (this.opts.endClaudeProcess ?? endClaudeProcess)(holder);
+      if (outcome === "ended") {
+        // Ended from outside, it could not take its own entry out of the registry of running sessions.
+        this.native.forgetClaudeProcess(agent.id, agent.config, s.meta.backendId, holder);
+        log.info(`${s.id} was continued here; closed Claude Desktop's own process for it (${holder.pid}), so the app reads the chat again on its next message`);
+      } else if (outcome !== "gone" && outcome !== "unsupported") {
+        log.warn(`${s.id} was continued here, but Claude Desktop's own process for it (${holder.pid}) stays as it was (${outcome}); a message sent from the app may leave this turn out`);
+      }
+    } catch (err) {
+      log.warn(`could not hand ${s.id} back to Claude Desktop: ${errorMessage(err)}`);
+    } finally {
+      this.handingBack.delete(s.id);
+    }
+  }
+
+  /**
+   * While the Claude desktop app has the chat open, only it writes the chat between codeaw's
+   * turns (see desktopHolder): closes codeaw's own process for it. True when it did.
+   */
+  private async yieldToDesktop(s: BridgeSession): Promise<boolean> {
+    if (s.turn || s.activating || s.pending.size || s.queue.length || !s.backendGen || this.handingBack.has(s.id) || !this.registry.has(s.meta.agentId)) return false;
+    const agent = this.requireAgent(s.meta.agentId);
+    if (s.backendGen !== agent.generation || agent.hasBackgroundWork?.(s.meta.backendId) || !this.desktopHolder(s)) return false;
+    log.info(`Claude Desktop has ${s.id} open; closing codeaw's Claude Code process for it`);
+    await this.releaseBackend(s);
+    return s.backendGen === 0;
+  }
+
+  /**
+   * Whether the desktop app wrote the chat's newest message after codeaw's process read the chat.
+   * That process then lacks it, and would continue from before it.
+   */
+  private desktopWroteSince(s: BridgeSession): boolean {
+    if (s.meta.connection === "desktop" || !this.registry.has(s.meta.agentId)) return false;
+    const agent = this.registry.get(s.meta.agentId);
+    const last = this.native.lastChainWrite(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
+    return !!last?.desktop && last.at > s.loadedAt;
+  }
+
+  /**
+   * Whether another app is in the middle of a turn in a chat codeaw already knows (see turnOver).
+   * Never so for an agent whose desktop app codeaw joins live: opening is how its turn is followed.
+   */
+  private otherTurnRunning(s: BridgeSession): boolean {
+    if (s.meta.connection === "desktop" || !this.registry.has(s.meta.agentId) || this.registry.get(s.meta.agentId).sessionConnection) return false;
+    const moved = this.movedElsewhere(s);
+    return moved ? !this.turnOver(s, moved) : !!this.desktopHolder(s)?.busy;
+  }
+
+  /**
+   * The same for a chat codeaw has not opened before. Loading a chat whose transcript ends in
+   * an unanswered message makes the agent answer it, which would write into that turn.
+   */
+  private busyElsewhere(agentId: string, backendId: string, cwd: string | undefined, now = Date.now()): boolean {
+    if (!this.registry.has(agentId)) return false;
+    const agent = this.registry.get(agentId);
+    if (agent.sessionConnection) return false;
+    if (this.native.claudeDesktopHolder(agent.id, agent.config, backendId, this.opts.claudeProcessAlive)?.busy) return true;
+    const turn = this.native.lastTurn(agent.id, agent.config, backendId, cwd);
+    return !!turn && !turn.settled && now - Date.parse(turn.at) <= ABANDONED_TURN_MS;
+  }
+
   /** No agent process of codeaw's holds this chat: it was closed, or the agent restarted since. */
   private passive(s: BridgeSession): boolean {
     if (s.meta.connection === "desktop" || !this.registry.has(s.meta.agentId)) return false;
@@ -458,7 +544,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     const agent = this.registry.get(s.meta.agentId);
     const turn = this.native.lastTurn(agent.id, agent.config, s.meta.backendId, s.meta.cwd);
     if (!turn || turn.at === this.caughtUp.get(s.id)) return undefined;
-    return Date.parse(turn.at) > Date.parse(s.meta.updatedAt) + MOVED_SLACK_MS ? turn : undefined;
+    return s.unread || Date.parse(turn.at) > Date.parse(s.meta.updatedAt) + MOVED_SLACK_MS ? turn : undefined;
   }
 
   /**
@@ -481,7 +567,10 @@ export class SessionManager implements AgentHandlers, McpHost {
     try {
       for (const s of [...this.sessions.values()]) {
         if (!s.subscribers.size || s.turn || s.activating || s.pending.size || s.queue.length) continue;
-        if (this.importing.has(s.id) || this.rebuilding.has(s.id) || !this.passive(s) || (this.followRetry.get(s.id) ?? 0) > now) continue;
+        if (this.importing.has(s.id) || this.rebuilding.has(s.id) || (this.followRetry.get(s.id) ?? 0) > now) continue;
+        // A chat the desktop app opened after codeaw's last turn in it: the app's turns are followed from here on.
+        if (!this.passive(s) && !(await this.yieldToDesktop(s))) continue;
+        if (s.turn || s.activating || s.pending.size || s.queue.length || this.rebuilding.has(s.id)) continue;
         const moved = this.movedElsewhere(s);
         if (!moved || !this.turnOver(s, moved, now)) continue;
         if (!(await this.catchUp(s))) continue;
@@ -502,7 +591,14 @@ export class SessionManager implements AgentHandlers, McpHost {
       await running.catch(() => undefined);
       return;
     }
-    if (s.turn || s.activating || s.queue.length || s.pending.size || !this.passive(s)) return;
+    if (s.turn || s.activating || s.queue.length || s.pending.size) return;
+    if (!this.passive(s)) {
+      // Codeaw's own process is still open on the chat, from before the desktop app's last turn.
+      if (!this.desktopWroteSince(s)) return;
+      log.info(`Claude Desktop continued ${s.id}; closing codeaw's Claude Code process for it, which has not seen that`);
+      await this.releaseBackend(s);
+      if (s.turn || s.activating || s.queue.length || s.pending.size || !this.passive(s)) return;
+    }
     const moved = this.movedElsewhere(s);
     if (!moved) return;
     if (!moved.settled && Date.now() - Date.parse(moved.at) <= ABANDONED_TURN_MS) {
@@ -1378,6 +1474,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     // A desktop-owned chat runs in the desktop app, which the bridge cannot give tools to.
     const base = { sessionId: s.meta.backendId, cwd: s.meta.cwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, s.id), this.fromClaudeDesktop(s.meta.agentId, s.meta.backendId, s.meta.cwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop", allowDisconnected } } } : {}) };
     const saved = structuredClone(s.meta);
+    const asked = Date.now();
     let resp: any;
     if (s.meta.connection === "desktop" || caps?.sessionCapabilities?.resume) {
       resp = await agent.request("session/resume", base);
@@ -1407,6 +1504,7 @@ export class SessionManager implements AgentHandlers, McpHost {
       }
       await this.restoreSettings(s, agent, wanted);
       s.backendGen = agent.generation;
+      s.loadedAt = asked;
       s.meta.updatedAt = new Date().toISOString();
       this.saveMeta(s, true);
     } catch (error) {
@@ -1427,6 +1525,8 @@ export class SessionManager implements AgentHandlers, McpHost {
     const sessionCwd = info?.cwd ?? cwd;
     if (!sessionCwd) throw acp.RequestError.invalidParams(undefined, "cwd is required to open this session");
     const existing = this.sessions.get(id);
+    // The agent opens a chat with its own defaults, not with the model and mode chosen for it here.
+    const chosen = existing && existing.meta.connection !== "desktop" ? structuredClone(existing.meta) : undefined;
     const s =
       existing ??
       this.createSession({ id, agentId, backendId, cwd: sessionCwd, origin: "native", title: info?.title ?? undefined });
@@ -1440,6 +1540,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     const desktop = s.meta.connection === "desktop";
     const base = { sessionId: backendId, cwd: sessionCwd, mcpServers: desktop ? [] : this.mcpServers(this.mcpToken(agent, id), this.fromClaudeDesktop(agentId, backendId, sessionCwd)), ...(desktop ? { _meta: { codeaw: { connection: "desktop" } } } : {}) };
     let resp: any;
+    const asked = Date.now();
     s.replaying++;
     try {
       if (caps?.loadSession) resp = await agent.request("session/load", base);
@@ -1449,8 +1550,20 @@ export class SessionManager implements AgentHandlers, McpHost {
       s.replaying--;
     }
     s.backendGen = agent.generation;
+    s.loadedAt = asked;
+    s.unread = false;
     s.stale = false;
     this.applySetup(s, resp);
+    if (chosen) {
+      try {
+        await this.restoreSettings(s, agent, chosen);
+      } catch (err) {
+        // The chat stays readable. Its next message tries again, and is not sent on other settings.
+        log.warn(`${id}: ${errorMessage(err)}`);
+        s.backendGen = 0;
+        this.applySetup(s, chosen);
+      }
+    }
     s.meta.updatedAt = new Date().toISOString();
     this.saveMeta(s, true);
     log.info(`imported ${id} (${s.meta.lastSeq} events)`);
@@ -1476,6 +1589,14 @@ export class SessionManager implements AgentHandlers, McpHost {
       return s;
     }
     if (s?.stale && (s.turn || s.pending.size > 0)) return s;
+    // What codeaw already has is shown as it is; follow() brings the rest once that turn ends.
+    if (s && this.otherTurnRunning(s)) return s;
+    if (!s) {
+      const { agentId, backendId } = parseExtId(id);
+      if (this.busyElsewhere(agentId, backendId, this.nativeInfo.get(id)?.cwd ?? cwd)) {
+        throw acp.RequestError.invalidRequest(undefined, "Another app is in the middle of a turn in this chat. Open it here once that turn ends.");
+      }
+    }
     // Other screens already showing it get the new history whole, not the import's replay.
     return s ? this.rebuild(s) : this.importFresh(id, cwd, undefined);
   }
@@ -1578,6 +1699,7 @@ export class SessionManager implements AgentHandlers, McpHost {
     }
     if (token) this.mcp?.bind(token, s.id);
     s.backendGen = agent.generation;
+    s.loadedAt = Date.now();
     this.applySetup(s, resp);
     this.flushOrphans(s);
     const explicit = m.initialConfig && typeof m.initialConfig === "object" ? m.initialConfig as Record<string, unknown> : {};
@@ -1845,6 +1967,8 @@ export class SessionManager implements AgentHandlers, McpHost {
         rejectDone(e);
       }
       this.startNext(s);
+      // A turn that failed may still have written the message it was given.
+      if (!s.turn) void this.handBack(s);
     })();
     return done;
   }
@@ -1966,7 +2090,7 @@ export class SessionManager implements AgentHandlers, McpHost {
       this.store.append(fork.id, copy);
     }
     // A new session is live right away; a fork is resumed like any reopened chat.
-    if (!plan.messageId) fork.backendGen = agent.generation;
+    if (!plan.messageId) { fork.backendGen = agent.generation; fork.loadedAt = Date.now(); }
     try {
       this.applySetup(fork, resp);
       this.flushOrphans(fork);
@@ -2134,6 +2258,9 @@ export class SessionManager implements AgentHandlers, McpHost {
     if (!this.registry.has(s.meta.agentId)) return;
     const agent = this.requireAgent(s.meta.agentId);
     if ((s.meta.connection !== "desktop" && s.backendGen !== agent.generation) || !agent.capabilities?.sessionCapabilities?.close) return;
+    // Closing counts as contact with the chat, which must not pass for having read what another
+    // app wrote while this process held it.
+    if (s.meta.connection !== "desktop" && (this.movedElsewhere(s) || this.desktopWroteSince(s))) s.unread = true;
     try {
       await agent.request("session/close", { sessionId: s.meta.backendId });
     } catch (err) {
@@ -2209,6 +2336,9 @@ export class SessionManager implements AgentHandlers, McpHost {
       for (const c of subscribers) await this.attach(c, fresh, { mode: "full" });
       return { epoch: fresh.meta.epoch };
     }
+    if (this.otherTurnRunning(s)) {
+      throw acp.RequestError.invalidRequest(undefined, "Another app is in the middle of a turn in this chat. Reload it once that turn ends.");
+    }
     const fresh = await this.rebuild(s);
     return { epoch: fresh.meta.epoch };
   }
@@ -2239,14 +2369,8 @@ export class SessionManager implements AgentHandlers, McpHost {
       if (kept.length) this.orphans.set(id, kept);
       else this.orphans.delete(id);
     }
-    for (const s of this.sessions.values()) {
-      // Once the Claude desktop app has the chat open, only it should write the chat (see desktopHolder).
-      if (s.turn || s.activating || s.pending.size || s.queue.length || !s.backendGen || !this.registry.has(s.meta.agentId)) continue;
-      const agent = this.requireAgent(s.meta.agentId);
-      if (s.backendGen !== agent.generation || agent.hasBackgroundWork?.(s.meta.backendId) || !this.desktopHolder(s)) continue;
-      log.info(`Claude Desktop has ${s.id} open; closing codeaw's Claude Code process for it`);
-      await this.releaseBackend(s);
-    }
+    // Chats no device has open are not followed; the desktop app may have opened one of them.
+    for (const s of [...this.sessions.values()]) await this.yieldToDesktop(s);
     for (const s of this.sessions.values()) {
       const idle = !s.turn && !s.activating && s.pending.size === 0 && s.subscribers.size === 0 && s.queue.length === 0;
       if (!idle || now - s.lastActivity < this.opts.idleSessionCloseMs) continue;

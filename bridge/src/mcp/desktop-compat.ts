@@ -80,12 +80,15 @@ function updatePlan(args: Record<string, unknown>, sessionId: string, host: McpH
 }
 
 function buttonsOf(args: Record<string, unknown>): string[] {
-  const raw = args.buttons ?? args.options ?? args.replies;
+  // The desktop app calls them `actions`: a reply carries a label, an action of the app itself (commit, open a PR) only its name.
+  const raw = args.buttons ?? args.actions ?? args.options ?? args.replies;
   if (raw === undefined || raw === null) return [];
   if (!Array.isArray(raw)) throw new ToolError("buttons must be a list of short labels");
   const buttons: string[] = [];
   for (const item of raw) {
     const label = typeof item === "string" ? item : (item as { label?: unknown; text?: unknown } | null)?.label ?? (item as { text?: unknown } | null)?.text;
+    // The desktop app's own actions have nothing to tap here.
+    if (label === undefined && typeof (item as { action?: unknown } | null)?.action === "string") continue;
     if (typeof label !== "string" || !label.trim()) throw new ToolError("Every button needs a label");
     const trimmed = label.trim();
     if (trimmed.length > MAX_BUTTON_LENGTH) throw new ToolError(`Button labels are at most ${MAX_BUTTON_LENGTH} characters`);
@@ -106,7 +109,8 @@ function wrapUp(args: Record<string, unknown>, sessionId: string, host: McpHost)
     host.showPlan(sessionId, plan.map((step) => ({ ...step, status: step.status === "in_progress" ? "completed" : step.status })));
   }
   if (buttons.length) host.showCard(sessionId, { kind: "replies", replies: buttons });
-  const question = typeof args.question === "string" ? args.question.trim() : "";
+  const asked = args.question ?? args.ask;
+  const question = typeof asked === "string" ? asked.trim() : "";
   return [
     "Recorded.",
     buttons.length ? `The buttons are shown as tappable replies under your message${question ? "; put the question itself in your closing message" : ""}.` : "",
